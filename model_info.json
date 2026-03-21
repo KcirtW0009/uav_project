@@ -1,0 +1,35 @@
+{
+  "version": "1.0",
+  "model_type": "svm",
+  "accuracy": 0.9763888888888889,
+  "f1_score": 0.9763674860395721,
+  "inference_latency_ms": 0.024791393015119765,
+  "training_time_s": 0.24317288398742676,
+  "cross_val_mean": 0.976388888888889,
+  "cross_val_std": 0.002539711603876343,
+  "feature_names": [
+    "delay",
+    "bandwidth",
+    "loss_rate",
+    "jitter"
+  ],
+  "feature_importance": null,
+  "training_timestamp": "2026-03-21T20:28:20.523277",
+  "confusion_matrix": [
+    [
+      476,
+      0,
+      4
+    ],
+    [
+      0,
+      472,
+      8
+    ],
+    [
+      19,
+      3,
+      458
+    ]
+  ]
+}
