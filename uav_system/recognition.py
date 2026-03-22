@@ -300,45 +300,74 @@ def train_or_load_recognition_model(force_retrain=False, compare_models=True, ve
         best_model = None
         best_score = -1
         results = []
+        
+        # 多目标优化权重配置
+        W_F1 = 0.40           # 准确性权重
+        W_STABILITY = 0.30    # 稳定性权重（交叉验证）
+        W_LATENCY = 0.30      # 实时性权重
+        MAX_ACCEPTABLE_LATENCY = 10.0  # 最大可接受延迟(ms)
+        
         if verbose:
-            print("\n模型选型对比中...")
+            print("\n模型选型对比中（多目标优化：准确性40% + 稳定性30% + 实时性30%）...")
+            print(f"延迟阈值: {MAX_ACCEPTABLE_LATENCY}ms（超过将受惩罚）\n")
+            
         for mt in models_to_try:
             if verbose:
-                print(f"\n训练模型: {mt}")
+                print(f"训练模型: {mt}")
             m = BusinessRecognitionModel()
             m.train(X_train, y_train, model_type=mt)
             acc, f1, report = m.evaluate_on_test(X_test, y_test)
+            
+            # 归一化延迟分数（越低越好）
+            normalized_latency = min(m.inference_latency / MAX_ACCEPTABLE_LATENCY, 1.0)
+            latency_score = 1.0 - normalized_latency  # 转换为分数（越高越好）
+            
+            # 延迟惩罚：如果超过阈值，大幅降低分数
+            latency_penalty = 1.0
+            if m.inference_latency > MAX_ACCEPTABLE_LATENCY:
+                latency_penalty = 0.5
+                if verbose:
+                    print(f"  ⚠️ 延迟 {m.inference_latency:.2f}ms 超过阈值，应用惩罚")
+            
+            # 多目标综合评分
+            combined_score = (
+                W_F1 * f1 +
+                W_STABILITY * m.cross_val_scores.mean() +
+                W_LATENCY * latency_score
+            ) * latency_penalty
+            
             results.append({
                 'type': mt,
                 'accuracy': acc,
                 'f1': f1,
                 'inference_latency_ms': m.inference_latency,
                 'training_time_s': m.training_time,
-                'cross_val_mean': m.cross_val_scores.mean()
+                'cross_val_mean': m.cross_val_scores.mean(),
+                'latency_score': latency_score,
+                'combined_score': combined_score
             })
-            combined_score = f1 * 0.6 + m.cross_val_scores.mean() * 0.4
+            
             if combined_score > best_score:
                 best_score = combined_score
                 best_model = m
+                
         if verbose:
-            print("\n模型选型对比结果（详细得分）：")
-            print("="*100)
-            print(f"{'模型':<8} {'准确率':<10} {'F1-score':<10} {'交叉验证':<10} {'综合得分':<10} {'推理延迟':<12} {'训练时间':<10}")
-            print("-"*100)
+            print("\n" + "="*110)
+            print(f"{'模型':<8} {'准确率':<10} {'F1-score':<10} {'交叉验证':<10} {'延迟分数':<10} {'综合得分':<10} {'推理延迟':<12} {'状态':<6}")
+            print("-"*110)
             for r in results:
-                combined_score = r['f1'] * 0.6 + r['cross_val_mean'] * 0.4
+                status = "✓" if r['inference_latency_ms'] <= MAX_ACCEPTABLE_LATENCY else "✗"
                 print(f"{r['type']:<8} {r['accuracy']*100:>6.2f}% {r['f1']:>6.3f} "
-                      f"{r['cross_val_mean']*100:>6.2f}% {combined_score:>6.3f} "
-                      f"{r['inference_latency_ms']:>8.3f}ms {r['training_time_s']:>6.3f}s")
-            print("="*100)
-            print("\n按综合得分排序（F1×0.6 + 交叉验证×0.4）：")
-            sorted_results = sorted(results,
-                                    key=lambda x: x['f1']*0.6 + x['cross_val_mean']*0.4,
-                                    reverse=True)
+                      f"{r['cross_val_mean']*100:>6.2f}% {r['latency_score']:>6.3f}   "
+                      f"{r['combined_score']:>6.3f}   {r['inference_latency_ms']:>8.3f}ms   {status:<6}")
+            print("="*110)
+            print(f"\n评分公式: {W_F1*100:.0f}%×F1 + {W_STABILITY*100:.0f}%×交叉验证 + {W_LATENCY*100:.0f}%×延迟分数")
+            print(f"延迟分数 = 1 - min(延迟/{MAX_ACCEPTABLE_LATENCY}ms, 1)，超过阈值×0.5惩罚\n")
+            print("按综合得分排序：")
+            sorted_results = sorted(results, key=lambda x: x['combined_score'], reverse=True)
             for i, r in enumerate(sorted_results, 1):
-                combined_score = r['f1']*0.6 + r['cross_val_mean']*0.4
                 marker = " ★最佳" if r['type'] == best_model.model_type else ""
-                print(f"  {i}. {r['type']}: 综合得分={combined_score:.4f}{marker}")
+                print(f"  {i}. {r['type']}: 综合得分={r['combined_score']:.4f}{marker}")
             print()
         best_model.save()
         if verbose:

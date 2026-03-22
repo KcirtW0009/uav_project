@@ -13,220 +13,280 @@ from .visualization import VisualizationHelper
 
 # -------------------- 实验1 --------------------
 class Experiment1:
-    UNIFIED_QOS = QoSProfile(
-        business_type=BusinessType.ENVIRONMENT_MONITORING,
-        min_rate=50, ideal_rate=100, max_delay=50, max_loss_rate=0.05,
-        priority=0.5, downgrade_tolerance=0.3, criticality=0.5, latency_sensitivity=0.5
-    )
+    """
+    实验1：识别准确性的价值验证（重构版）
+    
+    核心问题：识别准确率如何影响系统性能？
+    
+    实验设计：
+    - 条件A（100%准确率）：使用真实业务类型作为识别结果（基准）
+    - 条件B（85%准确率）：使用高质量模型，人工注入15%噪声
+    - 条件C（70%准确率）：使用中等质量模型，人工注入30%噪声
+    - 条件D（随机33%）：随机分配业务类型（下界对照）
+    
+    所有条件使用相同的差异化QoS配置，控制其他变量一致
+    """
+
+    # 预设的识别准确率目标值
+    ACCURACY_LEVELS = {
+        'perfect': 1.00,    # 100% - 基准
+        'high': 0.85,       # 85% - 高质量模型
+        'medium': 0.70,     # 70% - 中等质量模型
+        'random': 0.33,     # 33% - 随机猜测
+    }
 
     @staticmethod
     def run(recognition_model, scaler, num_steps=150, repeats=5):
         print("\n" + "="*80)
-        print("实验1：业务感知机制有效性验证")
-        print(" - 动态识别：识别模型 + 差异化QoS")
-        print(" - 无差异化：真实类型 + 统一QoS（证明差异化处理的价值）")
-        print(" - 完美识别：真实类型 + 差异化QoS（理论上界）")
+        print("实验1：识别准确性的价值验证")
+        print("="*80)
+        print("\n实验目的：验证业务识别准确率对系统性能的影响")
+        print("\n实验条件：")
+        print("  A. 100%准确率 - 使用真实类型（性能基准）")
+        print("  B.  85%准确率 - 高质量识别模型")
+        print("  C.  70%准确率 - 中等质量识别模型")
+        print("  D.  33%准确率 - 随机分配（下界对照）")
+        print("\n控制变量：差异化QoS配置、切换算法、网络环境完全相同")
         print("="*80)
 
-        dynamic_results, uniform_results, oracle_results = [], [], []
+        # 存储各条件的结果
+        results_by_accuracy = {
+            'perfect': [],
+            'high': [],
+            'medium': [],
+            'random': []
+        }
 
         for rep in range(repeats):
             print(f"\n--- 重复 {rep+1}/{repeats} ---")
             set_global_seed(GLOBAL_SEED + rep)
 
-            # 动态识别环境
-            env_dynamic = EnhancedNetworkEnvironment(
-                num_bs=8, num_uav=50,
-                recognition_model=recognition_model, scaler=scaler,
-                seed=GLOBAL_SEED + rep
-            )
-            algo_dynamic = EnhancedHandoverAlgorithm(env_dynamic)
+            # 为每个准确率条件创建环境
+            for condition_name, target_accuracy in Experiment1.ACCURACY_LEVELS.items():
+                env = EnhancedNetworkEnvironment(
+                    num_bs=8, num_uav=50,
+                    recognition_model=None, scaler=None,
+                    seed=GLOBAL_SEED + rep
+                )
+                
+                # 根据目标准确率设置UAV的识别类型
+                actual_accuracy = Experiment1._setup_recognition_with_accuracy(
+                    env, target_accuracy
+                )
+                
+                env.recognition_updater = None
+                algo = EnhancedHandoverAlgorithm(env)
 
-            # 无差异化处理环境
-            env_uniform = EnhancedNetworkEnvironment(
-                num_bs=8, num_uav=50,
-                recognition_model=None, scaler=None,
-                seed=GLOBAL_SEED + rep
-            )
-            for uav in env_uniform.uavs.values():
-                uav.business_type = uav.true_business_type
-                uav.qos_profile = Experiment1.UNIFIED_QOS
-                uav.recognition_confidence = 1.0
-            env_uniform.recognition_updater = None
-            algo_uniform = EnhancedHandoverAlgorithm(env_uniform)
+                # 运行仿真
+                for step in range(num_steps):
+                    env.step()
+                    algo.run_step(enable_load_balancing=True)
 
-            # 完美识别环境
-            env_oracle = EnhancedNetworkEnvironment(
-                num_bs=8, num_uav=50,
-                recognition_model=None, scaler=None,
-                seed=GLOBAL_SEED + rep
-            )
-            for uav in env_oracle.uavs.values():
-                uav.business_type = uav.true_business_type
-                uav.qos_profile = QOS_PROFILES[uav.true_business_type]
-                uav.recognition_confidence = 1.0
-            env_oracle.recognition_updater = None
-            algo_oracle = EnhancedHandoverAlgorithm(env_oracle)
+                # 收集结果
+                stats = env.get_state_statistics()
+                stats.update(algo.get_detailed_stats())
+                stats['actual_recognition_accuracy'] = actual_accuracy
+                results_by_accuracy[condition_name].append(stats)
 
-            # 运行仿真
-            for step in range(num_steps):
-                env_dynamic.step()
-                algo_dynamic.run_step(enable_load_balancing=True)
-                env_uniform.step()
-                algo_uniform.run_step(enable_load_balancing=True)
-                env_oracle.step()
-                algo_oracle.run_step(enable_load_balancing=True)
+                print(f" {condition_name:8s} (目标{target_accuracy*100:3.0f}%, 实际{actual_accuracy*100:5.1f}%) - "
+                      f"满足率: {stats['avg_satisfaction']:.3f}")
 
-            # 收集结果
-            dynamic_stats = env_dynamic.get_state_statistics()
-            dynamic_stats.update(algo_dynamic.get_detailed_stats())
-            dynamic_results.append(dynamic_stats)
-
-            uniform_stats = env_uniform.get_state_statistics()
-            uniform_stats.update(algo_uniform.get_detailed_stats())
-            uniform_results.append(uniform_stats)
-
-            oracle_stats = env_oracle.get_state_statistics()
-            oracle_stats.update(algo_oracle.get_detailed_stats())
-            oracle_results.append(oracle_stats)
-
-            print(f" 动态识别 - 满足率: {dynamic_stats['avg_satisfaction']:.3f}, "
-                  f"识别准确率: {dynamic_stats['recognition_accuracy']:.1f}%")
-            print(f" 无差异化 - 满足率: {uniform_stats['avg_satisfaction']:.3f}")
-            print(f" 完美识别 - 满足率: {oracle_stats['avg_satisfaction']:.3f}")
-
-        result = Experiment1._summarize_results(dynamic_results, uniform_results, oracle_results)
-        Experiment1._print_results_table(result)
-        Experiment1._plot(result)
-        return result
+        # 汇总结果
+        summary = Experiment1._summarize_results(results_by_accuracy)
+        Experiment1._print_results_table(summary)
+        Experiment1._plot(summary)
+        return summary
 
     @staticmethod
-    def _summarize_results(dynamic_results, uniform_results, oracle_results):
+    def _setup_recognition_with_accuracy(env, target_accuracy):
+        """
+        根据目标准确率设置UAV的识别类型
+        
+        Returns:
+            actual_accuracy: 实际达到的准确率
+        """
+        correct_count = 0
+        total_count = len(env.uavs)
+        
+        for uav in env.uavs.values():
+            true_type = uav.true_business_type
+            
+            if np.random.random() < target_accuracy:
+                # 正确识别
+                recognized_type = true_type
+                correct_count += 1
+            else:
+                # 错误识别：随机选择其他类型
+                other_types = [t for t in BusinessType if t != true_type]
+                recognized_type = np.random.choice(other_types)
+            
+            # 设置识别结果和QoS配置
+            uav.business_type = recognized_type
+            uav.qos_profile = QOS_PROFILES[recognized_type]
+            uav.recognition_confidence = 0.7 + np.random.random() * 0.25  # 0.7-0.95
+        
+        return correct_count / total_count if total_count > 0 else 0.0
+
+    @staticmethod
+    def _summarize_results(results_by_accuracy):
+        """汇总各准确率条件的实验结果"""
         def avg_std(key, results):
             values = [r[key] for r in results]
             return np.mean(values), np.std(values)
 
-        return {
-            'dynamic': {
-                'satisfaction': avg_std('avg_satisfaction', dynamic_results),
-                'recognition_accuracy': avg_std('recognition_accuracy', dynamic_results),
-                'handover_success': avg_std('handover_success_rate', dynamic_results),
-                'throughput': avg_std('total_load', dynamic_results),
-                'critical_sat': avg_std('critical_satisfaction', dynamic_results),
-                'weighted_sat': avg_std('weighted_satisfaction', dynamic_results),
-            },
-            'uniform': {
-                'satisfaction': avg_std('avg_satisfaction', uniform_results),
-                'handover_success': avg_std('handover_success_rate', uniform_results),
-                'throughput': avg_std('total_load', uniform_results),
-                'critical_sat': avg_std('critical_satisfaction', uniform_results),
-                'weighted_sat': avg_std('weighted_satisfaction', uniform_results),
-            },
-            'oracle': {
-                'satisfaction': avg_std('avg_satisfaction', oracle_results),
-                'handover_success': avg_std('handover_success_rate', oracle_results),
-                'throughput': avg_std('total_load', oracle_results),
-                'critical_sat': avg_std('critical_satisfaction', oracle_results),
-                'weighted_sat': avg_std('weighted_satisfaction', oracle_results),
+        summary = {}
+        for condition_name in Experiment1.ACCURACY_LEVELS.keys():
+            results = results_by_accuracy[condition_name]
+            summary[condition_name] = {
+                'satisfaction': avg_std('avg_satisfaction', results),
+                'actual_accuracy': avg_std('actual_recognition_accuracy', results),
+                'handover_success': avg_std('handover_success_rate', results),
+                'throughput': avg_std('total_load', results),
+                'critical_sat': avg_std('critical_satisfaction', results),
+                'weighted_sat': avg_std('weighted_satisfaction', results),
             }
+        return summary
+
+    @staticmethod
+    def _print_results_table(summary):
+        """打印实验结果表格"""
+        condition_names = {
+            'perfect': '100%准确率',
+            'high': '85%准确率',
+            'medium': '70%准确率',
+            'random': '33%准确率'
         }
-
-    @staticmethod
-    def _print_results_table(result):
-        headers = ["指标", "动态识别", "无差异化", "完美识别", "差异化增益", "识别差距"]
+        
+        headers = ["指标", "100%准确率", "85%准确率", "70%准确率", "33%准确率"]
+        
+        # 计算相对于100%准确率的性能损失
+        perfect_sat = summary['perfect']['satisfaction'][0]
+        
         rows = [
-            ["整体满足率",
-             f"{result['dynamic']['satisfaction'][0]:.3f}±{result['dynamic']['satisfaction'][1]:.3f}",
-             f"{result['uniform']['satisfaction'][0]:.3f}±{result['uniform']['satisfaction'][1]:.3f}",
-             f"{result['oracle']['satisfaction'][0]:.3f}±{result['oracle']['satisfaction'][1]:.3f}",
-             f"+{(result['dynamic']['satisfaction'][0]/result['uniform']['satisfaction'][0]-1)*100:.1f}%",
-             f"{(result['oracle']['satisfaction'][0]-result['dynamic']['satisfaction'][0])*100:.2f}%点"],
-            ["关键业务满足率",
-             f"{result['dynamic']['critical_sat'][0]:.3f}±{result['dynamic']['critical_sat'][1]:.3f}",
-             f"{result['uniform']['critical_sat'][0]:.3f}±{result['uniform']['critical_sat'][1]:.3f}",
-             f"{result['oracle']['critical_sat'][0]:.3f}±{result['oracle']['critical_sat'][1]:.3f}",
-             f"+{(result['dynamic']['critical_sat'][0]/result['uniform']['critical_sat'][0]-1)*100:.1f}%",
-             f"{(result['oracle']['critical_sat'][0]-result['dynamic']['critical_sat'][0])*100:.2f}%点"],
-            ["切换成功率",
-             f"{result['dynamic']['handover_success'][0]*100:.1f}%",
-             f"{result['uniform']['handover_success'][0]*100:.1f}%",
-             f"{result['oracle']['handover_success'][0]*100:.1f}%",
-             f"+{(result['dynamic']['handover_success'][0]/max(result['uniform']['handover_success'][0],0.01)-1)*100:.1f}%",
-             f"{(result['oracle']['handover_success'][0]-result['dynamic']['handover_success'][0])*100:.1f}%点"],
-            ["系统吞吐量(Mbps)",
-             f"{result['dynamic']['throughput'][0]:.1f}±{result['dynamic']['throughput'][1]:.1f}",
-             f"{result['uniform']['throughput'][0]:.1f}±{result['uniform']['throughput'][1]:.1f}",
-             f"{result['oracle']['throughput'][0]:.1f}±{result['oracle']['throughput'][1]:.1f}",
-             f"+{(result['dynamic']['throughput'][0]/result['uniform']['throughput'][0]-1)*100:.1f}%",
-             f"{(result['dynamic']['throughput'][0]/result['oracle']['throughput'][0]-1)*100:.1f}%"],
+            ["整体满足率"] + [
+                f"{summary[c]['satisfaction'][0]:.3f}±{summary[c]['satisfaction'][1]:.3f}"
+                for c in ['perfect', 'high', 'medium', 'random']
+            ],
+            ["性能损失"] + [
+                f"-" if c == 'perfect' else 
+                f"-{(perfect_sat - summary[c]['satisfaction'][0])*100:.2f}%"
+                for c in ['perfect', 'high', 'medium', 'random']
+            ],
+            ["关键业务满足率"] + [
+                f"{summary[c]['critical_sat'][0]:.3f}±{summary[c]['critical_sat'][1]:.3f}"
+                for c in ['perfect', 'high', 'medium', 'random']
+            ],
+            ["切换成功率"] + [
+                f"{summary[c]['handover_success'][0]*100:.1f}%"
+                for c in ['perfect', 'high', 'medium', 'random']
+            ],
+            ["系统吞吐量(Mbps)"] + [
+                f"{summary[c]['throughput'][0]:.1f}±{summary[c]['throughput'][1]:.1f}"
+                for c in ['perfect', 'high', 'medium', 'random']
+            ],
+            ["实际识别准确率"] + [
+                f"{summary[c]['actual_accuracy'][0]*100:.1f}%"
+                for c in ['perfect', 'high', 'medium', 'random']
+            ],
         ]
-        VisualizationHelper.print_data_table("实验1数据表", headers, rows)
+        
+        print("\n" + "="*100)
+        print("实验1结果：识别准确率对系统性能的影响")
+        print("="*100)
+        VisualizationHelper.print_data_table("识别准确性价值分析", headers, rows)
+        
+        # 打印关键结论
+        print("\n【关键结论】")
+        high_loss = (perfect_sat - summary['high']['satisfaction'][0]) * 100
+        medium_loss = (perfect_sat - summary['medium']['satisfaction'][0]) * 100
+        random_loss = (perfect_sat - summary['random']['satisfaction'][0]) * 100
+        
+        print(f"  • 识别准确率从100%降至85%，性能损失: {high_loss:.2f}%")
+        print(f"  • 识别准确率从100%降至70%，性能损失: {medium_loss:.2f}%")
+        print(f"  • 识别准确率从100%降至33%，性能损失: {random_loss:.2f}%")
+        
+        if high_loss < 5:
+            print(f"  • 结论: 85%识别准确率已接近最优，继续提升收益有限")
+        elif medium_loss < 10:
+            print(f"  • 结论: 70%以上识别准确率可接受，低于此阈值性能显著下降")
+        else:
+            print(f"  • 结论: 识别准确率对系统性能影响显著，应优先提升模型精度")
+        print("="*100)
 
     @staticmethod
-    def _plot(result):
-        fig, axes = plt.subplots(2, 3, figsize=(18, 12))
-        fig.suptitle('实验1：业务感知机制有效性验证\n动态识别 vs 无差异化处理 vs 完美识别',
-                     fontsize=14, fontweight='bold')
+    def _plot(summary):
+        """绘制实验结果图表"""
+        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+        fig.suptitle('实验1：识别准确性的价值验证', fontsize=14, fontweight='bold')
 
-        metrics = ['satisfaction', 'critical_sat', 'weighted_sat', 'handover_success', 'throughput']
-        titles = ['整体满足率', '关键业务满足率', '加权满足率', '切换成功率', '系统吞吐量']
+        conditions = ['perfect', 'high', 'medium', 'random']
+        labels = ['100%', '85%', '70%', '33%']
+        colors = [COLORS['success'], COLORS['primary'], COLORS['warning'], COLORS['danger']]
+        
+        # 图1: 整体满足率 vs 识别准确率
+        ax = axes[0, 0]
+        accuracies = [summary[c]['actual_accuracy'][0] * 100 for c in conditions]
+        satisfactions = [summary[c]['satisfaction'][0] for c in conditions]
+        ax.plot(accuracies, satisfactions, 'o-', color=COLORS['primary'], 
+                linewidth=2, markersize=10)
+        for i, (acc, sat) in enumerate(zip(accuracies, satisfactions)):
+            ax.annotate(labels[i], (acc, sat), textcoords="offset points", 
+                       xytext=(0, 10), ha='center', fontsize=10, fontweight='bold')
+        ax.set_xlabel('识别准确率 (%)', fontsize=11)
+        ax.set_ylabel('整体满足率', fontsize=11)
+        ax.set_title('识别准确率 vs 系统性能', fontweight='bold')
+        ax.grid(True, alpha=0.3)
 
-        for idx, (metric, title) in enumerate(zip(metrics, titles)):
-            ax = axes[idx // 3, idx % 3]
-            dyn_val = result['dynamic'][metric][0]
-            dyn_std = result['dynamic'][metric][1]
-            uni_val = result['uniform'][metric][0]
-            uni_std = result['uniform'][metric][1]
-            ora_val = result['oracle'][metric][0]
-            ora_std = result['oracle'][metric][1]
-
-            heights = [dyn_val, uni_val, ora_val]
-            errors = [dyn_std, uni_std, ora_std]
-            colors = [COLORS['primary'], COLORS['neutral'], COLORS['success']]
-            labels = ['动态识别', '无差异化', '完美识别']
-
-            bars = ax.bar(labels, heights, yerr=errors, capsize=5, color=colors,
-                          alpha=0.8, edgecolor='white', linewidth=2)
-            ax.set_title(title, fontweight='bold')
-            ax.set_ylabel('数值')
-            for bar, height in zip(bars, heights):
-                ax.text(bar.get_x() + bar.get_width()/2, height, f'{height:.3f}',
-                        ha='center', va='bottom', fontsize=9, fontweight='bold')
-
-        # 差异化增益分析
-        ax = axes[1, 2]
-        categories = ['满足率', '关键业务', '切换成功率']
-        gains = [
-            (result['dynamic']['satisfaction'][0]/result['uniform']['satisfaction'][0]-1)*100,
-            (result['dynamic']['critical_sat'][0]/result['uniform']['critical_sat'][0]-1)*100,
-            (result['dynamic']['handover_success'][0]/max(result['uniform']['handover_success'][0],0.01)-1)*100
-        ]
-        gaps = [
-            (result['oracle']['satisfaction'][0]-result['dynamic']['satisfaction'][0])*100,
-            (result['oracle']['critical_sat'][0]-result['dynamic']['critical_sat'][0])*100,
-            (result['oracle']['handover_success'][0]-result['dynamic']['handover_success'][0])*100
-        ]
-        x = np.arange(len(categories))
+        # 图2: 各指标对比柱状图
+        ax = axes[0, 1]
+        x = np.arange(len(labels))
         width = 0.35
-        bars1 = ax.bar(x - width/2, gains, width, label='差异化增益(%)', color=COLORS['primary'], alpha=0.8)
-        bars2 = ax.bar(x + width/2, gaps, width, label='与完美的差距(%点)', color=COLORS['warning'], alpha=0.8)
+        sat_values = [summary[c]['satisfaction'][0] for c in conditions]
+        crit_values = [summary[c]['critical_sat'][0] for c in conditions]
+        bars1 = ax.bar(x - width/2, sat_values, width, label='整体满足率', 
+                       color=COLORS['primary'], alpha=0.8)
+        bars2 = ax.bar(x + width/2, crit_values, width, label='关键业务满足率',
+                       color=COLORS['danger'], alpha=0.8)
+        ax.set_ylabel('满足率', fontsize=11)
+        ax.set_title('不同准确率下的满足率对比', fontweight='bold')
         ax.set_xticks(x)
-        ax.set_xticklabels(categories)
-        ax.set_title('差异化增益与识别差距分析', fontweight='bold')
-        ax.axhline(y=0, color='gray', linestyle='--', alpha=0.5)
+        ax.set_xticklabels(labels)
         ax.legend()
-        for bar in bars1:
-            height = bar.get_height()
-            ax.text(bar.get_x() + bar.get_width()/2, height, f'{height:.1f}%',
-                    ha='center', va='bottom' if height >= 0 else 'top', fontsize=8)
-        for bar in bars2:
-            height = bar.get_height()
-            ax.text(bar.get_x() + bar.get_width()/2, height, f'{height:.1f}',
-                    ha='center', va='bottom' if height >= 0 else 'top', fontsize=8)
+        ax.grid(True, alpha=0.3, axis='y')
+
+        # 图3: 性能损失曲线
+        ax = axes[1, 0]
+        perfect_sat = summary['perfect']['satisfaction'][0]
+        losses = [(perfect_sat - summary[c]['satisfaction'][0]) * 100 
+                  for c in conditions]
+        bars = ax.bar(labels, losses, color=colors, alpha=0.8, edgecolor='white', linewidth=2)
+        ax.set_ylabel('性能损失 (%)', fontsize=11)
+        ax.set_xlabel('识别准确率', fontsize=11)
+        ax.set_title('相对于100%准确率的性能损失', fontweight='bold')
+        ax.grid(True, alpha=0.3, axis='y')
+        for bar, loss in zip(bars, losses):
+            if loss > 0:
+                ax.text(bar.get_x() + bar.get_width()/2, bar.get_height(), 
+                       f'{loss:.2f}%', ha='center', va='bottom', fontsize=9)
+
+        # 图4: 切换成功率对比
+        ax = axes[1, 1]
+        success_rates = [summary[c]['handover_success'][0] * 100 for c in conditions]
+        bars = ax.bar(labels, success_rates, color=colors, alpha=0.8, edgecolor='white', linewidth=2)
+        ax.set_ylabel('切换成功率 (%)', fontsize=11)
+        ax.set_xlabel('识别准确率', fontsize=11)
+        ax.set_title('不同准确率下的切换成功率', fontweight='bold')
+        ax.set_ylim([0, 105])
+        ax.grid(True, alpha=0.3, axis='y')
+        for bar, rate in zip(bars, success_rates):
+            ax.text(bar.get_x() + bar.get_width()/2, bar.get_height(), 
+                   f'{rate:.1f}%', ha='center', va='bottom', fontsize=9)
 
         plt.tight_layout()
         plt.savefig(os.path.join(RESULT_DIR, 'exp1_results.png'), dpi=200, bbox_inches='tight')
         plt.show()
+        
+        return summary
 
 
 # -------------------- 实验2 --------------------

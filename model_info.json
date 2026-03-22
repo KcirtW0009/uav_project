@@ -1,12 +1,12 @@
 {
   "version": "1.0",
-  "model_type": "svm",
-  "accuracy": 0.9763888888888889,
-  "f1_score": 0.9763674860395721,
-  "inference_latency_ms": 0.024791393015119765,
-  "training_time_s": 0.24317288398742676,
-  "cross_val_mean": 0.976388888888889,
-  "cross_val_std": 0.002539711603876343,
+  "model_type": "mlp",
+  "accuracy": 0.9770833333333333,
+  "f1_score": 0.9770588532106272,
+  "inference_latency_ms": 0.0013008713722229004,
+  "training_time_s": 0.6263253688812256,
+  "cross_val_mean": 0.9753472222222221,
+  "cross_val_std": 0.0023032116599690546,
   "feature_names": [
     "delay",
     "bandwidth",
@@ -14,7 +14,7 @@
     "jitter"
   ],
   "feature_importance": null,
-  "training_timestamp": "2026-03-21T20:28:20.523277",
+  "training_timestamp": "2026-03-22T20:14:53.370527",
   "confusion_matrix": [
     [
       476,
@@ -23,8 +23,8 @@
     ],
     [
       0,
-      472,
-      8
+      473,
+      7
     ],
     [
       19,
