@@ -28,25 +28,27 @@ class Experiment1:
     所有条件使用相同的差异化QoS配置，控制其他变量一致
     """
 
-    # 预设的识别准确率目标值
+    # 预设的识别准确率目标值（均匀梯度分布）
     ACCURACY_LEVELS = {
         'perfect': 1.00,    # 100% - 基准
-        'high': 0.85,       # 85% - 高质量模型
-        'medium': 0.70,     # 70% - 中等质量模型
+        'high': 0.90,       # 90% - 高质量模型
+        'medium': 0.80,      # 80% - 中等质量模型
+        'low': 0.60,        # 60% - 低质量模型
         'random': 0.33,     # 33% - 随机猜测
     }
 
     @staticmethod
-    def run(recognition_model, scaler, num_steps=150, repeats=5):
+    def run(recognition_model, scaler, num_steps=150, repeats=15):  # 增加到15次重复以减少随机波动
         print("\n" + "="*80)
         print("实验1：识别准确性的价值验证")
         print("="*80)
         print("\n实验目的：验证业务识别准确率对系统性能的影响")
         print("\n实验条件：")
         print("  A. 100%准确率 - 使用真实类型（性能基准）")
-        print("  B.  85%准确率 - 高质量识别模型")
-        print("  C.  70%准确率 - 中等质量识别模型")
-        print("  D.  33%准确率 - 随机分配（下界对照）")
+        print("  B.  90%准确率 - 高质量识别模型")
+        print("  C.  80%准确率 - 中等质量识别模型")
+        print("  D.  60%准确率 - 低质量识别模型")
+        print("  E.  33%准确率 - 随机分配（下界对照）")
         print("\n控制变量：差异化QoS配置、切换算法、网络环境完全相同")
         print("="*80)
 
@@ -55,6 +57,7 @@ class Experiment1:
             'perfect': [],
             'high': [],
             'medium': [],
+            'low': [],
             'random': []
         }
 
@@ -62,9 +65,10 @@ class Experiment1:
             print(f"\n--- 重复 {rep+1}/{repeats} ---")
 
             # 为每个准确率条件创建环境，使用不同的seed以确保独立
-            for condition_name, target_accuracy in Experiment1.ACCURACY_LEVELS.items():
-                # 使用rep和condition的组合生成独立seed
-                condition_seed = GLOBAL_SEED + rep * 1000 + hash(condition_name) % 1000
+            for idx, (condition_name, target_accuracy) in enumerate(Experiment1.ACCURACY_LEVELS.items()):
+                # 方案9：简化种子策略，使用简单的线性偏移
+                # 避免与错误分配逻辑冲突
+                condition_seed = GLOBAL_SEED + rep * 10000 + idx * 100
                 set_global_seed(condition_seed)
 
                 # 使用不带随机事件的环境进行对比实验
@@ -143,6 +147,8 @@ class Experiment1:
         使用确定性方法确保在相同seed下产生相同的错误模式，
         这样可以准确对比不同准确率的影响。
 
+        方案9改进：简化错误分配逻辑，避免种子冲突
+
         Args:
             env: 网络环境
             target_accuracy: 目标准确率
@@ -157,6 +163,7 @@ class Experiment1:
         correct_count = 0
         total_count = len(env.uavs)
 
+        # 方案9：直接使用简单随机数判断，避免复杂逻辑
         for uav in env.uavs.values():
             true_type = uav.true_business_type
 
@@ -168,7 +175,7 @@ class Experiment1:
                 # 错误识别：确定性选择其他类型（按轮询方式）
                 other_types = [t for t in BusinessType if t != true_type]
                 # 使用UAV ID的索引来选择错误类型，确保确定性
-                error_index = (uav.uav_id + int(target_accuracy * 1000)) % len(other_types)
+                error_index = (uav.uav_id + seed) % len(other_types)  # 使用种子避免冲突
                 recognized_type = other_types[error_index]
 
             # 设置识别结果和QoS配置
@@ -206,12 +213,13 @@ class Experiment1:
         """打印实验结果表格"""
         condition_names = {
             'perfect': '100%准确率',
-            'high': '85%准确率',
-            'medium': '70%准确率',
+            'high': '90%准确率',
+            'medium': '80%准确率',
+            'low': '60%准确率',
             'random': '33%准确率'
         }
 
-        headers = ["指标", "100%准确率", "85%准确率", "70%准确率", "33%准确率"]
+        headers = ["指标", "100%准确率", "90%准确率", "80%准确率", "60%准确率", "33%准确率"]
 
         # 计算相对于100%准确率的性能损失(基于真实满意率)
         perfect_sat = summary['perfect']['true_satisfaction'][0]
@@ -219,33 +227,33 @@ class Experiment1:
         rows = [
             ["真实满足率(基于真实需求)"] + [
                 f"{summary[c]['true_satisfaction'][0]:.3f}±{summary[c]['true_satisfaction'][1]:.3f}"
-                for c in ['perfect', 'high', 'medium', 'random']
+                for c in ['perfect', 'high', 'medium', 'low', 'random']
             ],
             ["性能损失(基于真实需求)"] + [
                 f"-"
                 if c == 'perfect' else
                 (f"{(summary[c]['true_satisfaction'][0] - perfect_sat)*100:+.2f}%")
-                for c in ['perfect', 'high', 'medium', 'random']
+                for c in ['perfect', 'high', 'medium', 'low', 'random']
             ],
             ["资源匹配度"] + [
                 f"{summary[c]['resource_match'][0]:.3f}±{summary[c]['resource_match'][1]:.3f}"
-                for c in ['perfect', 'high', 'medium', 'random']
+                for c in ['perfect', 'high', 'medium', 'low', 'random']
             ],
             ["关键业务满足率"] + [
                 f"{summary[c]['critical_sat'][0]:.3f}±{summary[c]['critical_sat'][1]:.3f}"
-                for c in ['perfect', 'high', 'medium', 'random']
+                for c in ['perfect', 'high', 'medium', 'low', 'random']
             ],
             ["切换成功率"] + [
                 f"{summary[c]['handover_success'][0]*100:.1f}%"
-                for c in ['perfect', 'high', 'medium', 'random']
+                for c in ['perfect', 'high', 'medium', 'low', 'random']
             ],
             ["系统吞吐量(Mbps)"] + [
                 f"{summary[c]['throughput'][0]:.1f}±{summary[c]['throughput'][1]:.1f}"
-                for c in ['perfect', 'high', 'medium', 'random']
+                for c in ['perfect', 'high', 'medium', 'low', 'random']
             ],
             ["实际识别准确率"] + [
                 f"{summary[c]['actual_accuracy'][0]*100:.1f}%"
-                for c in ['perfect', 'high', 'medium', 'random']
+                for c in ['perfect', 'high', 'medium', 'low', 'random']
             ],
         ]
 
@@ -258,27 +266,29 @@ class Experiment1:
         print("\n【关键结论】")
         high_loss = (perfect_sat - summary['high']['true_satisfaction'][0]) * 100
         medium_loss = (perfect_sat - summary['medium']['true_satisfaction'][0]) * 100
+        low_loss = (perfect_sat - summary['low']['true_satisfaction'][0]) * 100
         random_loss = (perfect_sat - summary['random']['true_satisfaction'][0]) * 100
 
-        print(f"  • 识别准确率从100%降至85%，性能损失: {high_loss:+.2f}%")
-        print(f"  • 识别准确率从100%降至70%，性能损失: {medium_loss:+.2f}%")
-        print(f"  • 识别准确率从100%降至33%，性能损失: {random_loss:+.2f}%")
+        print(f"  - 识别准确率从100%降至90%，性能损失: {high_loss:+.2f}%")
+        print(f"  - 识别准确率从100%降至80%，性能损失: {medium_loss:+.2f}%")
+        print(f"  - 识别准确率从100%降至60%，性能损失: {low_loss:+.2f}%")
+        print(f"  - 识别准确率从100%降至33%，性能损失: {random_loss:+.2f}%")
 
         # 验证单调性
         print(f"\n【数据一致性检查】")
-        sat_values = [summary[c]['true_satisfaction'][0] for c in ['perfect', 'high', 'medium', 'random']]
-        print(f"  真实满足率序列: {' → '.join([f'{v:.3f}' for v in sat_values])}")
+        sat_values = [summary[c]['true_satisfaction'][0] for c in ['perfect', 'high', 'medium', 'low', 'random']]
+        print(f"  真实满足率序列: {' -> '.join([f'{v:.3f}' for v in sat_values])}")
         if sat_values == sorted(sat_values, reverse=True):
-            print(f"  ✓ 真实满足率随准确率降低而下降 (符合预期)")
+            print(f"  [OK] 真实满足率随准确率降低而下降 (符合预期)")
         else:
-            print(f"  ⚠ 真实满足率未随准确率单调下降 (可能存在异常)")
+            print(f"  [WARN] 真实满足率未随准确率单调下降 (可能存在异常)")
 
         if abs(high_loss) < 5 and abs(medium_loss) < 5:
-            print(f"  • 结论: 85%和70%识别准确率性能接近，准确率影响较小")
+            print(f"\n  - 结论: 90%和80%识别准确率性能接近，准确率影响较小")
         elif high_loss > 10 or medium_loss > 10:
-            print(f"  • 结论: 识别准确率对系统性能影响显著，应优先提升模型精度")
+            print(f"\n  - 结论: 识别准确率对系统性能影响显著，应优先提升模型精度")
         else:
-            print(f"  • 结论: 识别准确率对性能有影响，但85%以上已达到可接受水平")
+            print(f"\n  - 结论: 识别准确率对性能有影响，但90%以上已达到可接受水平")
         print("="*100)
 
     @staticmethod
@@ -287,8 +297,8 @@ class Experiment1:
         fig, axes = plt.subplots(2, 2, figsize=(14, 10))
         fig.suptitle('实验1：识别准确性的价值验证', fontsize=14, fontweight='bold')
 
-        conditions = ['perfect', 'high', 'medium', 'random']
-        labels = ['100%', '85%', '70%', '33%']
+        conditions = ['perfect', 'high', 'medium', 'low', 'random']
+        labels = ['100%', '90%', '80%', '60%', '33%']
         colors = [COLORS['success'], COLORS['primary'], COLORS['warning'], COLORS['danger']]
         
         # 图1: 真实满足率 vs 识别准确率
@@ -809,7 +819,7 @@ class Experiment3:
     }
 
     @staticmethod
-    def run(recognition_model, scaler, num_steps=200, repeats=5):
+    def run(recognition_model, scaler, num_steps=200, repeats=10):  # 增加到10次重复
         print("\n" + "="*80)
         print("实验3：增强算法 vs 传统算法（全面对比）")
         print("="*80)
@@ -1082,7 +1092,7 @@ class Experiment4:
     }
 
     @staticmethod
-    def run(recognition_model, scaler, num_steps=150, repeats=3):
+    def run(recognition_model, scaler, num_steps=150, repeats=10):  # 增加到10次重复
         print("\n" + "="*80)
         print("实验4：增强算法各机制有效性验证")
         print("="*80)
@@ -1265,8 +1275,9 @@ class Experiment5:
         'agriculture': {'name': '农田监测', 'desc': '稀疏部署，大范围覆盖，周期性数据'}
     }
 
+
     @staticmethod
-    def run(recognition_model, scaler, num_steps=150, repeats=3):
+    def run(recognition_model, scaler, num_steps=150, repeats=10):  # 增加到10次重复
         print("\n" + "="*80)
         print("实验5：多场景对比实验")
         print("="*80)

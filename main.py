@@ -34,15 +34,15 @@ def main(force_retrain=False, run_experiments=None):
         print(f"运行实验 {exp_id}")
         print('='*80)
         if exp_id == 1:
-            results['exp1'] = Experiment1.run(recognition_model, scaler, num_steps=150, repeats=5)
+            results['exp1'] = Experiment1.run(recognition_model, scaler, num_steps=150, repeats=10)  # 实验1：增加重复次数提高统计显著性
         elif exp_id == 2:
-            results['exp2'] = Experiment2.run(recognition_model, scaler, num_steps=200, repeats=10)
+            results['exp2'] = Experiment2.run(recognition_model, scaler, num_steps=200, repeats=10)  # 实验2：已为10次重复
         elif exp_id == 3:
-            results['exp3'] = Experiment3.run(recognition_model, scaler, num_steps=200, repeats=5)
+            results['exp3'] = Experiment3.run(recognition_model, scaler, num_steps=200, repeats=10)  # 实验3：增加到10次重复
         elif exp_id == 4:
-            results['exp4'] = Experiment4.run(recognition_model, scaler, num_steps=150, repeats=3)
+            results['exp4'] = Experiment4.run(recognition_model, scaler, num_steps=150, repeats=10)  # 实验4：增加到10次重复
         elif exp_id == 5:
-            results['exp5'] = Experiment5.run(recognition_model, scaler, num_steps=150, repeats=3)
+            results['exp5'] = Experiment5.run(recognition_model, scaler, num_steps=150, repeats=10)  # 实验5：增加到10次重复
 
     print("\n" + "="*80)
     print("所有实验运行完成！")
