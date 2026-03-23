@@ -70,31 +70,58 @@ class VisualizationHelper:
 
 class RecognitionModelVisualizer:
     @staticmethod
-    def visualize_model(model, save_dir=RESULT_DIR):
+    def visualize_model(model, all_model_results=None, save_dir=RESULT_DIR, show=False):
+        """
+        生成业务识别模型可视化
+
+        Args:
+            model: 训练好的模型
+            all_model_results: 所有模型的对比结果列表
+            save_dir: 保存目录
+            show: 是否显示图形窗口（默认False，只保存图片）
+        """
         print("\n生成业务识别模型可视化...")
         fig, axes = plt.subplots(2, 2, figsize=(14, 12))
         fig.suptitle('业务识别模型分析', fontsize=14, fontweight='bold')
 
-        # 特征重要性
+        # 模型性能对比图（替换特征重要性）
         ax = axes[0, 0]
-        importance = None
-        if model.feature_importance is not None:
-            importance = model.feature_importance
-        elif hasattr(model.model, 'feature_importances_'):
-            importance = model.model.feature_importances_
-            model.feature_importance = importance
-        if importance is not None:
-            features = model.model_info.get('feature_names', ['delay', 'bandwidth', 'loss_rate', 'jitter'])
-            colors = plt.cm.viridis(np.linspace(0.3, 0.9, len(features)))
-            bars = ax.barh(features, importance, color=colors, alpha=0.8, edgecolor='white', linewidth=1.5)
-            ax.set_xlabel('重要性')
-            ax.set_title('特征重要性分析', fontweight='bold')
-            for bar, val in zip(bars, importance):
-                ax.text(val, bar.get_y() + bar.get_height()/2, f'{val:.3f}',
-                        ha='left', va='center', fontsize=10)
+        if all_model_results:
+            model_types = [r['type'].upper() for r in all_model_results]
+            combined_scores = [r['combined_score'] for r in all_model_results]
+
+            colors = []
+            for r in all_model_results:
+                if r['type'] == model.model_type:
+                    colors.append(COLORS['warning'])
+                else:
+                    colors.append(COLORS['primary'])
+
+            bars = ax.bar(model_types, combined_scores, color=colors, alpha=0.8,
+                         edgecolor='white', linewidth=1.5)
+            ax.set_ylim(0, max(combined_scores) * 1.1)
+            ax.set_ylabel('综合得分')
+            ax.set_title('各模型性能对比（多目标优化）', fontweight='bold')
+            ax.axhline(y=max(combined_scores), color=COLORS['warning'],
+                      linestyle='--', linewidth=1, alpha=0.5)
+
+            # 在柱子上显示数值
+            for bar, score in zip(bars, combined_scores):
+                ax.text(bar.get_x() + bar.get_width()/2, bar.get_height(),
+                       f'{score:.3f}', ha='center', va='bottom',
+                       fontsize=10, fontweight='bold')
+
+            # 添加图例说明
+            from matplotlib.patches import Patch
+            legend_elements = [
+                Patch(facecolor=COLORS['warning'], edgecolor='white',
+                     label=f'选中模型 ({model.model_type.upper()})'),
+                Patch(facecolor=COLORS['primary'], edgecolor='white', label='其他模型')
+            ]
+            ax.legend(handles=legend_elements, loc='upper right', fontsize=8)
         else:
-            ax.text(0.5, 0.5, '特征重要性不可用\n(当前模型类型不支持)',
-                    ha='center', va='center', transform=ax.transAxes, fontsize=10)
+            ax.text(0.5, 0.5, '模型对比数据不可用',
+                   ha='center', va='center', transform=ax.transAxes, fontsize=10)
 
         # 混淆矩阵
         ax = axes[0, 1]
@@ -149,5 +176,8 @@ class RecognitionModelVisualizer:
 
         plt.tight_layout()
         plt.savefig(os.path.join(save_dir, 'model_visualization.png'), dpi=200, bbox_inches='tight')
-        plt.show()
+        if show:
+            plt.show()
+        else:
+            plt.close()
         print(f"模型可视化已保存到 {save_dir}/model_visualization.png")

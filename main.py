@@ -18,12 +18,19 @@ def main(force_retrain=False, run_experiments=None):
     print("="*80)
 
     print("\n步骤1: 初始化业务识别模型...")
-    recognition_model = train_or_load_recognition_model(
+    recognition_model, all_model_results = train_or_load_recognition_model(
         force_retrain=force_retrain, compare_models=True, verbose=True)
     scaler = recognition_model.scaler
 
+    # 如果是加载已有模型，尝试加载保存的模型对比结果
+    if all_model_results is None and not force_retrain:
+        import pickle
+        all_results_file = "all_model_results.pkl"
+        if os.path.exists(all_results_file):
+            with open(all_results_file, 'rb') as f:
+                all_model_results = pickle.load(f)
+
     recognition_model.print_model_info()
-    RecognitionModelVisualizer.visualize_model(recognition_model)
 
     results = {}
     if run_experiments is None:
@@ -46,10 +53,15 @@ def main(force_retrain=False, run_experiments=None):
     print("所有实验运行完成！")
     print(f"结果已保存至: {os.path.abspath(RESULT_DIR)}")
     print("="*80)
+
+    # 在所有实验完成后生成可视化
+    print("\n生成模型可视化...")
+    RecognitionModelVisualizer.visualize_model(recognition_model, all_model_results, show=False)
+
     return results
 
 if __name__ == "__main__":
     set_global_seed(GLOBAL_SEED)
     # main(force_retrain=False, run_experiments=[1, 2, 3, 4])
-    main(force_retrain=False, run_experiments=[1])
+    main(force_retrain=False, run_experiments=[1, 2])
     # main(force_retrain=False, run_experiments=[1, 2, 3, 4])

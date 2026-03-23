@@ -790,11 +790,11 @@ class Experiment2:
 
         # 提升百分比
         ax = fig.add_subplot(gs[1,2:])
-        improvements = [(k,v) for k,v in summary['improvement'].items() if abs(v)>0.1 and k in Experiment3.METRICS]
+        improvements = [(k,v) for k,v in summary['improvement'].items() if abs(v)>0.1 and k in Experiment2.METRICS]
         improvements.sort(key=lambda x: abs(x[1]), reverse=True)
         if len(improvements) > 10:
             improvements = improvements[:10]
-        names = [Experiment3.METRICS[k] for k,_ in improvements]
+        names = [Experiment2.METRICS[k] for k,_ in improvements]
         values = [v for _,v in improvements]
         colors = [COLORS['success'] if v>0 else COLORS['danger'] for v in values]
         bars = ax.barh(names, values, color=colors, alpha=0.8, edgecolor='white', linewidth=1.5)
@@ -815,7 +815,7 @@ class Experiment2:
         ])
         im = ax.imshow(data, cmap='RdYlGn', aspect='auto', vmin=0, vmax=1)
         ax.set_xticks(range(len(metrics_subset)))
-        ax.set_xticklabels([Experiment3.METRICS[m] for m in metrics_subset], rotation=45, ha='right')
+        ax.set_xticklabels([Experiment2.METRICS[m] for m in metrics_subset], rotation=45, ha='right')
         ax.set_yticks([0,1])
         ax.set_yticklabels(['增强算法', '传统算法'])
         ax.set_title('性能指标热力图', fontweight='bold')
@@ -837,7 +837,7 @@ class Experiment2:
                 ax.errorbar(i+0.15, trad_mean, yerr=trad_std, fmt='s', color=COLORS['neutral'],
                             markersize=10, capsize=5, label='传统算法' if i==0 else '')
         ax.set_xticks(x_pos)
-        ax.set_xticklabels([Experiment3.METRICS[m] for m in metrics], rotation=15, ha='right')
+        ax.set_xticklabels([Experiment2.METRICS[m] for m in metrics], rotation=15, ha='right')
         ax.set_ylabel('数值')
         ax.set_title('关键指标分布对比', fontweight='bold')
         ax.legend()

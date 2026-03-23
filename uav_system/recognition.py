@@ -191,11 +191,6 @@ class BusinessRecognitionModel:
             print(f" F1分数: {self.model_info.get('f1_score', 0):.3f}")
             print(f" 交叉验证均值: {self.model_info.get('cross_val_mean', 0)*100:.2f}%")
             print(f" 推理延迟: {self.model_info.get('inference_latency_ms', 0):.3f} ms")
-            print(f"\n特征重要性:")
-            importance = self.model_info.get('feature_importance')
-            if importance:
-                for name, imp in zip(self.model_info.get('feature_names', []), importance):
-                    print(f" {name}: {imp:.3f}")
         else:
             print("模型信息不可用")
         print("="*60)
@@ -275,6 +270,7 @@ def train_or_load_recognition_model(force_retrain=False, compare_models=True, ve
     model_file = BusinessRecognitionModel.MODEL_FILE
     scaler_file = BusinessRecognitionModel.SCALER_FILE
     info_file = BusinessRecognitionModel.MODEL_INFO_FILE
+    all_results_file = "all_model_results.pkl"
 
     if not force_retrain and os.path.exists(model_file) and os.path.exists(scaler_file):
         if verbose:
@@ -286,7 +282,7 @@ def train_or_load_recognition_model(force_retrain=False, compare_models=True, ve
         if verbose:
             print(f"加载的模型在测试集上准确率: {acc*100:.2f}%, F1-score: {f1:.3f}")
         model.print_model_info()
-        return model
+        return model, None
 
     if verbose:
         print("未找到已保存模型或强制重新训练，开始训练...")
@@ -327,7 +323,7 @@ def train_or_load_recognition_model(force_retrain=False, compare_models=True, ve
             if m.inference_latency > MAX_ACCEPTABLE_LATENCY:
                 latency_penalty = 0.5
                 if verbose:
-                    print(f"  ⚠️ 延迟 {m.inference_latency:.2f}ms 超过阈值，应用惩罚")
+                    print(f"  [WARNING] 延迟 {m.inference_latency:.2f}ms 超过阈值，应用惩罚")
             
             # 多目标综合评分
             combined_score = (
@@ -356,7 +352,7 @@ def train_or_load_recognition_model(force_retrain=False, compare_models=True, ve
             print(f"{'模型':<8} {'准确率':<10} {'F1-score':<10} {'交叉验证':<10} {'延迟分数':<10} {'综合得分':<10} {'推理延迟':<12} {'状态':<6}")
             print("-"*110)
             for r in results:
-                status = "✓" if r['inference_latency_ms'] <= MAX_ACCEPTABLE_LATENCY else "✗"
+                status = "OK" if r['inference_latency_ms'] <= MAX_ACCEPTABLE_LATENCY else "FAIL"
                 print(f"{r['type']:<8} {r['accuracy']*100:>6.2f}% {r['f1']:>6.3f} "
                       f"{r['cross_val_mean']*100:>6.2f}% {r['latency_score']:>6.3f}   "
                       f"{r['combined_score']:>6.3f}   {r['inference_latency_ms']:>8.3f}ms   {status:<6}")
@@ -370,14 +366,21 @@ def train_or_load_recognition_model(force_retrain=False, compare_models=True, ve
                 print(f"  {i}. {r['type']}: 综合得分={r['combined_score']:.4f}{marker}")
             print()
         best_model.save()
+        
+        # 保存所有模型结果用于可视化
+        with open(all_results_file, 'wb') as f:
+            pickle.dump(results, f)
+        if verbose:
+            print(f"所有模型对比结果已保存至 {all_results_file}")
+        
         if verbose:
             print(f"\n最佳模型为 {best_model.model_type}，已保存。")
             best_model.print_model_info()
-        return best_model
+        return best_model, results
     else:
         model = BusinessRecognitionModel()
         model.train(X_train, y_train, model_type='rf')
         model.save()
         if verbose:
             model.print_model_info()
-        return model
+        return model, None
