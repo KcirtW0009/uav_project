@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import os
 from collections import defaultdict
 from typing import Dict, List, Any, Tuple
+from scipy import stats
 from .config import GLOBAL_SEED, set_global_seed, RESULT_DIR, COLORS, CMAP_PRIMARY, CMAP_SUCCESS, CMAP_WARNING
 from .business import BusinessType, QoSProfile, QOS_PROFILES
 from .satisfaction import HierarchicalSatisfactionMetric
@@ -59,23 +60,30 @@ class Experiment1:
 
         for rep in range(repeats):
             print(f"\n--- 重复 {rep+1}/{repeats} ---")
-            set_global_seed(GLOBAL_SEED + rep)
 
-            # 为每个准确率条件创建环境
+            # 为每个准确率条件创建环境，使用不同的seed以确保独立
             for condition_name, target_accuracy in Experiment1.ACCURACY_LEVELS.items():
+                # 使用rep和condition的组合生成独立seed
+                condition_seed = GLOBAL_SEED + rep * 1000 + hash(condition_name) % 1000
+                set_global_seed(condition_seed)
+
+                # 使用不带随机事件的环境进行对比实验
                 env = EnhancedNetworkEnvironment(
                     num_bs=8, num_uav=50,
                     recognition_model=None, scaler=None,
-                    seed=GLOBAL_SEED + rep
+                    seed=condition_seed,
+                    event_probability=0.0  # 关闭随机事件，专注于识别准确率的影响
                 )
-                
-                # 根据目标准确率设置UAV的识别类型
-                actual_accuracy = Experiment1._setup_recognition_with_accuracy(
-                    env, target_accuracy
+
+                # 根据目标准确率设置UAV的识别类型（使用确定性方法）
+                actual_accuracy = Experiment1._setup_recognition_with_accuracy_deterministic(
+                    env, target_accuracy, condition_seed
                 )
-                
+
                 env.recognition_updater = None
                 algo = EnhancedHandoverAlgorithm(env)
+                # 降低epsilon以减少随机探索对实验的干扰
+                algo.epsilon = 0.00  # 完全禁用探索以获得确定性的基线结果
 
                 # 运行仿真
                 for step in range(num_steps):
@@ -100,17 +108,17 @@ class Experiment1:
     @staticmethod
     def _setup_recognition_with_accuracy(env, target_accuracy):
         """
-        根据目标准确率设置UAV的识别类型
-        
+        根据目标准确率设置UAV的识别类型（随机版本，用于其他实验）
+
         Returns:
             actual_accuracy: 实际达到的准确率
         """
         correct_count = 0
         total_count = len(env.uavs)
-        
+
         for uav in env.uavs.values():
             true_type = uav.true_business_type
-            
+
             if np.random.random() < target_accuracy:
                 # 正确识别
                 recognized_type = true_type
@@ -119,12 +127,56 @@ class Experiment1:
                 # 错误识别：随机选择其他类型
                 other_types = [t for t in BusinessType if t != true_type]
                 recognized_type = np.random.choice(other_types)
-            
+
             # 设置识别结果和QoS配置
             uav.business_type = recognized_type
             uav.qos_profile = QOS_PROFILES[recognized_type]
             uav.recognition_confidence = 0.7 + np.random.random() * 0.25  # 0.7-0.95
-        
+
+        return correct_count / total_count if total_count > 0 else 0.0
+
+    @staticmethod
+    def _setup_recognition_with_accuracy_deterministic(env, target_accuracy, seed):
+        """
+        根据目标准确率设置UAV的识别类型（确定性版本，用于实验1）
+
+        使用确定性方法确保在相同seed下产生相同的错误模式，
+        这样可以准确对比不同准确率的影响。
+
+        Args:
+            env: 网络环境
+            target_accuracy: 目标准确率
+            seed: 随机种子（用于确保确定性）
+
+        Returns:
+            actual_accuracy: 实际达到的准确率
+        """
+        # 使用临时随机数生成器，避免影响主随机数流
+        rng = np.random.RandomState(seed)
+
+        correct_count = 0
+        total_count = len(env.uavs)
+
+        for uav in env.uavs.values():
+            true_type = uav.true_business_type
+
+            if rng.random() < target_accuracy:
+                # 正确识别
+                recognized_type = true_type
+                correct_count += 1
+            else:
+                # 错误识别：确定性选择其他类型（按轮询方式）
+                other_types = [t for t in BusinessType if t != true_type]
+                # 使用UAV ID的索引来选择错误类型，确保确定性
+                error_index = (uav.uav_id + int(target_accuracy * 1000)) % len(other_types)
+                recognized_type = other_types[error_index]
+
+            # 设置识别结果和QoS配置
+            uav.business_type = recognized_type
+            uav.qos_profile = QOS_PROFILES[recognized_type]
+            # 确定性设置置信度
+            uav.recognition_confidence = 0.825  # 固定在中间值
+
         return correct_count / total_count if total_count > 0 else 0.0
 
     @staticmethod
@@ -139,6 +191,8 @@ class Experiment1:
             results = results_by_accuracy[condition_name]
             summary[condition_name] = {
                 'satisfaction': avg_std('avg_satisfaction', results),
+                'true_satisfaction': avg_std('avg_true_satisfaction', results),
+                'resource_match': avg_std('resource_match_ratio', results),
                 'actual_accuracy': avg_std('actual_recognition_accuracy', results),
                 'handover_success': avg_std('handover_success_rate', results),
                 'throughput': avg_std('total_load', results),
@@ -156,20 +210,25 @@ class Experiment1:
             'medium': '70%准确率',
             'random': '33%准确率'
         }
-        
+
         headers = ["指标", "100%准确率", "85%准确率", "70%准确率", "33%准确率"]
-        
-        # 计算相对于100%准确率的性能损失
-        perfect_sat = summary['perfect']['satisfaction'][0]
-        
+
+        # 计算相对于100%准确率的性能损失(基于真实满意率)
+        perfect_sat = summary['perfect']['true_satisfaction'][0]
+
         rows = [
-            ["整体满足率"] + [
-                f"{summary[c]['satisfaction'][0]:.3f}±{summary[c]['satisfaction'][1]:.3f}"
+            ["真实满足率(基于真实需求)"] + [
+                f"{summary[c]['true_satisfaction'][0]:.3f}±{summary[c]['true_satisfaction'][1]:.3f}"
                 for c in ['perfect', 'high', 'medium', 'random']
             ],
-            ["性能损失"] + [
-                f"-" if c == 'perfect' else 
-                f"-{(perfect_sat - summary[c]['satisfaction'][0])*100:.2f}%"
+            ["性能损失(基于真实需求)"] + [
+                f"-"
+                if c == 'perfect' else
+                (f"{(summary[c]['true_satisfaction'][0] - perfect_sat)*100:+.2f}%")
+                for c in ['perfect', 'high', 'medium', 'random']
+            ],
+            ["资源匹配度"] + [
+                f"{summary[c]['resource_match'][0]:.3f}±{summary[c]['resource_match'][1]:.3f}"
                 for c in ['perfect', 'high', 'medium', 'random']
             ],
             ["关键业务满足率"] + [
@@ -189,28 +248,37 @@ class Experiment1:
                 for c in ['perfect', 'high', 'medium', 'random']
             ],
         ]
-        
+
         print("\n" + "="*100)
         print("实验1结果：识别准确率对系统性能的影响")
         print("="*100)
         VisualizationHelper.print_data_table("识别准确性价值分析", headers, rows)
-        
+
         # 打印关键结论
         print("\n【关键结论】")
-        high_loss = (perfect_sat - summary['high']['satisfaction'][0]) * 100
-        medium_loss = (perfect_sat - summary['medium']['satisfaction'][0]) * 100
-        random_loss = (perfect_sat - summary['random']['satisfaction'][0]) * 100
-        
-        print(f"  • 识别准确率从100%降至85%，性能损失: {high_loss:.2f}%")
-        print(f"  • 识别准确率从100%降至70%，性能损失: {medium_loss:.2f}%")
-        print(f"  • 识别准确率从100%降至33%，性能损失: {random_loss:.2f}%")
-        
-        if high_loss < 5:
-            print(f"  • 结论: 85%识别准确率已接近最优，继续提升收益有限")
-        elif medium_loss < 10:
-            print(f"  • 结论: 70%以上识别准确率可接受，低于此阈值性能显著下降")
+        high_loss = (perfect_sat - summary['high']['true_satisfaction'][0]) * 100
+        medium_loss = (perfect_sat - summary['medium']['true_satisfaction'][0]) * 100
+        random_loss = (perfect_sat - summary['random']['true_satisfaction'][0]) * 100
+
+        print(f"  • 识别准确率从100%降至85%，性能损失: {high_loss:+.2f}%")
+        print(f"  • 识别准确率从100%降至70%，性能损失: {medium_loss:+.2f}%")
+        print(f"  • 识别准确率从100%降至33%，性能损失: {random_loss:+.2f}%")
+
+        # 验证单调性
+        print(f"\n【数据一致性检查】")
+        sat_values = [summary[c]['true_satisfaction'][0] for c in ['perfect', 'high', 'medium', 'random']]
+        print(f"  真实满足率序列: {' → '.join([f'{v:.3f}' for v in sat_values])}")
+        if sat_values == sorted(sat_values, reverse=True):
+            print(f"  ✓ 真实满足率随准确率降低而下降 (符合预期)")
         else:
+            print(f"  ⚠ 真实满足率未随准确率单调下降 (可能存在异常)")
+
+        if abs(high_loss) < 5 and abs(medium_loss) < 5:
+            print(f"  • 结论: 85%和70%识别准确率性能接近，准确率影响较小")
+        elif high_loss > 10 or medium_loss > 10:
             print(f"  • 结论: 识别准确率对系统性能影响显著，应优先提升模型精度")
+        else:
+            print(f"  • 结论: 识别准确率对性能有影响，但85%以上已达到可接受水平")
         print("="*100)
 
     @staticmethod
@@ -223,32 +291,35 @@ class Experiment1:
         labels = ['100%', '85%', '70%', '33%']
         colors = [COLORS['success'], COLORS['primary'], COLORS['warning'], COLORS['danger']]
         
-        # 图1: 整体满足率 vs 识别准确率
+        # 图1: 真实满足率 vs 识别准确率
         ax = axes[0, 0]
         accuracies = [summary[c]['actual_accuracy'][0] * 100 for c in conditions]
-        satisfactions = [summary[c]['satisfaction'][0] for c in conditions]
-        ax.plot(accuracies, satisfactions, 'o-', color=COLORS['primary'], 
+        true_satisfactions = [summary[c]['true_satisfaction'][0] for c in conditions]
+        ax.plot(accuracies, true_satisfactions, 'o-', color=COLORS['primary'],
                 linewidth=2, markersize=10)
-        for i, (acc, sat) in enumerate(zip(accuracies, satisfactions)):
-            ax.annotate(labels[i], (acc, sat), textcoords="offset points", 
+        for i, (acc, sat) in enumerate(zip(accuracies, true_satisfactions)):
+            ax.annotate(labels[i], (acc, sat), textcoords="offset points",
                        xytext=(0, 10), ha='center', fontsize=10, fontweight='bold')
         ax.set_xlabel('识别准确率 (%)', fontsize=11)
-        ax.set_ylabel('整体满足率', fontsize=11)
-        ax.set_title('识别准确率 vs 系统性能', fontweight='bold')
+        ax.set_ylabel('真实满足率(基于真实需求)', fontsize=11)
+        ax.set_title('识别准确率 vs 真实系统性能', fontweight='bold')
         ax.grid(True, alpha=0.3)
 
         # 图2: 各指标对比柱状图
         ax = axes[0, 1]
         x = np.arange(len(labels))
-        width = 0.35
-        sat_values = [summary[c]['satisfaction'][0] for c in conditions]
+        width = 0.25
+        true_sat_values = [summary[c]['true_satisfaction'][0] for c in conditions]
         crit_values = [summary[c]['critical_sat'][0] for c in conditions]
-        bars1 = ax.bar(x - width/2, sat_values, width, label='整体满足率', 
+        res_match_values = [summary[c]['resource_match'][0] for c in conditions]
+        bars1 = ax.bar(x - width, true_sat_values, width, label='真实满足率',
                        color=COLORS['primary'], alpha=0.8)
-        bars2 = ax.bar(x + width/2, crit_values, width, label='关键业务满足率',
+        bars2 = ax.bar(x, crit_values, width, label='关键业务满足率',
                        color=COLORS['danger'], alpha=0.8)
-        ax.set_ylabel('满足率', fontsize=11)
-        ax.set_title('不同准确率下的满足率对比', fontweight='bold')
+        bars3 = ax.bar(x + width, res_match_values, width, label='资源匹配度',
+                       color=COLORS['success'], alpha=0.8)
+        ax.set_ylabel('指标值', fontsize=11)
+        ax.set_title('不同准确率下的性能指标对比', fontweight='bold')
         ax.set_xticks(x)
         ax.set_xticklabels(labels)
         ax.legend()
@@ -256,8 +327,8 @@ class Experiment1:
 
         # 图3: 性能损失曲线
         ax = axes[1, 0]
-        perfect_sat = summary['perfect']['satisfaction'][0]
-        losses = [(perfect_sat - summary[c]['satisfaction'][0]) * 100 
+        perfect_sat = summary['perfect']['true_satisfaction'][0]
+        losses = [(perfect_sat - summary[c]['true_satisfaction'][0]) * 100
                   for c in conditions]
         bars = ax.bar(labels, losses, color=colors, alpha=0.8, edgecolor='white', linewidth=2)
         ax.set_ylabel('性能损失 (%)', fontsize=11)
@@ -501,6 +572,221 @@ class Experiment2:
         plt.show()
 
 
+# -------------------- 统计检验工具函数 --------------------
+
+def perform_statistical_test(group1: List[float], group2: List[float],
+                            test_name: str = 'ttest',
+                            alpha: float = 0.05) -> Dict[str, Any]:
+    """
+    执行统计显著性检验
+
+    Args:
+        group1: 第一组数据
+        group2: 第二组数据
+        test_name: 检验方法 ('ttest', 'mannwhitney', 'wilcoxon')
+        alpha: 显著性水平
+
+    Returns:
+        Dict: 包含检验结果,包括统计量、p值、是否显著等
+    """
+    # 计算描述性统计
+    result = {
+        'group1': {
+            'mean': np.mean(group1),
+            'std': np.std(group1),
+            'count': len(group1),
+            'median': np.median(group1)
+        },
+        'group2': {
+            'mean': np.mean(group2),
+            'std': np.std(group2),
+            'count': len(group2),
+            'median': np.median(group2)
+        },
+        'effect_size': None,
+        'test_method': test_name,
+        'alpha': alpha
+    }
+
+    # 执行统计检验
+    if test_name == 'ttest':
+        # 独立样本t检验 (假设正态分布)
+        statistic, p_value = stats.ttest_ind(group1, group2)
+        result['statistic'] = statistic
+        result['p_value'] = p_value
+        result['significant'] = p_value < alpha
+
+        # 计算Cohen's d效应量
+        pooled_std = np.sqrt((np.var(group1) + np.var(group2)) / 2)
+        if pooled_std != 0:
+            cohens_d = (np.mean(group1) - np.mean(group2)) / pooled_std
+            result['effect_size'] = cohens_d
+            result['effect_size_interpretation'] = _interpret_cohens_d(cohens_d)
+
+    elif test_name == 'mannwhitney':
+        # Mann-Whitney U检验 (非参数检验)
+        statistic, p_value = stats.mannwhitneyu(group1, group2, alternative='two-sided')
+        result['statistic'] = statistic
+        result['p_value'] = p_value
+        result['significant'] = p_value < alpha
+
+        # 计算秩和效应量
+        n1, n2 = len(group1), len(group2)
+        u = statistic
+        z = (u - n1 * n2 / 2) / np.sqrt(n1 * n2 * (n1 + n2 + 1) / 12)
+        r = z / np.sqrt(n1 + n2)
+        result['effect_size'] = r
+        result['effect_size_interpretation'] = _interpret_rank_biserial(r)
+
+    elif test_name == 'wilcoxon':
+        # Wilcoxon符号秩检验 (配对数据)
+        if len(group1) != len(group2):
+            raise ValueError("Wilcoxon检验需要两组数据长度相同")
+        statistic, p_value = stats.wilcoxon(group1, group2)
+        result['statistic'] = statistic
+        result['p_value'] = p_value
+        result['significant'] = p_value < alpha
+
+    else:
+        raise ValueError(f"未知的检验方法: {test_name}")
+
+    return result
+
+
+def _interpret_cohens_d(d: float) -> str:
+    """解释Cohen's d效应量"""
+    abs_d = abs(d)
+    if abs_d < 0.2:
+        return '微小'
+    elif abs_d < 0.5:
+        return '小'
+    elif abs_d < 0.8:
+        return '中等'
+    else:
+        return '大'
+
+
+def _interpret_rank_biserial(r: float) -> str:
+    """解释秩相关效应量"""
+    abs_r = abs(r)
+    if abs_r < 0.1:
+        return '微小'
+    elif abs_r < 0.3:
+        return '小'
+    elif abs_r < 0.5:
+        return '中等'
+    else:
+        return '大'
+
+
+def print_statistical_results(results: Dict[str, Any], metric_name: str = 'Metric'):
+    """打印统计检验结果"""
+    print(f"\n{'='*60}")
+    print(f"{metric_name} 统计显著性检验")
+    print(f"{'='*60}")
+
+    print(f"\n【描述性统计】")
+    print(f"  组1 (n={results['group1']['count']}):  "
+          f"均值={results['group1']['mean']:.4f}±{results['group1']['std']:.4f}, "
+          f"中位数={results['group1']['median']:.4f}")
+    print(f"  组2 (n={results['group2']['count']}):  "
+          f"均值={results['group2']['mean']:.4f}±{results['group2']['std']:.4f}, "
+          f"中位数={results['group2']['median']:.4f}")
+
+    print(f"\n【统计检验结果】")
+    print(f"  检验方法: {results['test_method']}")
+    print(f"  统计量: {results['statistic']:.4f}")
+    print(f"  p值: {results['p_value']:.6f}")
+    print(f"  显著性水平: {results['alpha']}")
+    print(f"  是否显著: {'是 ✓' if results['significant'] else '否 ✗'}")
+
+    if results['effect_size'] is not None:
+        print(f"  效应量: {results['effect_size']:.4f} ({results['effect_size_interpretation']})")
+
+    # 打印结论
+    print(f"\n【结论】")
+    if results['significant']:
+        if results['group1']['mean'] > results['group2']['mean']:
+            direction = "组1显著高于组2"
+        else:
+            direction = "组1显著低于组2"
+        print(f"  在α={results['alpha']}水平下,{direction} (p={results['p_value']:.4f})")
+    else:
+        print(f"  在α={results['alpha']}水平下,两组差异无统计学意义 (p={results['p_value']:.4f})")
+
+    print(f"{'='*60}\n")
+
+
+def compare_algorithms_with_tests(enhanced_results: List[Dict],
+                                  traditional_results: List[Dict],
+                                  metrics: List[str]) -> Dict[str, Dict]:
+    """
+    对增强算法和传统算法进行多指标的统计显著性检验
+
+    Args:
+        enhanced_results: 增强算法的多次运行结果
+        traditional_results: 传统算法的多次运行结果
+        metrics: 需要检验的指标列表
+
+    Returns:
+        Dict: 每个指标的检验结果
+    """
+    all_test_results = {}
+
+    for metric in metrics:
+        if metric in enhanced_results[0] and metric in traditional_results[0]:
+            group1 = [r[metric] for r in enhanced_results]
+            group2 = [r[metric] for r in traditional_results]
+
+            # 自动选择检验方法
+            # Shapiro-Wilk正态性检验
+            _, p1 = stats.shapiro(group1)
+            _, p2 = stats.shapiro(group2)
+
+            if p1 > 0.05 and p2 > 0.05:
+                # 都符合正态分布,使用t检验
+                test_method = 'ttest'
+            else:
+                # 不符合正态分布,使用非参数检验
+                test_method = 'mannwhitney'
+
+            test_results = perform_statistical_test(group1, group2,
+                                                     test_name=test_method,
+                                                     alpha=0.05)
+            all_test_results[metric] = test_results
+
+    return all_test_results
+
+
+def print_comprehensive_test_summary(all_test_results: Dict[str, Dict],
+                                    enhanced_name: str = '增强算法',
+                                    traditional_name: str = '传统算法'):
+    """打印综合检验结果摘要"""
+    print(f"\n{'='*80}")
+    print(f"综合统计显著性检验摘要: {enhanced_name} vs {traditional_name}")
+    print(f"{'='*80}")
+
+    significant_count = 0
+    total_count = 0
+
+    for metric, results in all_test_results.items():
+        total_count += 1
+        print(f"\n【{metric}】")
+        print(f"  {enhanced_name}: {results['group1']['mean']:.4f}±{results['group1']['std']:.4f}")
+        print(f"  {traditional_name}: {results['group2']['mean']:.4f}±{results['group2']['std']:.4f}")
+        print(f"  p值: {results['p_value']:.6f}")
+        if results['significant']:
+            significant_count += 1
+            direction = "↑" if results['group1']['mean'] > results['group2']['mean'] else "↓"
+            print(f"  结论: 显著差异 {direction} (效应量={results.get('effect_size', 0):.4f})")
+        else:
+            print(f"  结论: 无显著差异")
+
+    print(f"\n{'='*80}")
+    print(f"总结: {significant_count}/{total_count} 个指标具有显著差异")
+    print(f"{'='*80}\n")
+
+
 # -------------------- 实验3 --------------------
 class Experiment3:
     METRICS = {
@@ -574,6 +860,31 @@ class Experiment3:
 
         summary = Experiment3._summarize(enhanced_results, traditional_results)
         Experiment3._print_results_table(summary)
+
+        # 添加统计显著性检验
+        print("\n" + "="*80)
+        print("统计显著性检验")
+        print("="*80)
+
+        metrics_to_test = [
+            'avg_satisfaction',
+            'handover_success_rate',
+            'critical_satisfaction',
+            'avg_switching_latency_ms',
+            'avg_decision_time_ms',
+            'total_load',
+            'load_variance'
+        ]
+
+        all_test_results = compare_algorithms_with_tests(
+            enhanced_results, traditional_results, metrics_to_test
+        )
+
+        print_comprehensive_test_summary(all_test_results, "增强算法", "传统算法")
+
+        # 将检验结果添加到summary中
+        summary['statistical_tests'] = all_test_results
+
         Experiment3._plot(summary)
         return summary
 

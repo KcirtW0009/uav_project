@@ -281,6 +281,10 @@ class EnhancedHandoverAlgorithm:
                 t_end = time()
                 self.decision_time_history.append((t_end - t_start) * 1000)
                 return (best_bs, best_ratio)
+            # emergency分支下但无可用基站,也记录时间
+            t_end = time()
+            self.decision_time_history.append((t_end - t_start) * 1000)
+            return None
         feasible_ratios = uav.qos_profile.get_feasible_downgrade_ratios()
         candidates = []
         for bs_id in self.env.base_stations.keys():

@@ -117,7 +117,10 @@ class UAV:
 
     @property
     def current_satisfaction(self) -> float:
-        return self.qos_profile.calculate_satisfaction(self.current_allocated_rate)
+        # 使用真实业务类型的QoS配置计算满意率,反映真实用户体验
+        # 这确保了识别准确率的下降会正确地反映在性能指标上
+        true_qos = QOS_PROFILES[self.true_business_type]
+        return true_qos.calculate_satisfaction(self.current_allocated_rate)
 
     def update_recognition(self, recognized_type: BusinessType, confidence: float):
         old_type = self.business_type

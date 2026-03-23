@@ -24,6 +24,14 @@ def set_global_seed(seed=GLOBAL_SEED):
 RESULT_DIR = "experiment_results"
 os.makedirs(RESULT_DIR, exist_ok=True)
 
+# 中断检测配置
+INTERRUPTION_CONFIG = {
+    'threshold': 0.3,        # 满足率阈值,低于此值视为中断
+    'duration': 5,            # 持续步数,低于阈值且持续N步才计为中断
+    'control_signal_threshold': 0.4,  # 控制信令业务的中断阈值(更高要求)
+    'control_signal_duration': 3      # 控制信令业务的持续步数(更严格要求)
+}
+
 # 自定义颜色方案
 COLORS = {
     'control': '#FF6B6B',
