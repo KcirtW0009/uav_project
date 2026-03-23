@@ -10,7 +10,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from uav_system.config import set_global_seed, GLOBAL_SEED, RESULT_DIR
 from uav_system.recognition import train_or_load_recognition_model
 from uav_system.visualization import RecognitionModelVisualizer
-from uav_system.experiments import Experiment1, Experiment2, Experiment3, Experiment4, Experiment5
+from uav_system.experiments import Experiment1, Experiment2, Experiment3, Experiment4
 
 def main(force_retrain=False, run_experiments=None):
     print("\n" + "="*80)
@@ -27,7 +27,7 @@ def main(force_retrain=False, run_experiments=None):
 
     results = {}
     if run_experiments is None:
-        run_experiments = [1, 2, 3, 4, 5]
+        run_experiments = [1, 2, 3, 4]
 
     for exp_id in run_experiments:
         print(f"\n{'='*80}")
@@ -36,13 +36,11 @@ def main(force_retrain=False, run_experiments=None):
         if exp_id == 1:
             results['exp1'] = Experiment1.run(recognition_model, scaler, num_steps=150, repeats=10)  # 实验1：增加重复次数提高统计显著性
         elif exp_id == 2:
-            results['exp2'] = Experiment2.run(recognition_model, scaler, num_steps=200, repeats=10)  # 实验2：已为10次重复
+            results['exp2'] = Experiment2.run(recognition_model, scaler, num_steps=200, repeats=10)  # 实验2：增强算法 vs 传统算法
         elif exp_id == 3:
-            results['exp3'] = Experiment3.run(recognition_model, scaler, num_steps=200, repeats=10)  # 实验3：增加到10次重复
+            results['exp3'] = Experiment3.run(recognition_model, scaler, num_steps=150, repeats=10)  # 实验3：机制有效性验证
         elif exp_id == 4:
-            results['exp4'] = Experiment4.run(recognition_model, scaler, num_steps=150, repeats=10)  # 实验4：增加到10次重复
-        elif exp_id == 5:
-            results['exp5'] = Experiment5.run(recognition_model, scaler, num_steps=150, repeats=10)  # 实验5：增加到10次重复
+            results['exp4'] = Experiment4.run(recognition_model, scaler, num_steps=150, repeats=10)  # 实验4：多场景对比
 
     print("\n" + "="*80)
     print("所有实验运行完成！")
@@ -52,6 +50,6 @@ def main(force_retrain=False, run_experiments=None):
 
 if __name__ == "__main__":
     set_global_seed(GLOBAL_SEED)
-    # main(force_retrain=False, run_experiments=[1, 2, 3, 4, 5])
+    # main(force_retrain=False, run_experiments=[1, 2, 3, 4])
     main(force_retrain=False, run_experiments=[1])
-    # main(force_retrain=False, run_experiments=[1, 2, 3, 4, 5])
+    # main(force_retrain=False, run_experiments=[1, 2, 3, 4])
