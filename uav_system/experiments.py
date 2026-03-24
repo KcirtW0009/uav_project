@@ -1176,6 +1176,400 @@ class Experiment2:
         plt.show()
 
 
+# -------------------- 实验2b：机制组合验证 --------------------
+class Experiment2b:
+    """
+    实验2b：机制组合验证
+
+    测试不同机制组合的性能，验证机制间的交互效应，
+    找到在当前规模下的最优配置。
+
+    设计原因：
+    - 实验2发现ε-greedy在"逐步添加"时导致性能下降(-4.7%)
+    - 但在"禁用"时却是正面的(+4.8%)
+    - 需要通过组合验证找出机制间的交互效应
+    """
+    COMBINATIONS = {
+        'traditional': '传统算法',
+        'dyn_thresh': '+动态阈值',
+        'weights': '+业务权重',
+        'epsilon': '+ε-greedy',
+        'load_balance': '+负载均衡',
+        'dyn_thresh_weights': '动态阈值+业务权重',
+        'dyn_thresh_epsilon': '动态阈值+ε-greedy',
+        'weights_epsilon': '业务权重+ε-greedy',
+        'dyn_thresh_weights_epsilon': '动态阈值+业务权重+ε-greedy',
+        'dyn_thresh_weights_lb': '动态阈值+业务权重+负载均衡',
+        'dyn_thresh_epsilon_lb': '动态阈值+ε-greedy+负载均衡',
+        'weights_epsilon_lb': '业务权重+ε-greedy+负载均衡',
+        'dyn_thresh_weights_epsilon_lb': '动态阈值+业务权重+ε-greedy+负载均衡',
+        'full': '完整增强算法(含自适应识别)',
+    }
+
+    @staticmethod
+    def run(recognition_model, scaler, num_steps=150, repeats=8):
+        print("\n" + "="*80)
+        print("实验2b：机制组合验证")
+        print("="*80)
+        print("\n实验目的：验证不同机制组合的性能，找出机制间的交互效应")
+        print("\n测试组合：")
+        print("  - 单机制：动态阈值、业务权重、ε-greedy、负载均衡")
+        print("  - 双机制组合：各两两组合")
+        print("  - 三机制组合：关键三机制")
+        print("  - 四机制组合：所有核心机制")
+        print("  - 完整算法：包含自适应识别")
+        print("="*80)
+
+        results = {key: [] for key in Experiment2b.COMBINATIONS.keys()}
+
+        for rep in range(repeats):
+            print(f"\n--- 重复 {rep+1}/{repeats} ---")
+            set_global_seed(GLOBAL_SEED + rep)
+
+            for combo_name in Experiment2b.COMBINATIONS.keys():
+                env = EnhancedNetworkEnvironment(
+                    num_bs=8, num_uav=50,
+                    recognition_model=recognition_model, scaler=scaler,
+                    seed=GLOBAL_SEED + rep, event_probability=0.05
+                )
+
+                # 根据组合配置创建算法
+                if combo_name == 'traditional':
+                    algo = IntegratedHandoverAlgorithm(env)
+                    enable_lb = False
+                else:
+                    algo = EnhancedHandoverAlgorithm(env)
+
+                    # 解析组合配置
+                    has_dyn_thresh = 'dyn_thresh' in combo_name
+                    has_weights = 'weights' in combo_name
+                    has_epsilon = 'epsilon' in combo_name
+                    has_lb = 'load_balance' in combo_name or 'lb' in combo_name
+
+                    # 配置各机制
+                    if not has_dyn_thresh:
+                        # 禁用动态阈值
+                        algo.base_threshold = 0.005
+                        algo.calculate_dynamic_threshold = lambda uav: 0.005
+
+                    if not has_weights:
+                        # 禁用业务权重
+                        for bt in BusinessType:
+                            algo.business_weights[bt] = {'sinr': 0.4, 'load': 0.3, 'rate': 0.3}
+
+                    if not has_epsilon:
+                        # 禁用ε-greedy
+                        algo.epsilon = 0.0
+
+                    enable_lb = has_lb
+
+                    # 完整算法额外启用自适应识别
+                    if combo_name == 'full':
+                        # 自适应识别由环境控制，无需额外配置
+                        pass
+
+                # 运行仿真
+                for step in range(num_steps):
+                    env.step()
+                    if combo_name == 'traditional':
+                        algo.run_step()
+                    else:
+                        algo.run_step(enable_load_balancing=enable_lb)
+
+                stats = env.get_state_statistics()
+                if hasattr(algo, 'get_detailed_stats'):
+                    stats.update(algo.get_detailed_stats())
+                results[combo_name].append(stats)
+
+                if rep == 0:  # 只在第一次重复时打印，避免输出过多
+                    print(f" {Experiment2b.COMBINATIONS[combo_name]:40s}: "
+                          f"满足率={stats['avg_satisfaction']:.4f}")
+
+        summary = Experiment2b._summarize(results)
+        Experiment2b._print_results_table(summary)
+        Experiment2b._plot(summary)
+        return summary
+
+    @staticmethod
+    def _summarize(results):
+        summary = {}
+        for combo_name, data_list in results.items():
+            summary[combo_name] = {}
+            for key in ['avg_satisfaction', 'handover_success_rate', 'critical_satisfaction',
+                        'weighted_satisfaction', 'total_load', 'load_variance']:
+                if key in data_list[0]:
+                    vals = [d[key] for d in data_list]
+                    summary[combo_name][key] = (np.mean(vals), np.std(vals))
+        return summary
+
+    @staticmethod
+    def _print_results_table(summary):
+        # 按性能排序
+        sorted_combos = sorted(summary.keys(),
+                           key=lambda x: summary[x]['avg_satisfaction'][0],
+                           reverse=True)
+
+        print("\n" + "="*100)
+        print("【按性能排序的机制组合】")
+        print("="*100)
+
+        headers = ["排名", "组合名称", "整体满足率", "切换成功率", "关键业务满足率", "提升(相对传统)"]
+        rows = []
+
+        trad_sat = summary.get('traditional', {}).get('avg_satisfaction', (0, 0))[0]
+
+        for rank, combo in enumerate(sorted_combos, 1):
+            data = summary[combo]
+            sat_mean, sat_std = data['avg_satisfaction']
+            success_mean, success_std = data['handover_success_rate']
+            crit_mean, crit_std = data['critical_satisfaction']
+            improvement = ((sat_mean - trad_sat) / trad_sat * 100) if trad_sat > 0 else 0
+
+            row = [
+                f"{rank}",
+                Experiment2b.COMBINATIONS[combo],
+                f"{sat_mean:.4f}±{sat_std:.4f}",
+                f"{success_mean*100:.2f}%",
+                f"{crit_mean:.4f}±{crit_std:.4f}",
+                f"{improvement:+.2f}%"
+            ]
+            rows.append(row)
+
+        VisualizationHelper.print_data_table("实验2b结果：机制组合性能对比", headers, rows)
+
+        # 分析机制贡献
+        print("\n【机制贡献分析】")
+        print("\n单机制贡献（相对于传统算法）:")
+        for mechanism in ['dyn_thresh', 'weights', 'epsilon', 'load_balance']:
+            if mechanism in summary and 'traditional' in summary:
+                trad_sat = summary['traditional']['avg_satisfaction'][0]
+                mech_sat = summary[mechanism]['avg_satisfaction'][0]
+                contribution = mech_sat - trad_sat
+                pct = contribution / trad_sat * 100 if trad_sat > 0 else 0
+                print(f"  {Experiment2b.COMBINATIONS[mechanism]:20s}: "
+                      f"{contribution:+.4f} ({pct:+.2f}%)")
+
+        print("\n关键发现:")
+        best_combo = sorted_combos[0]
+        best_sat = summary[best_combo]['avg_satisfaction'][0]
+        full_sat = summary['full']['avg_satisfaction'][0] if 'full' in summary else 0
+
+        print(f"  1. 最优组合: {Experiment2b.COMBINATIONS[best_combo]} (满足率={best_sat:.4f})")
+        print(f"  2. 相对传统算法提升: {((best_sat-trad_sat)/trad_sat*100):.2f}%")
+        if 'full' in summary and best_combo != 'full':
+            print(f"  3. 相对完整算法差异: {(best_sat-full_sat):.4f}")
+            if best_sat > full_sat:
+                print(f"     [发现] 存在比完整算法更优的组合!")
+            else:
+                print(f"     [验证] 完整算法接近最优组合")
+
+        # 分析ε-greedy的作用
+        print("\n【ε-greedy机制分析】")
+        epsilon_present = ['dyn_thresh_epsilon', 'weights_epsilon', 'dyn_thresh_weights_epsilon',
+                        'dyn_thresh_epsilon_lb', 'weights_epsilon_lb', 'dyn_thresh_weights_epsilon_lb', 'full']
+        epsilon_absent = ['dyn_thresh', 'weights', 'dyn_thresh_weights', 'dyn_thresh_weights_lb']
+
+        avg_with_epsilon = np.mean([summary[c]['avg_satisfaction'][0]
+                                   for c in epsilon_present if c in summary])
+        avg_without_epsilon = np.mean([summary[c]['avg_satisfaction'][0]
+                                      for c in epsilon_absent if c in summary])
+
+        print(f"  含ε-greedy的平均满足率: {avg_with_epsilon:.4f}")
+        print(f"  不含ε-greedy的平均满足率: {avg_without_epsilon:.4f}")
+        print(f"  差异: {avg_with_epsilon-avg_without_epsilon:+.4f}")
+
+        if avg_with_epsilon < avg_without_epsilon:
+            print(f"  结论: ε-greedy在当前规模下总体起负面作用")
+        else:
+            print(f"  结论: ε-greedy在当前规模下总体起正面作用")
+
+        print("="*100)
+
+    @staticmethod
+    def _plot(summary):
+        fig = plt.figure(figsize=(20, 14))
+        fig.suptitle('实验2b：机制组合验证', fontsize=16, fontweight='bold')
+        gs = fig.add_gridspec(3, 3, hspace=0.35, wspace=0.3)
+
+        # 1. 按性能排名的柱状图
+        ax = fig.add_subplot(gs[0, :2])
+        sorted_combos = sorted(summary.keys(),
+                           key=lambda x: summary[x]['avg_satisfaction'][0],
+                           reverse=True)
+        sats = [summary[c]['avg_satisfaction'][0] for c in sorted_combos]
+        names = [Experiment2b.COMBINATIONS[c] for c in sorted_combos]
+        colors = plt.cm.RdYlGn(np.linspace(0.3, 0.9, len(sats)))
+        bars = ax.barh(names, sats, color=colors, alpha=0.8, edgecolor='white', linewidth=1.5)
+        ax.set_xlabel('整体满足率')
+        ax.set_title('各机制组合性能排名', fontweight='bold')
+        ax.grid(True, alpha=0.3, axis='x')
+        for bar, val in zip(bars, sats):
+            ax.text(val, bar.get_y() + bar.get_height()/2, f'{val:.4f}',
+                   ha='left', va='center', fontsize=9)
+
+        # 2. 机制组合热力图 (单机制)
+        ax = fig.add_subplot(gs[0, 2])
+        mechanisms = ['传统', '动态\n阈值', '业务\n权重', 'ε-\ngreedy', '负载\n均衡']
+        combos = ['traditional', 'dyn_thresh', 'weights', 'epsilon', 'load_balance']
+        values = [summary[c]['avg_satisfaction'][0] if c in summary else 0 for c in combos]
+        im = ax.imshow([values], cmap='RdYlGn', aspect='auto', vmin=0.6, vmax=0.9)
+        ax.set_xticks(range(len(mechanisms)))
+        ax.set_xticklabels(mechanisms, fontsize=9)
+        ax.set_yticks([])
+        ax.set_title('单机制性能热力图', fontweight='bold')
+        for i, val in enumerate(values):
+            ax.text(i, 0, f'{val:.4f}', ha='center', va='center',
+                   fontsize=10, fontweight='bold',
+                   color='black' if val < 0.75 else 'white')
+        plt.colorbar(im, ax=ax)
+
+        # 3. 双机制组合矩阵
+        ax = fig.add_subplot(gs[1, :2])
+        mech_list = ['dyn_thresh', 'weights', 'epsilon', 'load_balance']
+        mech_names = ['动态阈值', '业务权重', 'ε-greedy', '负载均衡']
+
+        # 构建矩阵
+        matrix = np.zeros((4, 4))
+        for i in range(4):
+            for j in range(i, 4):
+                combo_name = f"{mech_list[i]}_{mech_list[j]}"
+                if combo_name in summary:
+                    matrix[i, j] = summary[combo_name]['avg_satisfaction'][0]
+                elif i == j:
+                    # 对角线是单机制
+                    matrix[i, j] = summary[mech_list[i]]['avg_satisfaction'][0]
+
+        im = ax.imshow(matrix, cmap='RdYlGn', vmin=0.7, vmax=0.9, aspect='auto')
+        ax.set_xticks(range(4))
+        ax.set_yticks(range(4))
+        ax.set_xticklabels(mech_names)
+        ax.set_yticklabels(mech_names)
+        ax.set_title('双机制组合性能矩阵', fontweight='bold')
+        for i in range(4):
+            for j in range(i, 4):
+                val = matrix[i, j]
+                ax.text(j, i, f'{val:.4f}', ha='center', va='center',
+                       fontsize=9, fontweight='bold',
+                       color='black' if val < 0.78 else 'white')
+        plt.colorbar(im, ax=ax)
+
+        # 4. ε-greedy作用对比
+        ax = fig.add_subplot(gs[1, 2])
+        no_epsilon_combos = ['dyn_thresh', 'weights', 'dyn_thresh_weights', 'dyn_thresh_weights_lb']
+        with_epsilon_combos = ['dyn_thresh_epsilon', 'weights_epsilon',
+                             'dyn_thresh_weights_epsilon', 'dyn_thresh_weights_epsilon_lb']
+
+        no_epsilon_sats = [summary[c]['avg_satisfaction'][0] for c in no_epsilon_combos if c in summary]
+        with_epsilon_sats = [summary[c]['avg_satisfaction'][0] for c in with_epsilon_combos if c in summary]
+
+        x = range(len(no_epsilon_sats))
+        width = 0.35
+
+        ax.bar([i-width/2 for i in x], no_epsilon_sats, width,
+               label='不含ε-greedy', color=COLORS['primary'], alpha=0.8)
+        ax.bar([i+width/2 for i in x], with_epsilon_sats, width,
+               label='含ε-greedy', color=COLORS['neutral'], alpha=0.8)
+
+        labels = ['动态阈值', '业务权重', '动态+业务',
+                 '动态+业务+负载']
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, rotation=15, ha='right', fontsize=8)
+        ax.set_ylabel('整体满足率')
+        ax.set_title('ε-greedy作用对比', fontweight='bold')
+        ax.legend()
+        ax.grid(True, alpha=0.3, axis='y')
+
+        # 5. 负载均衡作用对比
+        ax = fig.add_subplot(gs[2, 0])
+        no_lb_combos = ['dyn_thresh', 'weights', 'dyn_thresh_weights',
+                       'dyn_thresh_epsilon', 'weights_epsilon', 'dyn_thresh_weights_epsilon']
+        with_lb_combos = ['dyn_thresh_weights_lb', 'dyn_thresh_epsilon_lb',
+                         'weights_epsilon_lb', 'dyn_thresh_weights_epsilon_lb']
+
+        no_lb_sats = [summary[c]['avg_satisfaction'][0] for c in no_lb_combos if c in summary]
+        with_lb_sats = [summary[c]['avg_satisfaction'][0] for c in with_lb_combos if c in summary]
+
+        # 计算平均提升
+        no_lb_avg = np.mean(no_lb_sats)
+        with_lb_avg = np.mean(with_lb_sats)
+        lb_improvement = (with_lb_avg - no_lb_avg) / no_lb_avg * 100 if no_lb_avg > 0 else 0
+
+        ax.bar(['无负载均衡', '有负载均衡'], [no_lb_avg, with_lb_avg],
+               color=[COLORS['neutral'], COLORS['primary']], alpha=0.8)
+        ax.set_ylabel('平均满足率')
+        ax.set_title(f'负载均衡作用 (提升{lb_improvement:+.2f}%)', fontweight='bold')
+        ax.grid(True, alpha=0.3, axis='y')
+
+        # 6. 关键指标散点图
+        ax = fig.add_subplot(gs[2, 1])
+        all_combos = list(summary.keys())
+        x_vals = [summary[c]['handover_success_rate'][0]*100 for c in all_combos]
+        y_vals = [summary[c]['avg_satisfaction'][0] for c in all_combos]
+        colors = plt.cm.RdYlGn(y_vals)
+
+        ax.scatter(x_vals, y_vals, s=100, c=colors, alpha=0.7, edgecolors='white', linewidth=1.5)
+        ax.set_xlabel('切换成功率 (%)')
+        ax.set_ylabel('整体满足率')
+        ax.set_title('切换成功率 vs 整体满足率', fontweight='bold')
+        ax.grid(True, alpha=0.3)
+
+        # 标注最优组合
+        best_idx = np.argmax(y_vals)
+        ax.scatter([x_vals[best_idx]], [y_vals[best_idx]],
+                  s=200, c='gold', edgecolors='red', linewidth=2, marker='*',
+                  label=f"最优: {Experiment2b.COMBINATIONS[all_combos[best_idx]]}")
+        ax.legend(fontsize=8)
+
+        # 7. 关键文本摘要
+        ax = fig.add_subplot(gs[2, 2])
+        ax.axis('off')
+
+        best_combo = sorted_combos[0]
+        best_sat = summary[best_combo]['avg_satisfaction'][0]
+        trad_sat = summary['traditional']['avg_satisfaction'][0]
+        full_sat = summary['full']['avg_satisfaction'][0]
+
+        text = f"【实验2b关键发现】\n\n"
+        text += f"最优组合: {Experiment2b.COMBINATIONS[best_combo]}\n"
+        text += f"满足率: {best_sat:.4f}\n\n"
+        text += f"相对传统算法: {((best_sat-trad_sat)/trad_sat*100):.2f}% 提升\n"
+        text += f"相对完整算法: {((best_sat-full_sat)/full_sat*100):+.2f}% 差异\n\n"
+
+        # 找出最优组合包含的机制
+        best_mechs = []
+        if 'dyn_thresh' in best_combo or 'thresh' in best_combo:
+            best_mechs.append('动态阈值')
+        if 'weights' in best_combo:
+            best_mechs.append('业务权重')
+        if 'epsilon' in best_combo:
+            best_mechs.append('ε-greedy')
+        if 'lb' in best_combo or 'load_balance' in best_combo:
+            best_mechs.append('负载均衡')
+
+        text += f"核心机制: {', '.join(best_mechs)}\n\n"
+
+        # ε-greedy结论
+        if 'epsilon' not in best_combo:
+            text += f"[结论] 最优组合不含ε-greedy\n"
+            text += f"      说明该机制在当前规模下不适用\n"
+        else:
+            text += f"[结论] 最优组合含ε-greedy\n"
+
+        # 负载均衡结论
+        if ('lb' not in best_combo and 'load_balance' not in best_combo):
+            text += f"[结论] 最优组合不含负载均衡\n"
+            text += f"      说明该机制贡献有限\n"
+        else:
+            text += f"[结论] 最优组合含负载均衡\n"
+
+        ax.text(0.05, 0.95, text, transform=ax.transAxes,
+               fontsize=11, verticalalignment='top',
+               bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+
+        plt.savefig(os.path.join(RESULT_DIR, 'exp2b_results.png'), dpi=200, bbox_inches='tight')
+        plt.show()
+
+
 # -------------------- 实验4 --------------------
 class Experiment4:
     SCENARIOS = {

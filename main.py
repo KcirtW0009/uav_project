@@ -10,7 +10,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from uav_system.config import set_global_seed, GLOBAL_SEED, RESULT_DIR
 from uav_system.recognition import train_or_load_recognition_model
 from uav_system.visualization import RecognitionModelVisualizer
-from uav_system.experiments import Experiment1, Experiment2, Experiment3, Experiment4
+from uav_system.experiments import Experiment1, Experiment2, Experiment2b, Experiment3, Experiment4
 
 def main(force_retrain=False, run_experiments=None):
     print("\n" + "="*80)
@@ -36,18 +36,25 @@ def main(force_retrain=False, run_experiments=None):
     if run_experiments is None:
         run_experiments = [1, 2, 3, 4]
 
-    for exp_id in run_experiments:
+    # 将数字转换为字符串,统一处理
+    run_experiments_str = [str(exp) for exp in run_experiments]
+
+    for exp_id_str in run_experiments_str:
         print(f"\n{'='*80}")
-        print(f"运行实验 {exp_id}")
+        print(f"运行实验 {exp_id_str}")
         print('='*80)
-        if exp_id == 1:
+        if exp_id_str == '1':
             results['exp1'] = Experiment1.run(recognition_model, scaler, num_steps=150, repeats=10)  # 实验1：识别准确性的价值验证
-        elif exp_id == 2:
+        elif exp_id_str == '2':
             results['exp2'] = Experiment2.run(recognition_model, scaler, num_steps=150, repeats=10)  # 实验2：机制有效性验证
-        elif exp_id == 3:
+        elif exp_id_str == '2b':
+            results['exp2b'] = Experiment2b.run(recognition_model, scaler, num_steps=150, repeats=8)  # 实验2b：机制组合验证
+        elif exp_id_str == '3':
             results['exp3'] = Experiment3.run(recognition_model, scaler, num_steps=200, repeats=10)  # 实验3：增强算法 vs 传统算法
-        elif exp_id == 4:
+        elif exp_id_str == '4':
             results['exp4'] = Experiment4.run(recognition_model, scaler, num_steps=150, repeats=10)  # 实验4：多场景对比
+        else:
+            print(f"警告: 未知的实验ID '{exp_id_str}', 跳过")
 
     print("\n" + "="*80)
     print("所有实验运行完成！")
@@ -62,5 +69,8 @@ def main(force_retrain=False, run_experiments=None):
 
 if __name__ == "__main__":
     set_global_seed(GLOBAL_SEED)
-    main(force_retrain=False, run_experiments=[2])
+    # 运行实验2b（机制组合验证）
+    # 可以传入数字或字符串: [1, 2, '2b', 3, 4]
+    main(force_retrain=False, run_experiments=['2b'])
+    # 运行所有实验
     # main(force_retrain=False, run_experiments=[1, 2, 3, 4])
