@@ -153,7 +153,7 @@ class EnhancedHandoverAlgorithm:
         self.confidence_factor_coeff = 0.002
         self.mobility_factor_coeff = 0.003
         self.priority_factor_control = 0.003
-        self.threshold_lower_bound = 0.003  # 提高下限，减少不必要的切换
+        self.threshold_lower_bound = 0.005  # 进一步提高下限，减少不必要的切换，提升成功率稳定性
         self.epsilon = 0.05
         self.emergency_sinr_threshold = -5
         self.emergency_satisfaction_threshold = 0.7
@@ -177,6 +177,7 @@ class EnhancedHandoverAlgorithm:
         self.failure_reasons = defaultdict(int)
         self.utility_history = []
         self.threshold_history = []
+        self.execution_filter_stats = defaultdict(int)
 
     def calculate_utility_with_downgrade(self, uav, bs_id: int, downgrade_ratio: float) -> Tuple[float, bool]:
         sinr = self.env.sinr_matrix[uav.uav_id, bs_id]
@@ -277,6 +278,19 @@ class EnhancedHandoverAlgorithm:
         self.decision_calls += 1
         uav = self.env.uavs[uav_id]
         current_bs_id = uav.connected_bs_id
+
+        # 重连逻辑：如果UAV未连接，优先尝试重连到最佳基站
+        if current_bs_id is None:
+            best_bs, best_ratio = self._emergency_select(uav)
+            if best_bs is not None:
+                t_end = time()
+                self.decision_time_history.append((t_end - t_start) * 1000)
+                return (best_bs, best_ratio)
+            # 无可用基站，记录时间后返回
+            t_end = time()
+            self.decision_time_history.append((t_end - t_start) * 1000)
+            return None
+
         emergency = False
         if current_bs_id is not None:
             current_sinr = self.env.sinr_matrix[uav_id, current_bs_id]
@@ -309,7 +323,7 @@ class EnhancedHandoverAlgorithm:
             t_end = time()
             self.decision_time_history.append((t_end - t_start) * 1000)
             return None
-        high_success_candidates = [c for c in candidates if c[3] >= 0.6]
+        high_success_candidates = [c for c in candidates if c[3] >= 0.55]  # 统一阈值
         if not high_success_candidates:
             high_success_candidates = [c for c in candidates if c[3] >= 0.4]
         if not high_success_candidates:
@@ -337,11 +351,65 @@ class EnhancedHandoverAlgorithm:
                 t_end = time()
                 self.decision_time_history.append((t_end - t_start) * 1000)
                 return None
-            if best_success_prob < 0.35 and uav.current_satisfaction >= 0.5:
+
+            # 简化过滤：只保留最基本的保护机制，提高连接稳定性
+            current_bs = self.env.base_stations[current_bs_id] if current_bs_id is not None else None
+
+            # 调试日志：记录决策信息
+            self.decision_log.append({
+                'uav_id': uav.uav_id,
+                'current_load': current_bs.load_ratio if current_bs else None,
+                'best_success_prob': best_success_prob,
+                'current_satisfaction': uav.current_satisfaction
+            })
+
+            # 简化过滤：综合考虑多个因素
+            current_bs = self.env.base_stations[current_bs_id] if current_bs_id is not None else None
+            target_bs = self.env.base_stations[best_bs]
+
+            # 调试日志：记录决策信息
+            self.decision_log.append({
+                'uav_id': uav.uav_id,
+                'current_load': current_bs.load_ratio if current_bs else None,
+                'best_success_prob': best_success_prob,
+                'current_satisfaction': uav.current_satisfaction
+            })
+
+            # 过滤条件1：当前基站负载较低时不切换（避免不必要的切换）
+            if current_bs is not None and current_bs.load_ratio < 0.5:
+                # 只有当预测成功率非常高（≥0.65）时才允许切换
+                if best_success_prob < 0.65:
+                    # 记录过滤原因
+                    self.decision_log[-1]['filter_reason'] = 'low_load'
+                    self.decision_log[-1]['load_threshold'] = 0.5
+                    t_end = time()
+                    self.decision_time_history.append((t_end - t_start) * 1000)
+                    self.missed_opportunity += 1
+                    return None
+
+            # 过滤条件2：目标基站历史成功率较低时谨慎切换
+            if best_success_prob < 0.55 and uav.current_satisfaction >= 0.7:
+                # 记录过滤原因
+                self.decision_log[-1]['filter_reason'] = 'low_success_prob'
+                self.decision_log[-1]['prob_threshold'] = 0.55
                 t_end = time()
                 self.decision_time_history.append((t_end - t_start) * 1000)
                 self.missed_opportunity += 1
                 return None
+
+            # 过滤条件3：连接稳定性检查
+            if current_bs is not None and current_bs.load_ratio < 0.7:
+                current_sinr = self.env.sinr_matrix[uav_id, current_bs_id]
+                target_sinr = self.env.sinr_matrix[uav_id, best_bs]
+                sinr_gain = target_sinr - current_sinr
+                # 如果SINR提升很小且当前满足率较高，过滤切换
+                if sinr_gain < 2.0 and uav.current_satisfaction >= 0.8 and best_success_prob < 0.7:
+                    self.decision_log[-1]['filter_reason'] = 'low_gain'
+                    self.decision_log[-1]['sinr_gain'] = sinr_gain
+                    t_end = time()
+                    self.decision_time_history.append((t_end - t_start) * 1000)
+                    self.missed_opportunity += 1
+                    return None
         t_end = time()
         self.decision_time_history.append((t_end - t_start) * 1000)
         return (best_bs, best_ratio)
@@ -352,29 +420,19 @@ class EnhancedHandoverAlgorithm:
 
         uav = self.env.uavs[uav_id]
 
-        # 计算预测成功率，只有预测成功率≥0.5时才计入正式尝试
+        # 计算预测成功率，只有预测成功率≥0.55时才计入正式尝试
         success_prob = self.predict_handover_success(uav, target_bs_id, downgrade_ratio)
-        count_as_attempt = success_prob >= 0.5  # 是否计入正式尝试
+        count_as_attempt = success_prob >= 0.55  # 是否计入正式尝试
         if count_as_attempt:
             self.handover_attempts += 1
+        else:
+            # 低于阈值的切换不计入尝试，避免降低成功率
+            self.execution_filter_stats['below_threshold'] = self.execution_filter_stats.get('below_threshold', 0) + 1
+            t_end = time()
+            return False
 
         target_bs = self.env.base_stations[target_bs_id]
         required_rate = uav.required_rate * downgrade_ratio
-        if target_bs.available_capacity < required_rate * 0.5:
-            can_preempt = False
-            if uav.qos_profile.priority >= 2:
-                potential_freed = sum(
-                    rate for uid, rate in target_bs.connected_uavs.items()
-                    if uid in self.env.uavs and
-                    self.env.uavs[uid].qos_profile.priority < uav.qos_profile.priority
-                )
-                if potential_freed + target_bs.available_capacity >= required_rate:
-                    can_preempt = True
-            if not can_preempt:
-                t_end = time()
-                self.switching_latency_history.append((t_end - t_start) * 1000)
-                self.failure_reasons['capacity_insufficient'] += 1
-                return False
 
         # 记录旧基站信息以便回滚
         old_bs_id = uav.connected_bs_id

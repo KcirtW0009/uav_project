@@ -651,6 +651,29 @@ class Experiment3:
             enh_stats = env_enh.get_state_statistics()
             enh_stats.update(algo_enh.get_detailed_stats())
             enh_stats['connected_ratio'] = enh_stats['connected_count'] / env_enh.num_uav
+
+            # 打印增强算法的决策日志统计
+            if hasattr(algo_enh, 'decision_log') and algo_enh.decision_log:
+                total_decisions = len(algo_enh.decision_log)
+                filtered_low_load = sum(1 for log in algo_enh.decision_log if log.get('filter_reason') == 'low_load')
+                filtered_low_prob = sum(1 for log in algo_enh.decision_log if log.get('filter_reason') == 'low_success_prob')
+                filtered_low_gain = sum(1 for log in algo_enh.decision_log if log.get('filter_reason') == 'low_gain')
+                exec_filtered = algo_enh.execution_filter_stats.get('below_threshold', 0)
+                print(f" [决策日志] 总决策: {total_decisions}, 低负载过滤: {filtered_low_load}, "
+                      f"低成功率过滤: {filtered_low_prob}, 低增益过滤: {filtered_low_gain}, 执行层过滤: {exec_filtered}")
+
+                # 打印前5条决策示例
+                print(" [决策示例] 前5条:")
+                for i, log in enumerate(algo_enh.decision_log[:5]):
+                    reason = log.get('filter_reason', '执行切换')
+                    sinr_gain = log.get('sinr_gain', 'N/A')
+                    if sinr_gain != 'N/A':
+                        reason = f"{reason}(增益{sinr_gain:.1f}dB)"
+                    print(f"   {i+1}. UAV{log['uav_id']}: 负载={log.get('current_load', 'N/A'):.2f}, "
+                          f"预测={log.get('best_success_prob', 'N/A'):.2f}, "
+                          f"满足率={log.get('current_satisfaction', 'N/A'):.2f}, "
+                          f"结果={reason}")
+
             enhanced_results.append(enh_stats)
 
             trad_stats = env_trad.get_state_statistics()
