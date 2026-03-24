@@ -41,11 +41,11 @@ def main(force_retrain=False, run_experiments=None):
         print(f"运行实验 {exp_id}")
         print('='*80)
         if exp_id == 1:
-            results['exp1'] = Experiment1.run(recognition_model, scaler, num_steps=150, repeats=10)  # 实验1：增加重复次数提高统计显著性
+            results['exp1'] = Experiment1.run(recognition_model, scaler, num_steps=150, repeats=10)  # 实验1：识别准确性的价值验证
         elif exp_id == 2:
-            results['exp2'] = Experiment2.run(recognition_model, scaler, num_steps=200, repeats=10)  # 实验2：增强算法 vs 传统算法
+            results['exp2'] = Experiment2.run(recognition_model, scaler, num_steps=150, repeats=10)  # 实验2：机制有效性验证
         elif exp_id == 3:
-            results['exp3'] = Experiment3.run(recognition_model, scaler, num_steps=150, repeats=10)  # 实验3：机制有效性验证
+            results['exp3'] = Experiment3.run(recognition_model, scaler, num_steps=200, repeats=10)  # 实验3：增强算法 vs 传统算法
         elif exp_id == 4:
             results['exp4'] = Experiment4.run(recognition_model, scaler, num_steps=150, repeats=10)  # 实验4：多场景对比
 
@@ -62,6 +62,5 @@ def main(force_retrain=False, run_experiments=None):
 
 if __name__ == "__main__":
     set_global_seed(GLOBAL_SEED)
-    # main(force_retrain=False, run_experiments=[1, 2, 3, 4])
     main(force_retrain=False, run_experiments=[1, 2])
     # main(force_retrain=False, run_experiments=[1, 2, 3, 4])

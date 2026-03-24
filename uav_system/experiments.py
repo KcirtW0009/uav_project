@@ -585,8 +585,8 @@ def print_comprehensive_test_summary(all_test_results: Dict[str, Dict],
     print(f"{'='*80}\n")
 
 
-# -------------------- 实验2 --------------------
-class Experiment2:
+# -------------------- 实验3：增强算法 vs 传统算法（全面对比）--------------------
+class Experiment3:
     METRICS = {
         'handover_success_rate': '切换成功率',
         'avg_switching_latency_ms': '平均切换时延(ms)',
@@ -609,7 +609,7 @@ class Experiment2:
     @staticmethod
     def run(recognition_model, scaler, num_steps=200, repeats=10):  # 增加到10次重复
         print("\n" + "="*80)
-        print("实验2：增强算法 vs 传统算法（全面对比）")
+        print("实验3：增强算法 vs 传统算法（全面对比）")
         print("="*80)
 
         enhanced_results, traditional_results = [], []
@@ -656,8 +656,8 @@ class Experiment2:
                   f"切换成功率: {trad_stats['handover_success_rate']*100:.1f}%, "
                   f"吞吐量: {trad_stats['total_load']:.1f} Mbps")
 
-        summary = Experiment2._summarize(enhanced_results, traditional_results)
-        Experiment2._print_results_table(summary)
+        summary = Experiment3._summarize(enhanced_results, traditional_results)
+        Experiment3._print_results_table(summary)
 
         # 添加统计显著性检验
         print("\n" + "="*80)
@@ -683,13 +683,13 @@ class Experiment2:
         # 将检验结果添加到summary中
         summary['statistical_tests'] = all_test_results
 
-        Experiment2._plot(summary)
+        Experiment3._plot(summary)
         return summary
 
     @staticmethod
     def _summarize(enhanced_results, traditional_results):
         summary = {'enhanced': {}, 'traditional': {}, 'improvement': {}}
-        for key in Experiment2.METRICS.keys():
+        for key in Experiment3.METRICS.keys():
             if key in enhanced_results[0]:
                 enh_vals = [r[key] for r in enhanced_results]
                 summary['enhanced'][key] = (np.mean(enh_vals), np.std(enh_vals))
@@ -710,18 +710,18 @@ class Experiment2:
     def _print_results_table(summary):
         headers = ["指标", "增强算法(均值±std)", "传统算法(均值±std)", "提升"]
         rows = []
-        for key, name in Experiment2.METRICS.items():
+        for key, name in Experiment3.METRICS.items():
             if key in summary['enhanced']:
                 enh_mean, enh_std = summary['enhanced'][key]
                 trad_mean, trad_std = summary['traditional'][key]
                 imp = summary['improvement'][key]
                 rows.append([name, f"{enh_mean:.3f}±{enh_std:.3f}", f"{trad_mean:.3f}±{trad_std:.3f}", f"{imp:+.1f}%"])
-        VisualizationHelper.print_data_table("实验2结果：增强算法 vs 传统算法", headers, rows)
+        VisualizationHelper.print_data_table("实验3结果：增强算法 vs 传统算法", headers, rows)
 
     @staticmethod
     def _plot(summary):
         fig = plt.figure(figsize=(20, 16))
-        fig.suptitle('实验2：增强算法 vs 传统算法（全面对比）', fontsize=16, fontweight='bold')
+        fig.suptitle('实验3：增强算法 vs 传统算法（全面对比）', fontsize=16, fontweight='bold')
         gs = fig.add_gridspec(4, 4, hspace=0.3, wspace=0.3)
 
         def plot_bars(ax, metrics, labels, title):
@@ -790,11 +790,11 @@ class Experiment2:
 
         # 提升百分比
         ax = fig.add_subplot(gs[1,2:])
-        improvements = [(k,v) for k,v in summary['improvement'].items() if abs(v)>0.1 and k in Experiment2.METRICS]
+        improvements = [(k,v) for k,v in summary['improvement'].items() if abs(v)>0.1 and k in Experiment3.METRICS]
         improvements.sort(key=lambda x: abs(x[1]), reverse=True)
         if len(improvements) > 10:
             improvements = improvements[:10]
-        names = [Experiment2.METRICS[k] for k,_ in improvements]
+        names = [Experiment3.METRICS[k] for k,_ in improvements]
         values = [v for _,v in improvements]
         colors = [COLORS['success'] if v>0 else COLORS['danger'] for v in values]
         bars = ax.barh(names, values, color=colors, alpha=0.8, edgecolor='white', linewidth=1.5)
@@ -815,7 +815,7 @@ class Experiment2:
         ])
         im = ax.imshow(data, cmap='RdYlGn', aspect='auto', vmin=0, vmax=1)
         ax.set_xticks(range(len(metrics_subset)))
-        ax.set_xticklabels([Experiment2.METRICS[m] for m in metrics_subset], rotation=45, ha='right')
+        ax.set_xticklabels([Experiment3.METRICS[m] for m in metrics_subset], rotation=45, ha='right')
         ax.set_yticks([0,1])
         ax.set_yticklabels(['增强算法', '传统算法'])
         ax.set_title('性能指标热力图', fontweight='bold')
@@ -837,7 +837,7 @@ class Experiment2:
                 ax.errorbar(i+0.15, trad_mean, yerr=trad_std, fmt='s', color=COLORS['neutral'],
                             markersize=10, capsize=5, label='传统算法' if i==0 else '')
         ax.set_xticks(x_pos)
-        ax.set_xticklabels([Experiment2.METRICS[m] for m in metrics], rotation=15, ha='right')
+        ax.set_xticklabels([Experiment3.METRICS[m] for m in metrics], rotation=15, ha='right')
         ax.set_ylabel('数值')
         ax.set_title('关键指标分布对比', fontweight='bold')
         ax.legend()
@@ -846,7 +846,7 @@ class Experiment2:
         # 文本摘要
         ax = fig.add_subplot(gs[3,:])
         ax.axis('off')
-        text = "【实验2关键发现】\n\n"
+        text = "【实验3关键发现】\n\n"
         key_findings = [
             ("切换成功率", 'handover_success_rate', "%", 100),
             ("整体满足率", 'avg_satisfaction', "", 1),
@@ -863,12 +863,18 @@ class Experiment2:
         ax.text(0.05, 0.95, text, transform=ax.transAxes, fontsize=11,
                 verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
 
-        plt.savefig(os.path.join(RESULT_DIR, 'exp2_results.png'), dpi=200, bbox_inches='tight')
+        plt.savefig(os.path.join(RESULT_DIR, 'exp3_results.png'), dpi=200, bbox_inches='tight')
         plt.show()
 
 
-# -------------------- 实验3 --------------------
-class Experiment3:
+# -------------------- 实验2：机制有效性验证 --------------------
+class Experiment2:
+    """
+    实验2：机制有效性验证
+    
+    测试各个增强机制（动态阈值、业务权重、负载均衡等）对系统性能的贡献，
+    为增强算法的设计提供理论依据。
+    """
     MECHANISMS = {
         'full': '完整增强算法',
         'no_dynamic_threshold': '禁用动态阈值',
@@ -882,14 +888,14 @@ class Experiment3:
     @staticmethod
     def run(recognition_model, scaler, num_steps=150, repeats=10):  # 增加到10次重复
         print("\n" + "="*80)
-        print("实验3：增强算法各机制有效性验证")
+        print("实验2：机制有效性验证")
         print("="*80)
 
-        results = {key: [] for key in Experiment3.MECHANISMS.keys()}
+        results = {key: [] for key in Experiment2.MECHANISMS.keys()}
         for rep in range(repeats):
             print(f"\n--- 重复 {rep+1}/{repeats} ---")
             set_global_seed(GLOBAL_SEED + rep)
-            for mechanism in Experiment3.MECHANISMS.keys():
+            for mechanism in Experiment2.MECHANISMS.keys():
                 env = EnhancedNetworkEnvironment(
                     num_bs=8, num_uav=50,
                     recognition_model=recognition_model, scaler=scaler,
@@ -923,13 +929,13 @@ class Experiment3:
                 if hasattr(algo, 'get_detailed_stats'):
                     stats.update(algo.get_detailed_stats())
                 results[mechanism].append(stats)
-                print(f" {Experiment3.MECHANISMS[mechanism]}: "
+                print(f" {Experiment2.MECHANISMS[mechanism]}: "
                       f"满足率={stats['avg_satisfaction']:.3f}, "
                       f"切换成功率={stats.get('handover_success_rate',0)*100:.1f}%")
 
-        summary = Experiment3._summarize(results)
-        Experiment3._print_results_table(summary)
-        Experiment3._plot(summary)
+        summary = Experiment2._summarize(results)
+        Experiment2._print_results_table(summary)
+        Experiment2._plot(summary)
         return summary
 
     @staticmethod
@@ -948,7 +954,7 @@ class Experiment3:
     def _print_results_table(summary):
         headers = ["机制配置", "整体满足率", "切换成功率", "关键业务满足率", "吞吐量", "负载方差"]
         rows = []
-        for mechanism, name in Experiment3.MECHANISMS.items():
+        for mechanism, name in Experiment2.MECHANISMS.items():
             if mechanism in summary:
                 data = summary[mechanism]
                 row = [name]
@@ -962,7 +968,7 @@ class Experiment3:
                     else:
                         row.append("N/A")
                 rows.append(row)
-        VisualizationHelper.print_data_table("实验4结果：机制有效性验证", headers, rows)
+        VisualizationHelper.print_data_table("实验2结果：机制有效性验证", headers, rows)
 
         # 贡献分析
         print("\n各机制贡献分析（相对于完整算法）:")
@@ -973,14 +979,14 @@ class Experiment3:
                 if mechanism in summary:
                     no_sat = summary[mechanism]['avg_satisfaction'][0]
                     contribution = full_sat - no_sat
-                    print(f" {Experiment4.MECHANISMS[mechanism]}: 贡献 = {contribution:.4f} ({contribution/full_sat*100:+.1f}%)")
+                    print(f" {Experiment2.MECHANISMS[mechanism]}: 贡献 = {contribution:.4f} ({contribution/full_sat*100:+.1f}%)")
 
     @staticmethod
     def _plot(summary):
         fig, axes = plt.subplots(2, 3, figsize=(18, 12))
-        fig.suptitle('实验4：增强算法各机制有效性验证', fontsize=14, fontweight='bold')
-        mechanisms = list(Experiment4.MECHANISMS.keys())
-        names = list(Experiment4.MECHANISMS.values())
+        fig.suptitle('实验2：机制有效性验证', fontsize=14, fontweight='bold')
+        mechanisms = list(Experiment2.MECHANISMS.keys())
+        names = list(Experiment2.MECHANISMS.values())
 
         def plot_hbar(ax, key, title, xlabel):
             vals = [summary[m][key][0] if m in summary else 0 for m in mechanisms]
@@ -1006,7 +1012,7 @@ class Experiment3:
                 if mechanism in summary:
                     contrib = summary['full']['avg_satisfaction'][0] - summary[mechanism]['avg_satisfaction'][0]
                     contributions.append(contrib)
-                    contrib_names.append(Experiment4.MECHANISMS[mechanism].replace('禁用',''))
+                    contrib_names.append(Experiment2.MECHANISMS[mechanism].replace('禁用',''))
             colors = [COLORS['success'] if c>0 else COLORS['danger'] for c in contributions]
             bars = ax.bar(contrib_names, contributions, color=colors, alpha=0.8, edgecolor='white', linewidth=1.5)
             ax.axhline(y=0, color='black', linestyle='-', linewidth=0.8)
@@ -1041,7 +1047,7 @@ class Experiment3:
                          0.3 * summary[mechanism]['handover_success_rate'][0] +
                          0.3 * summary[mechanism]['critical_satisfaction'][0])
                 scores.append(score)
-                score_names.append(Experiment4.MECHANISMS[mechanism])
+                score_names.append(Experiment2.MECHANISMS[mechanism])
         colors = plt.cm.RdYlGn(np.array(scores) / max(scores))
         bars = ax.barh(score_names, scores, color=colors, alpha=0.8, edgecolor='white', linewidth=1.5)
         ax.set_xlabel('综合评分')
@@ -1050,7 +1056,7 @@ class Experiment3:
             ax.text(val, bar.get_y() + bar.get_height()/2, f'{val:.3f}', ha='left', va='center', fontsize=9)
 
         plt.tight_layout()
-        plt.savefig(os.path.join(RESULT_DIR, 'exp4_results.png'), dpi=200, bbox_inches='tight')
+        plt.savefig(os.path.join(RESULT_DIR, 'exp2_results.png'), dpi=200, bbox_inches='tight')
         plt.show()
 
 
