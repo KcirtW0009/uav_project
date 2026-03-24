@@ -1,6 +1,8 @@
 import numpy as np
+import matplotlib
 import matplotlib.pyplot as plt
 import os
+import warnings
 from collections import defaultdict
 from typing import Dict, List, Any, Tuple
 from scipy import stats
@@ -11,6 +13,11 @@ from .recognition import AdaptiveRecognitionUpdater, BusinessRecognitionModel, t
 from .environment import EnhancedNetworkEnvironment
 from .algorithms import IntegratedHandoverAlgorithm, EnhancedHandoverAlgorithm
 from .visualization import VisualizationHelper
+
+# 配置字体和警告抑制
+matplotlib.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
+matplotlib.rcParams['axes.unicode_minus'] = False
+warnings.filterwarnings('ignore', category=UserWarning, message='.*Glyph.*missing.*')
 
 # -------------------- 实验1 --------------------
 class Experiment1:
