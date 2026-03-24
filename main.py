@@ -62,5 +62,5 @@ def main(force_retrain=False, run_experiments=None):
 
 if __name__ == "__main__":
     set_global_seed(GLOBAL_SEED)
-    main(force_retrain=False, run_experiments=[1, 2])
+    main(force_retrain=False, run_experiments=[2])
     # main(force_retrain=False, run_experiments=[1, 2, 3, 4])

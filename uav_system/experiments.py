@@ -50,6 +50,8 @@ class Experiment1:
         print("  D.  60%准确率 - 低质量识别模型")
         print("  E.  33%准确率 - 随机分配（下界对照）")
         print("\n控制变量：差异化QoS配置、切换算法、网络环境完全相同")
+        print("\n算法配置说明：使用EnhancedHandover算法，但禁用ε-greedy探索机制")
+        print("  原因：ε-greedy引入随机性，会干扰识别准确率对性能影响的评估")
         print("="*80)
 
         # 存储各条件的结果
@@ -871,24 +873,34 @@ class Experiment3:
 class Experiment2:
     """
     实验2：机制有效性验证
-    
-    测试各个增强机制（动态阈值、业务权重、负载均衡等）对系统性能的贡献，
-    为增强算法的设计提供理论依据。
+
+    采用逐步添加机制的方式，从传统算法开始，依次添加各个增强机制，
+    验证每个机制对系统性能的贡献，为增强算法的设计提供理论依据。
     """
     MECHANISMS = {
-        'full': '完整增强算法',
-        'no_dynamic_threshold': '禁用动态阈值',
-        'no_business_weights': '禁用业务特化权重',
-        'no_epsilon_greedy': '禁用ε-greedy探索',
-        'no_load_balance': '禁用负载均衡',
-        'no_adaptive_recognition': '禁用自适应识别更新',
-        'traditional': '传统算法（基线）'
+        'traditional': '传统算法（基线）',
+        'add_dynamic_threshold': '传统+动态阈值',
+        'add_business_weights': '传统+动态阈值+业务权重',
+        'add_epsilon_greedy': '传统+动态阈值+业务权重+ε-greedy',
+        'add_load_balance': '传统+动态阈值+业务权重+ε-greedy+负载均衡',
+        'add_adaptive_recognition': '传统+动态阈值+业务权重+ε-greedy+负载均衡+自适应识别',
+        'full': '完整增强算法'
     }
 
     @staticmethod
     def run(recognition_model, scaler, num_steps=150, repeats=10):  # 增加到10次重复
         print("\n" + "="*80)
-        print("实验2：机制有效性验证")
+        print("实验2：机制有效性验证（逐步添加机制）")
+        print("="*80)
+        print("\n实验目的：从传统算法开始，逐步添加增强机制，验证各机制的独立贡献")
+        print("\n机制添加顺序：")
+        print("  1. 传统算法（基线）")
+        print("  2. 添加动态阈值")
+        print("  3. 添加业务特化权重")
+        print("  4. 添加ε-greedy探索")
+        print("  5. 添加负载均衡")
+        print("  6. 添加自适应识别更新")
+        print("  7. 完整增强算法（验证）")
         print("="*80)
 
         results = {key: [] for key in Experiment2.MECHANISMS.keys()}
@@ -901,29 +913,58 @@ class Experiment2:
                     recognition_model=recognition_model, scaler=scaler,
                     seed=GLOBAL_SEED + rep, event_probability=0.05
                 )
+
+                # 根据机制配置创建对应的算法
                 if mechanism == 'traditional':
                     algo = IntegratedHandoverAlgorithm(env)
                 else:
                     algo = EnhancedHandoverAlgorithm(env)
-                    if mechanism == 'no_dynamic_threshold':
+
+                    # 根据机制配置启用对应的功能
+                    if mechanism == 'add_dynamic_threshold':
+                        # 只启用动态阈值，禁用其他增强功能
                         algo.base_threshold = 0.005
-                        algo.calculate_dynamic_threshold = lambda uav: 0.005
-                    elif mechanism == 'no_business_weights':
+                        algo.calculate_dynamic_threshold = algo.__class__.calculate_dynamic_threshold.__get__(algo, type(algo))
+                        # 禁用业务权重
                         for bt in BusinessType:
                             algo.business_weights[bt] = {'sinr': 0.4, 'load': 0.3, 'rate': 0.3}
-                    elif mechanism == 'no_epsilon_greedy':
+                        # 禁用ε-greedy
                         algo.epsilon = 0.0
-                    elif mechanism == 'no_adaptive_recognition':
-                        env.recognition_updater = AdaptiveRecognitionUpdater(min_update_interval=999)
+                        # 禁用负载均衡（在运行时控制）
+                        enable_lb = False
 
+                    elif mechanism == 'add_business_weights':
+                        # 启用动态阈值和业务权重，禁用其他
+                        algo.epsilon = 0.0
+                        enable_lb = False
+
+                    elif mechanism == 'add_epsilon_greedy':
+                        # 启用动态阈值、业务权重和ε-greedy
+                        # epsilon默认为0.05，无需修改
+                        enable_lb = False
+
+                    elif mechanism == 'add_load_balance':
+                        # 启用动态阈值、业务权重、ε-greedy和负载均衡
+                        enable_lb = True
+
+                    elif mechanism == 'add_adaptive_recognition':
+                        # 启用所有机制，包括自适应识别更新
+                        # 自适应识别由环境控制，无需额外配置
+                        enable_lb = True
+
+                    elif mechanism == 'full':
+                        # 完整增强算法
+                        enable_lb = True
+
+                # 运行仿真
                 for step in range(num_steps):
                     env.step()
                     if mechanism == 'traditional':
                         algo.run_step()
-                    elif mechanism == 'no_load_balance':
-                        algo.run_step(enable_load_balancing=False)
-                    else:
-                        algo.run_step(enable_load_balancing=True)
+                    elif mechanism in ['add_dynamic_threshold', 'add_business_weights',
+                                      'add_epsilon_greedy', 'add_load_balance',
+                                      'add_adaptive_recognition', 'full']:
+                        algo.run_step(enable_load_balancing=enable_lb)
 
                 stats = env.get_state_statistics()
                 if hasattr(algo, 'get_detailed_stats'):
@@ -970,23 +1011,59 @@ class Experiment2:
                 rows.append(row)
         VisualizationHelper.print_data_table("实验2结果：机制有效性验证", headers, rows)
 
-        # 贡献分析
-        print("\n各机制贡献分析（相对于完整算法）:")
-        if 'full' in summary:
+        # 逐步添加机制的贡献分析
+        print("\n【逐步添加机制贡献分析】")
+        mechanism_order = ['traditional', 'add_dynamic_threshold', 'add_business_weights',
+                          'add_epsilon_greedy', 'add_load_balance', 'add_adaptive_recognition', 'full']
+
+        prev_mechanism = mechanism_order[0]
+        prev_sat = summary[prev_mechanism]['avg_satisfaction'][0] if prev_mechanism in summary else 0
+
+        print(f"\n相对于传统算法的逐步提升:")
+        for mechanism in mechanism_order[1:]:
+            if mechanism in summary:
+                curr_sat = summary[mechanism]['avg_satisfaction'][0]
+                contribution = curr_sat - prev_sat
+                contribution_pct = contribution / prev_sat * 100 if prev_sat > 0 else 0
+
+                mechanism_name = Experiment2.MECHANISMS[mechanism]
+
+                # 提取新增的机制名称
+                if mechanism == 'add_dynamic_threshold':
+                    added_name = "动态阈值"
+                elif mechanism == 'add_business_weights':
+                    added_name = "业务权重"
+                elif mechanism == 'add_epsilon_greedy':
+                    added_name = "ε-greedy探索"
+                elif mechanism == 'add_load_balance':
+                    added_name = "负载均衡"
+                elif mechanism == 'add_adaptive_recognition':
+                    added_name = "自适应识别更新"
+                elif mechanism == 'full':
+                    added_name = "完整算法(验证)"
+                else:
+                    added_name = mechanism_name
+
+                print(f"  {added_name}: 贡献 = {contribution:+.4f} ({contribution_pct:+.1f}%) "
+                      f"[{prev_sat:.4f} -> {curr_sat:.4f}]")
+
+                prev_sat = curr_sat
+
+        # 总体提升对比
+        if 'traditional' in summary and 'full' in summary:
+            trad_sat = summary['traditional']['avg_satisfaction'][0]
             full_sat = summary['full']['avg_satisfaction'][0]
-            for mechanism in ['no_dynamic_threshold', 'no_business_weights', 'no_epsilon_greedy',
-                              'no_load_balance', 'no_adaptive_recognition']:
-                if mechanism in summary:
-                    no_sat = summary[mechanism]['avg_satisfaction'][0]
-                    contribution = full_sat - no_sat
-                    print(f" {Experiment2.MECHANISMS[mechanism]}: 贡献 = {contribution:.4f} ({contribution/full_sat*100:+.1f}%)")
+            total_improvement = (full_sat - trad_sat) / trad_sat * 100
+            print(f"\n总体提升: 传统算法 -> 完整增强算法 = {total_improvement:+.1f}%")
 
     @staticmethod
     def _plot(summary):
         fig, axes = plt.subplots(2, 3, figsize=(18, 12))
-        fig.suptitle('实验2：机制有效性验证', fontsize=14, fontweight='bold')
-        mechanisms = list(Experiment2.MECHANISMS.keys())
-        names = list(Experiment2.MECHANISMS.values())
+        fig.suptitle('实验2：机制有效性验证（逐步添加）', fontsize=14, fontweight='bold')
+        mechanism_order = ['traditional', 'add_dynamic_threshold', 'add_business_weights',
+                          'add_epsilon_greedy', 'add_load_balance', 'add_adaptive_recognition', 'full']
+        mechanisms = mechanism_order
+        names = [Experiment2.MECHANISMS[m] for m in mechanisms]
 
         def plot_hbar(ax, key, title, xlabel):
             vals = [summary[m][key][0] if m in summary else 0 for m in mechanisms]
@@ -1002,42 +1079,79 @@ class Experiment2:
         plot_hbar(axes[0,1], 'handover_success_rate', '切换成功率对比', '切换成功率')
         plot_hbar(axes[0,2], 'critical_satisfaction', '关键业务满足率对比', '关键业务满足率')
 
-        # 贡献瀑布图
+        # 逐步提升曲线图
         ax = axes[1,0]
-        if 'full' in summary:
-            contributions = []
-            contrib_names = []
-            for mechanism in ['no_dynamic_threshold', 'no_business_weights', 'no_epsilon_greedy',
-                              'no_load_balance', 'no_adaptive_recognition']:
-                if mechanism in summary:
-                    contrib = summary['full']['avg_satisfaction'][0] - summary[mechanism]['avg_satisfaction'][0]
-                    contributions.append(contrib)
-                    contrib_names.append(Experiment2.MECHANISMS[mechanism].replace('禁用',''))
-            colors = [COLORS['success'] if c>0 else COLORS['danger'] for c in contributions]
-            bars = ax.bar(contrib_names, contributions, color=colors, alpha=0.8, edgecolor='white', linewidth=1.5)
-            ax.axhline(y=0, color='black', linestyle='-', linewidth=0.8)
-            ax.set_ylabel('贡献值')
-            ax.set_title('各机制对满足率的贡献', fontweight='bold')
-            ax.set_xticklabels(contrib_names, rotation=30, ha='right')
-
-        # 核心指标对比
-        ax = axes[1,1]
-        if 'full' in summary and 'traditional' in summary:
-            metrics = ['avg_satisfaction', 'handover_success_rate', 'critical_satisfaction', 'weighted_satisfaction']
-            metric_names = ['整体满足率', '切换成功率', '关键业务满足率', '加权满足率']
-            full_vals = [summary['full'][m][0] for m in metrics]
-            trad_vals = [summary['traditional'][m][0] for m in metrics]
-            x = np.arange(len(metrics))
-            width = 0.35
-            ax.bar(x - width/2, full_vals, width, label='完整增强算法', color=COLORS['primary'], alpha=0.8)
-            ax.bar(x + width/2, trad_vals, width, label='传统算法', color=COLORS['neutral'], alpha=0.8)
+        if all(m in summary for m in mechanism_order):
+            sats = [summary[m]['avg_satisfaction'][0] for m in mechanism_order]
+            stds = [summary[m]['avg_satisfaction'][1] for m in mechanism_order]
+            x = range(len(mechanism_order))
+            short_names = ['传统', '+动态\n阈值', '+业务\n权重', '+ε-\ngreedy', '+负载\n均衡', '+自适应\n识别', '完整']
+            ax.plot(x, sats, 'o-', color=COLORS['primary'], linewidth=2, markersize=8)
+            ax.fill_between(x, [s-std for s,std in zip(sats, stds)],
+                           [s+std for s,std in zip(sats, stds)],
+                           alpha=0.2, color=COLORS['primary'])
             ax.set_xticks(x)
-            ax.set_xticklabels(metric_names, rotation=15, ha='right')
-            ax.set_ylabel('数值')
-            ax.set_title('核心指标对比', fontweight='bold')
-            ax.legend()
+            ax.set_xticklabels(short_names, fontsize=9)
+            ax.set_ylabel('整体满足率')
+            ax.set_title('逐步添加机制的性能提升曲线', fontweight='bold')
+            ax.grid(True, alpha=0.3)
 
-        # 综合评分
+            # 标注每个阶段的提升
+            for i in range(1, len(sats)):
+                improvement = sats[i] - sats[i-1]
+                if abs(improvement) > 0.005:  # 只标注显著提升
+                    mid_x = (i-1 + i) / 2
+                    mid_y = (sats[i-1] + sats[i]) / 2
+                    ax.annotate(f'{improvement:+.4f}',
+                               xy=(mid_x, mid_y),
+                               xytext=(mid_x, mid_y + improvement*0.5),
+                               ha='center', va='center',
+                               fontsize=8, fontweight='bold',
+                               bbox=dict(boxstyle='round,pad=0.3', facecolor='yellow', alpha=0.7),
+                               arrowprops=dict(arrowstyle='->', lw=0.5))
+
+        # 逐步提升柱状图
+        ax = axes[1,1]
+        if all(m in summary for m in mechanism_order):
+            improvements = []
+            contrib_names = []
+            for i in range(1, len(mechanism_order)):
+                if mechanism_order[i-1] in summary and mechanism_order[i] in summary:
+                    prev_sat = summary[mechanism_order[i-1]]['avg_satisfaction'][0]
+                    curr_sat = summary[mechanism_order[i]]['avg_satisfaction'][0]
+                    improvement = curr_sat - prev_sat
+                    improvements.append(improvement)
+
+                    # 提取机制名称
+                    if mechanism_order[i] == 'add_dynamic_threshold':
+                        name = "动态阈值"
+                    elif mechanism_order[i] == 'add_business_weights':
+                        name = "业务权重"
+                    elif mechanism_order[i] == 'add_epsilon_greedy':
+                        name = "ε-greedy"
+                    elif mechanism_order[i] == 'add_load_balance':
+                        name = "负载均衡"
+                    elif mechanism_order[i] == 'add_adaptive_recognition':
+                        name = "自适应识别"
+                    elif mechanism_order[i] == 'full':
+                        name = "完整验证"
+                    else:
+                        name = mechanism_order[i]
+                    contrib_names.append(name)
+
+            colors = [COLORS['success'] if imp > 0 else COLORS['danger'] for imp in improvements]
+            bars = ax.bar(contrib_names, improvements, color=colors, alpha=0.8, edgecolor='white', linewidth=1.5)
+            ax.axhline(y=0, color='black', linestyle='-', linewidth=0.8)
+            ax.set_ylabel('满足率提升')
+            ax.set_title('各机制的独立贡献', fontweight='bold')
+            ax.set_xticklabels(contrib_names, rotation=30, ha='right')
+            for bar, imp in zip(bars, improvements):
+                ax.text(bar.get_x() + bar.get_width()/2, imp,
+                       f'{imp:+.4f}',
+                       ha='center', va='bottom' if imp > 0 else 'top',
+                       fontsize=9, fontweight='bold')
+
+        # 综合评分对比
         ax = axes[1,2]
         scores = []
         score_names = []
@@ -1047,13 +1161,15 @@ class Experiment2:
                          0.3 * summary[mechanism]['handover_success_rate'][0] +
                          0.3 * summary[mechanism]['critical_satisfaction'][0])
                 scores.append(score)
-                score_names.append(Experiment2.MECHANISMS[mechanism])
+                score_names.append(mechanism)
         colors = plt.cm.RdYlGn(np.array(scores) / max(scores))
-        bars = ax.barh(score_names, scores, color=colors, alpha=0.8, edgecolor='white', linewidth=1.5)
+        bars = ax.barh([Experiment2.MECHANISMS[m] for m in score_names], scores,
+                      color=colors, alpha=0.8, edgecolor='white', linewidth=1.5)
         ax.set_xlabel('综合评分')
-        ax.set_title('机制综合评分', fontweight='bold')
+        ax.set_title('各配置的综合评分', fontweight='bold')
         for bar, val in zip(bars, scores):
-            ax.text(val, bar.get_y() + bar.get_height()/2, f'{val:.3f}', ha='left', va='center', fontsize=9)
+            ax.text(val, bar.get_y() + bar.get_height()/2, f'{val:.3f}',
+                   ha='left', va='center', fontsize=9)
 
         plt.tight_layout()
         plt.savefig(os.path.join(RESULT_DIR, 'exp2_results.png'), dpi=200, bbox_inches='tight')
