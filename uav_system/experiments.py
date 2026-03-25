@@ -616,7 +616,7 @@ class Experiment3:
     }
 
     @staticmethod
-    def run(recognition_model, scaler, num_steps=200, repeats=10):  # 增加到10次重复
+    def run(recognition_model, scaler, num_steps=350, repeats=6):  # 方案B: 合理规模
         print("\n" + "="*80)
         print("实验3：增强算法 vs 传统算法（全面对比）")
         print("="*80)
@@ -628,7 +628,7 @@ class Experiment3:
 
             # 增强算法
             env_enh = EnhancedNetworkEnvironment(
-                num_bs=10, num_uav=80,
+                num_bs=8, num_uav=220,  # 方案B-保守型: 8基站220无人机，利用率124.6%
                 recognition_model=recognition_model, scaler=scaler,
                 seed=GLOBAL_SEED + rep, event_probability=0.05
             )
@@ -636,7 +636,7 @@ class Experiment3:
 
             # 传统算法
             env_trad = EnhancedNetworkEnvironment(
-                num_bs=10, num_uav=80,
+                num_bs=8, num_uav=220,  # 方案B-保守型: 8基站220无人机，利用率124.6%
                 recognition_model=recognition_model, scaler=scaler,
                 seed=GLOBAL_SEED + rep, event_probability=0.05
             )
@@ -1258,7 +1258,7 @@ class Experiment2b:
 
             for combo_name in Experiment2b.COMBINATIONS.keys():
                 env = EnhancedNetworkEnvironment(
-                    num_bs=8, num_uav=50,
+                    num_bs=8, num_uav=120,  # 方案D: 增加UAV数量
                     recognition_model=recognition_model, scaler=scaler,
                     seed=GLOBAL_SEED + rep, event_probability=0.05
                 )

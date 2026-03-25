@@ -50,7 +50,7 @@ def main(force_retrain=False, run_experiments=None):
         elif exp_id_str == '2b':
             results['exp2b'] = Experiment2b.run(recognition_model, scaler, num_steps=150, repeats=8)  # 实验2b：机制组合验证
         elif exp_id_str == '3':
-            results['exp3'] = Experiment3.run(recognition_model, scaler, num_steps=200, repeats=10)  # 实验3：增强算法 vs 传统算法
+            results['exp3'] = Experiment3.run(recognition_model, scaler)  # 实验3：增强算法 vs 传统算法（使用方案C默认参数）
         elif exp_id_str == '4':
             results['exp4'] = Experiment4.run(recognition_model, scaler, num_steps=150, repeats=10)  # 实验4：多场景对比
         else:
@@ -71,6 +71,6 @@ if __name__ == "__main__":
     set_global_seed(GLOBAL_SEED)
     # 运行实验2b（机制组合验证）
     # 可以传入数字或字符串: [1, 2, '2b', 3, 4]
-    main(force_retrain=False, run_experiments=['3'])
+    # main(force_retrain=False, run_experiments=[3])
     # 运行所有实验
-    # main(force_retrain=False, run_experiments=[1, 2, 3, 4])
+    main(force_retrain=False, run_experiments=[ 1,2,'2b', 4])

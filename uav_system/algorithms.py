@@ -376,12 +376,13 @@ class EnhancedHandoverAlgorithm:
             })
 
             # 过滤条件1：当前基站负载较低时不切换（避免不必要的切换）
-            if current_bs is not None and current_bs.load_ratio < 0.5:
-                # 只有当预测成功率非常高（≥0.65）时才允许切换
-                if best_success_prob < 0.65:
+            # 放松阈值：从0.5降到0.3，成功率阈值从0.65降到0.55
+            if current_bs is not None and current_bs.load_ratio < 0.3:
+                # 只有当预测成功率非常高（≥0.55）时才允许切换
+                if best_success_prob < 0.55:
                     # 记录过滤原因
                     self.decision_log[-1]['filter_reason'] = 'low_load'
-                    self.decision_log[-1]['load_threshold'] = 0.5
+                    self.decision_log[-1]['load_threshold'] = 0.3
                     t_end = time()
                     self.decision_time_history.append((t_end - t_start) * 1000)
                     self.missed_opportunity += 1

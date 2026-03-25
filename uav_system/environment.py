@@ -56,7 +56,7 @@ class NetworkEnvironmentWithRecognition:
     def _init_base_stations(self, scenario: str):
         if scenario == 'urban':
             for i in range(self.num_bs):
-                capacity = np.random.uniform(300, 500)
+                capacity = np.random.uniform(1500, 2500)  # 方案D: 平衡容量与竞争
                 bs_type = 'small' if np.random.rand() < 0.4 else 'macro'
                 self.base_stations[i] = BaseStation(
                     i, capacity=capacity,
@@ -65,7 +65,7 @@ class NetworkEnvironmentWithRecognition:
                 )
         elif scenario == 'emergency':
             for i in range(self.num_bs):
-                capacity = np.random.uniform(500, 800)
+                capacity = np.random.uniform(2000, 3000)  # 方案D: 应急场景高容量
                 self.base_stations[i] = BaseStation(
                     i, capacity=capacity,
                     position=np.random.rand(3) * 1200,
@@ -73,7 +73,7 @@ class NetworkEnvironmentWithRecognition:
                 )
         elif scenario == 'agriculture':
             for i in range(self.num_bs):
-                capacity = np.random.uniform(400, 600)
+                capacity = np.random.uniform(1200, 1800)  # 方案D: 农业场景低容量
                 self.base_stations[i] = BaseStation(
                     i, capacity=capacity,
                     position=np.random.rand(3) * 1500,
@@ -81,7 +81,7 @@ class NetworkEnvironmentWithRecognition:
                 )
         else:
             for i in range(self.num_bs):
-                capacity = np.random.uniform(400, 600)
+                capacity = np.random.uniform(1500, 2500)  # 方案D: 默认场景
                 self.base_stations[i] = BaseStation(i, capacity=capacity)
 
     def _init_uavs(self, scenario: str):
