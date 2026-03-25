@@ -653,37 +653,6 @@ class Experiment3:
             enh_stats = env_enh.get_state_statistics()
             enh_stats.update(algo_enh.get_detailed_stats())
             enh_stats['connected_ratio'] = enh_stats['connected_count'] / env_enh.num_uav
-
-            # 打印增强算法的决策日志统计
-            if hasattr(algo_enh, 'decision_log') and algo_enh.decision_log:
-                total_decisions = len(algo_enh.decision_log)
-                filtered_low_load = sum(1 for log in algo_enh.decision_log if log.get('filter_reason') == 'low_load')
-                filtered_low_prob = sum(1 for log in algo_enh.decision_log if log.get('filter_reason') == 'low_success_prob')
-                filtered_low_gain = sum(1 for log in algo_enh.decision_log if log.get('filter_reason') == 'low_gain')
-                exec_filtered = algo_enh.execution_filter_stats.get('below_threshold', 0)
-                capacity_precheck = algo_enh.execution_filter_stats.get('capacity_precheck', 0)
-                print(f" [决策日志] 总决策: {total_decisions}, 低负载过滤: {filtered_low_load}, "
-                      f"低成功率过滤: {filtered_low_prob}, 低增益过滤: {filtered_low_gain}, "
-                      f"容量预检: {capacity_precheck}")
-
-                # 打印前5条决策示例
-                print(" [决策示例] 前5条:")
-                for i, log in enumerate(algo_enh.decision_log[:5]):
-                    reason = log.get('filter_reason', '执行切换')
-                    sinr_gain = log.get('sinr_gain', 'N/A')
-                    if sinr_gain != 'N/A':
-                        reason = f"{reason}(增益{sinr_gain:.1f}dB)"
-                    load = log.get('current_load', None)
-                    prob = log.get('best_success_prob', None)
-                    sat = log.get('current_satisfaction', None)
-                    load_s = f"{load:.2f}" if load is not None else "N/A"
-                    prob_s = f"{prob:.2f}" if prob is not None else "N/A"
-                    sat_s = f"{sat:.2f}" if sat is not None else "N/A"
-                    print(f"   {i+1}. UAV{log['uav_id']}: 负载={load_s}, "
-                          f"预测={prob_s}, "
-                          f"满足率={sat_s}, "
-                          f"结果={reason}")
-
             enhanced_results.append(enh_stats)
 
             trad_stats = env_trad.get_state_statistics()
@@ -692,23 +661,11 @@ class Experiment3:
             traditional_results.append(trad_stats)
 
             print(f" 增强算法 - 满足率: {enh_stats['avg_satisfaction']:.3f}, "
-                  f"切换成功率: {enh_stats['handover_success_rate']*100:.1f}% "
-                  f"(正常{max(algo_enh.handover_attempts-algo_enh.reconnect_attempts,0)}次, "
-                  f"紧急{algo_enh.emergency_count}次), "
-                  f"重连: {algo_enh.reconnect_successes}/{algo_enh.reconnect_attempts}, "
-                  f"吞吐量: {enh_stats['total_load']:.1f} Mbps, "
-                  f"回滚失败: {algo_enh.rollback_fail_count}, "
-                  f"断连数: {enh_stats.get('disconnected_count', 'N/A')}, "
-                  f"失败: {enh_stats.get('failure_reasons', {})}")
+                  f"切换成功率: {enh_stats['handover_success_rate']*100:.1f}%, "
+                  f"吞吐量: {enh_stats['total_load']:.1f} Mbps")
             print(f" 传统算法 - 满足率: {trad_stats['avg_satisfaction']:.3f}, "
-                  f"切换成功率: {trad_stats['handover_success_rate']*100:.1f}% "
-                  f"(正常{max(algo_trad.handover_attempts-algo_trad.reconnect_attempts,0)}次), "
-                  f"重连率: {trad_stats.get('reconnect_success_rate', 0)*100:.1f}% "
-                  f"({algo_trad.reconnect_successes}/{algo_trad.reconnect_attempts}), "
-                  f"吞吐量: {trad_stats['total_load']:.1f} Mbps, "
-                  f"尝试: {algo_trad.handover_attempts}, "
-                  f"成功: {algo_trad.handover_successes}, "
-                  f"失败: {dict(algo_trad.failure_reasons)}")
+                  f"切换成功率: {trad_stats['handover_success_rate']*100:.1f}%, "
+                  f"吞吐量: {trad_stats['total_load']:.1f} Mbps")
 
         summary = Experiment3._summarize(enhanced_results, traditional_results)
         Experiment3._print_results_table(summary)

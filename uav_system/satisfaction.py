@@ -1,10 +1,37 @@
+"""
+满意度评估模块
+
+提供层次化满意度计算方法，支持按业务类型和网络整体进行评估。
+"""
+
 import numpy as np
 from typing import Dict
 from .business import BusinessType
 
+
 class HierarchicalSatisfactionMetric:
+    """
+    层次化满意度评估
+
+    计算维度:
+    - critical: 关键指标满足（控制信令速率+时延，其他业务速率）
+    - overall: 整体满足
+    - weighted: 按业务优先级加权的满足
+    - latency_met: 时延指标满足
+    - rate_met: 速率指标满足
+    """
+
     @staticmethod
     def compute_satisfaction(uav) -> Dict[str, float]:
+        """
+        计算单个UAV的满意度
+
+        Args:
+            uav: UAV实体对象
+
+        Returns:
+            包含各维度满意度指标的字典
+        """
         qos = uav.qos_profile
         rate_met = uav.current_allocated_rate >= qos.min_rate
         estimated_latency = qos.max_delay * (1.5 - min(uav.sinr_db / 20, 1.0))
@@ -30,7 +57,7 @@ class HierarchicalSatisfactionMetric:
                 'rate_met': 1.0 if rate_met else 0.0,
                 'estimated_latency': estimated_latency
             }
-        else:
+        else:  # ENVIRONMENT_MONITORING
             env_satisfied = uav.current_allocated_rate >= 30
             return {
                 'critical': 1.0,
@@ -43,6 +70,15 @@ class HierarchicalSatisfactionMetric:
 
     @staticmethod
     def compute_network_metrics(env) -> Dict[str, float]:
+        """
+        计算网络整体的满意度指标
+
+        Args:
+            env: 网络环境对象
+
+        Returns:
+            包含各网络级别满意度指标的字典
+        """
         all_satisfactions = [HierarchicalSatisfactionMetric.compute_satisfaction(uav)
                              for uav in env.uavs.values()]
         return {
@@ -57,6 +93,16 @@ class HierarchicalSatisfactionMetric:
 
     @staticmethod
     def compute_business_type_satisfaction(env, business_type: BusinessType) -> Dict[str, float]:
+        """
+        计算指定业务类型所有UAV的满意度
+
+        Args:
+            env: 网络环境对象
+            business_type: 要统计的业务类型
+
+        Returns:
+            包含该业务类型UAV数量、平均满意度等指标的字典
+        """
         uavs_of_type = [uav for uav in env.uavs.values() if uav.true_business_type == business_type]
         if not uavs_of_type:
             return {'count': 0, 'satisfaction': 0.0, 'rate_met': 0.0, 'latency_met': 0.0}

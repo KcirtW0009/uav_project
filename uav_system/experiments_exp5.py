@@ -20,6 +20,8 @@
 """
 
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import os
 from typing import Dict, List
@@ -240,39 +242,6 @@ class Experiment5:
             event_probability=scenario_params.get('event_probability', 0.05)
         )
 
-        # 记录初始连接数
-        initial_connected = sum(1 for uav in env.uavs.values() if uav.connected_bs_id is not None)
-
-        # 创建算法
-        if algorithm_type == 'enhanced':
-            algo = EnhancedHandoverAlgorithm(env)
-        else:
-            algo = IntegratedHandoverAlgorithm(env)
-
-        # 处理突发流量配置
-        burst_config = scenario_params.get('burst_config', None)
-        if burst_config:
-            env.burst_step = burst_config['burst_step']
-            env.burst_add = burst_config['burst_add']
-
-        # 处理故障配置
-        failure_config = scenario_params.get('failure_config', None)
-        if failure_config:
-            env.forced_failure_step = failure_config['failure_step']
-            env.forced_failure_duration = failure_config['failure_duration']
-        scenario_params = Experiment5.SCENARIOS[scenario_id]['params'].copy()
-
-        # 创建环境
-        env = EnhancedNetworkEnvironment(
-            num_bs=scenario_params['num_bs'],
-            num_uav=scenario_params['num_uav'],
-            recognition_model=recognition_model,
-            scaler=scaler,
-            seed=GLOBAL_SEED + rep + 1000,
-            scenario='default',
-            event_probability=scenario_params.get('event_probability', 0.05)
-        )
-
         # 创建算法
         if algorithm_type == 'enhanced':
             algo = EnhancedHandoverAlgorithm(env)
@@ -324,15 +293,6 @@ class Experiment5:
 
         # 修复：连接保持率 = 当前连接数 / 总UAV数
         stats['connected_ratio'] = stats['connected_count'] / env.num_uav
-
-        # 调试输出
-        if 'handover_attempts' in stats:
-            print(f"    [调试] 切换尝试: {stats['handover_attempts']}, 切换成功: {stats['handover_successes']}")
-            print(f"    [调试] 切换成功率: {stats['handover_success_rate']*100:.2f}%")
-        if 'decision_calls' in stats:
-            print(f"    [调试] 决策调用: {stats['decision_calls']}, 过滤次数: {stats.get('missed_opportunity', 0)}")
-        if 'decision_filters' in stats and stats['decision_filters']:
-            print(f"    [调试] 决策过滤原因: {stats['decision_filters']}")
 
         return env, stats
 
@@ -819,4 +779,4 @@ class Experiment5:
                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
 
         plt.savefig(os.path.join(RESULT_DIR, 'exp5_results.png'), dpi=200, bbox_inches='tight')
-        plt.show()
+        plt.close(fig)

@@ -1,26 +1,39 @@
+"""
+切换算法模块
+
+包含两种切换算法：
+1. IntegratedHandoverAlgorithm — 传统切换算法（3GPP LTE/5G 标准基线）
+2. EnhancedHandoverAlgorithm — 增强切换算法（业务感知 + 多机制协同）
+"""
+
 import numpy as np
 from typing import Optional, Tuple, Dict
 from collections import defaultdict
 from .business import BusinessType
 from .environment import NetworkEnvironmentWithRecognition
 
+
+# =============================================================================
+# 传统切换算法（3GPP标准基线）
+# =============================================================================
+
 class IntegratedHandoverAlgorithm:
     """
     传统切换算法（3GPP LTE/5G 标准基线）
-    
+
     核心特征（与真实3GPP协议一致）：
-    - A3事件触发：仅当邻区SINR比服务小区高Hys+Ofn时才触发切换
-    - 纯SINR目标选择：选择SINR最高的基站，不考虑负载、业务类型
-    - 单次分配尝试：不降级、不抢占，资源不足即切换失败
-    - 无回滚机制：先断后连(make-before-break不可用)，失败则断连
-    - 无负载均衡：无全局均衡调度
+    - A3事件触发：邻区SINR > 服务小区SINR + Hys + Offset
+    - 纯SINR目标选择：不考虑负载、业务类型
+    - 单次分配尝试：不降级、不抢占，资源不足即失败
+    - 无回滚机制：先断后连，失败则断连
+    - 无负载均衡
     """
+
     def __init__(self, env: NetworkEnvironmentWithRecognition):
         self.env = env
         # 3GPP A3事件参数
-        self.hysteresis = 2.0      # Hys: 迟滞参数(dB)，防止乒乓切换
-        self.offset = 0.0           # Ofn: 频率偏移(dB)
-        # 紧急切换阈值（SINR极低时强制切换）
+        self.hysteresis = 2.0       # Hys: 迟滞参数(dB)
+        self.offset = 0.0            # Ofn: 频率偏移(dB)
         self.emergency_sinr_threshold = -5
         self.emergency_satisfaction_threshold = 0.7
         # 统计指标
@@ -42,46 +55,40 @@ class IntegratedHandoverAlgorithm:
         uav = self.env.uavs[uav_id]
         current_bs_id = uav.connected_bs_id
 
-        # 紧急切换判定（SINR极低或满意度严重不足时）
+        # 紧急切换判定
         emergency = False
         if current_bs_id is not None:
             current_sinr = self.env.sinr_matrix[uav_id, current_bs_id]
             if current_sinr < self.emergency_sinr_threshold or uav.current_satisfaction < self.emergency_satisfaction_threshold:
                 emergency = True
 
+        # 未连接：选择SINR最高的基站，以完整速率接入
         if current_bs_id is None:
-            # 未连接：选择SINR最高的基站，尝试以完整速率接入
-            best_bs = None
-            best_sinr = -999
+            best_bs, best_sinr = None, -999
             for bs_id in self.env.base_stations.keys():
                 sinr = self.env.sinr_matrix[uav.uav_id, bs_id]
                 if sinr > best_sinr:
-                    best_sinr = sinr
-                    best_bs = bs_id
-            t_end = time()
-            self.decision_time_history.append((t_end - t_start) * 1000)
+                    best_sinr, best_bs = sinr, bs_id
+            self.decision_time_history.append((time() - t_start) * 1000)
             return (best_bs, 1.0) if best_bs is not None else None
 
-        # 已连接：A3事件判定 — 邻区SINR > 服务小区SINR + Hys + Offset
+        # 已连接：A3事件判定
         current_sinr = self.env.sinr_matrix[uav_id, current_bs_id]
         a3_threshold = current_sinr + self.hysteresis + self.offset
-        best_bs = None
-        best_sinr = -999
+        best_bs, best_sinr = None, -999
         for bs_id in self.env.base_stations.keys():
             if bs_id == current_bs_id:
                 continue
             sinr = self.env.sinr_matrix[uav.uav_id, bs_id]
             if sinr > best_sinr:
-                best_sinr = sinr
-                best_bs = bs_id
+                best_sinr, best_bs = sinr, bs_id
 
-        t_end = time()
-        self.decision_time_history.append((t_end - t_start) * 1000)
+        self.decision_time_history.append((time() - t_start) * 1000)
 
         if best_bs is not None:
-            # 紧急模式：降低迟滞，更容易触发切换
             if emergency:
-                if best_sinr > current_sinr:  # 紧急时无迟滞
+                # 紧急模式：无迟滞
+                if best_sinr > current_sinr:
                     return (best_bs, 1.0)
                 self.missed_opportunity += 1
                 return None
@@ -106,13 +113,13 @@ class IntegratedHandoverAlgorithm:
         if is_reconnect:
             self.reconnect_attempts += 1
 
-        # 先释放旧基站资源
+        # 先释放旧基站
         if uav.connected_bs_id is not None:
             old_bs = self.env.base_stations[uav.connected_bs_id]
             old_bs.release(uav_id)
             self.env.connection_matrix[uav_id, uav.connected_bs_id] = 0
 
-        # 尝试分配到新基站（仅单次尝试，不降级不抢占）
+        # 单次分配尝试
         if target_bs.allocate(uav_id, required_rate):
             uav.connected_bs_id = target_bs_id
             uav.current_allocated_rate = required_rate
@@ -121,32 +128,31 @@ class IntegratedHandoverAlgorithm:
             self.handover_successes += 1
             if is_reconnect:
                 self.reconnect_successes += 1
-            t_end = time()
-            self.switching_latency_history.append((t_end - t_start) * 1000)
+            self.switching_latency_history.append((time() - t_start) * 1000)
             return True
         else:
-            # 分配失败：无回滚，无抢占，UAV断连
+            # 分配失败：UAV断连
             self.failure_reasons['allocation_failed'] += 1
             uav.connected_bs_id = None
             uav.current_allocated_rate = 0.0
-            t_end = time()
-            self.switching_latency_history.append((t_end - t_start) * 1000)
+            self.switching_latency_history.append((time() - t_start) * 1000)
             return False
 
     def run_step(self) -> int:
+        """执行一个仿真步，返回成功切换次数"""
         handover_count = 0
         for uav_id in self.env.uavs.keys():
             decision = self.make_decision(uav_id)
             if decision is not None:
                 target_bs_id, ratio = decision
-                success = self.execute_handover(uav_id, target_bs_id, ratio)
-                if success:
+                if self.execute_handover(uav_id, target_bs_id, ratio):
                     handover_count += 1
         return handover_count
 
     def get_detailed_stats(self) -> Dict:
+        """获取算法详细统计"""
         normal_attempts = max(self.handover_attempts - self.reconnect_attempts, 1)
-        normal_success_rate = (self.handover_successes - self.reconnect_successes) / normal_attempts if normal_attempts > 0 else 0
+        normal_success_rate = (self.handover_successes - self.reconnect_successes) / normal_attempts
         reconnect_success_rate = self.reconnect_successes / max(self.reconnect_attempts, 1)
         return {
             'avg_decision_time_ms': np.mean(self.decision_time_history) if self.decision_time_history else 0,
@@ -161,32 +167,49 @@ class IntegratedHandoverAlgorithm:
         }
 
 
+# =============================================================================
+# 增强切换算法（业务感知 + 多机制协同）
+# =============================================================================
+
 class EnhancedHandoverAlgorithm:
+    """
+    增强切换算法
+
+    在传统算法基础上引入多种增强机制：
+    - 业务感知效用函数：根据业务类型调整SINR/负载/速率的权重
+    - 动态切换阈值：根据业务优先级、负载、移动性动态调整
+    - 降级比例搜索：资源不足时尝试以降级速率接入
+    - 抢占机制：高优先级UAV可抢占低优先级资源
+    - 回滚机制：切换失败时回滚到旧基站
+    - 软迁移：被抢占的UAV尝试迁移到其他基站
+    - 全局负载均衡：周期性迁移高负载基站的部分UAV
+    """
+
     def __init__(self, env: NetworkEnvironmentWithRecognition, weight_config='optimized'):
         self.env = env
-        self.w_sinr = 0.45
-        self.w_load = 0.25
-        self.w_rate = 0.30
-        self.base_threshold = -0.002  # 负阈值：效用有任何正向增益即切换，比传统更积极
+        # 效用函数默认权重
+        self.w_sinr, self.w_load, self.w_rate = 0.45, 0.25, 0.30
+        # 切换阈值参数
+        self.base_threshold = -0.002
         self.confidence_factor_coeff = 0.002
         self.mobility_factor_coeff = 0.003
         self.priority_factor_control = 0.003
-        self.threshold_lower_bound = 0.005  # 进一步提高下限，减少不必要的切换，提升成功率稳定性
-        self.epsilon = 0.05
+        self.threshold_lower_bound = 0.005
+        self.epsilon = 0.05  # epsilon-greedy探索率
+        # 紧急切换阈值
         self.emergency_sinr_threshold = -5
         self.emergency_satisfaction_threshold = 0.7
+        # 业务特化权重
         self.business_weights = {
             BusinessType.CONTROL_SIGNAL: {'sinr': 0.5, 'load': 0.2, 'rate': 0.3},
             BusinessType.VIDEO_STREAMING: {'sinr': 0.3, 'load': 0.25, 'rate': 0.45},
             BusinessType.ENVIRONMENT_MONITORING: {'sinr': 0.25, 'load': 0.25, 'rate': 0.5}
         }
+        # 统计指标
         self.handover_attempts = 0
         self.handover_successes = 0
         self.decision_calls = 0
         self.missed_opportunity = 0
-        self.sat_control = []
-        self.sat_video = []
-        self.sat_env = []
         self.migration_attempts = 0
         self.migration_successes = 0
         self.decision_log = []
@@ -198,40 +221,47 @@ class EnhancedHandoverAlgorithm:
         self.execution_filter_stats = defaultdict(int)
         self.rollback_fail_count = 0
         self.ghost_disconnect_count = 0
-        self.reconnect_cooldown = {}  # {uav_id: cooldown_remaining_steps}
         self.reconnect_attempts = 0
         self.reconnect_successes = 0
-        self.RECONNECT_COOLDOWN_STEPS = 0   # 禁用重连冷却，与传统算法一致的恢复速度
-        self.disconnect_timer = {}  # {uav_id: 断连步数}
+        self.reconnect_cooldown = {}
+        self.disconnect_timer = {}
         self.emergency_count = 0
-        self.emergency_cooldown = {}  # 保留结构但不使用
-        self.EMERGENCY_COOLDOWN_STEPS = 0  # 禁用紧急冷却
-        self.MAX_EMERGENCY_PER_STEP = 999  # 不限制
         self.current_step_emergency = 0
 
-    def get_disconnected_count(self) -> int:
-        """统计当前处于断连状态的UAV数量（connected_bs_id为None）"""
-        return sum(1 for uav in self.env.uavs.values() if uav.connected_bs_id is None)
+    # ==================== 效用函数 ====================
 
     def calculate_utility_with_downgrade(self, uav, bs_id: int, downgrade_ratio: float) -> Tuple[float, bool]:
+        """
+        计算带降级的业务感知效用值
+
+        Args:
+            uav: UAV实体
+            bs_id: 基站ID
+            downgrade_ratio: 降级比例(0-1)
+
+        Returns:
+            (utility, is_feasible): 效用值和是否可行
+        """
         sinr = self.env.sinr_matrix[uav.uav_id, bs_id]
         sinr_norm = np.clip((sinr + 10) / 40, 0, 1)
         bs = self.env.base_stations[bs_id]
         load_ratio = bs.load_ratio
         required = uav.required_rate * downgrade_ratio
         available = bs.available_capacity
-        if downgrade_ratio >= 0.8:
-            is_feasible = (available >= required * 0.6)  # 从0.9降至0.6，允许更多候选
-        else:
-            is_feasible = (available >= required * 0.7)  # 从0.95降至0.7
+
+        # 可行性判断
+        is_feasible = (available >= required * (0.6 if downgrade_ratio >= 0.8 else 0.7))
+
+        # 速率匹配度
+        rate_match = 0.0
         if required > 0:
             rate_ratio = available / required
             rate_match = 1 - np.exp(-3 * min(rate_ratio, 1.5))
-        else:
-            rate_match = 0
-        business_bonus = 0.0
-        if downgrade_ratio >= 0.8:
-            business_bonus = 0.05 * (downgrade_ratio - 0.8) / 0.2
+
+        # 高速率奖励
+        business_bonus = 0.05 * (downgrade_ratio - 0.8) / 0.2 if downgrade_ratio >= 0.8 else 0.0
+
+        # 业务特化权重
         weights = self.business_weights.get(uav.business_type, {'sinr': 0.4, 'load': 0.3, 'rate': 0.3})
         utility = (weights['sinr'] * sinr_norm +
                    weights['load'] * (1 - load_ratio) +
@@ -240,201 +270,156 @@ class EnhancedHandoverAlgorithm:
         return utility, is_feasible
 
     def calculate_dynamic_threshold(self, uav) -> float:
-        base_threshold = self.base_threshold
+        """计算动态切换阈值（根据业务优先级、负载、移动性等调整）"""
+        base = self.base_threshold
         if uav.business_type == BusinessType.CONTROL_SIGNAL:
-            base_threshold *= 0.5
+            base *= 0.5
+
+        # 负载因子
         if uav.connected_bs_id is not None:
-            current_bs = self.env.base_stations[uav.connected_bs_id]
-            load_factor = current_bs.load_ratio
-            threshold_adjustment = -0.005 * min(load_factor, 1.0)
+            load_factor = self.env.base_stations[uav.connected_bs_id].load_ratio
+            adjustment = -0.005 * min(load_factor, 1.0)
             if uav.business_type == BusinessType.CONTROL_SIGNAL and load_factor > 0.7:
-                threshold_adjustment -= 0.01
+                adjustment -= 0.01
         else:
-            threshold_adjustment = 0
+            adjustment = 0
+
+        # 识别置信度因子
         confidence_factor = (1 - uav.recognition_confidence) * self.confidence_factor_coeff
+        # 移动性因子
         velocity_norm = np.linalg.norm(uav.velocity)
         mobility_factor = -self.mobility_factor_coeff * min(velocity_norm / 10, 1.0)
-        if uav.business_type == BusinessType.CONTROL_SIGNAL:
-            priority_factor = -self.priority_factor_control * 1.5
-        else:
-            priority_factor = 0
-        dynamic_threshold = (base_threshold + threshold_adjustment +
-                             confidence_factor + mobility_factor + priority_factor)
-        lower_bound = self.threshold_lower_bound * 0.5 if uav.business_type == BusinessType.CONTROL_SIGNAL else self.threshold_lower_bound
+        # 优先级因子
+        priority_factor = -self.priority_factor_control * 1.5 if uav.business_type == BusinessType.CONTROL_SIGNAL else 0
+
+        dynamic_threshold = base + adjustment + confidence_factor + mobility_factor + priority_factor
+        lower_bound = self.threshold_lower_bound * (0.5 if uav.business_type == BusinessType.CONTROL_SIGNAL else 1.0)
         return max(lower_bound, dynamic_threshold)
 
     def predict_handover_success(self, uav, bs_id: int, downgrade_ratio: float) -> float:
+        """预测切换成功概率（基于SINR和负载的联合模型）"""
         sinr = self.env.sinr_matrix[uav.uav_id, bs_id]
         bs = self.env.base_stations[bs_id]
         sinr_success = 1 / (1 + np.exp(-0.5 * (sinr + 5)))
-
-        # 优化：放松负载预测模型，提高预测成功率
-        # 原系数：-3.0 → 负载80%时预测：exp(-2.4) = 0.090
-        # 新系数：-2.0 → 负载80%时预测：exp(-1.6) = 0.202 (提升124%)
         load_success = np.exp(-2.0 * bs.load_ratio)
 
-        # 实际可用容量检查
+        # 实际容量检查
         required_rate = uav.required_rate * downgrade_ratio
-        if bs.available_capacity < required_rate * 0.8:  # 需要80%的可用容量才考虑成功
-            load_success = min(load_success, 0.1)  # 大幅降低预测成功率
+        if bs.available_capacity < required_rate * 0.8:
+            load_success = min(load_success, 0.1)
 
-        if uav.business_type == BusinessType.CONTROL_SIGNAL:
-            business_weight = 0.7
-        elif uav.business_type == BusinessType.VIDEO_STREAMING:
-            business_weight = 0.5
-        else:
-            business_weight = 0.3
+        # 业务权重
+        bw_map = {BusinessType.CONTROL_SIGNAL: 0.7, BusinessType.VIDEO_STREAMING: 0.5, BusinessType.ENVIRONMENT_MONITORING: 0.3}
+        business_weight = bw_map.get(uav.business_type, 0.3)
         confidence_factor = 0.5 + 0.5 * uav.recognition_confidence
-        success_prob = (business_weight * sinr_success +
-                        (1 - business_weight) * load_success) * confidence_factor
+
+        success_prob = (business_weight * sinr_success + (1 - business_weight) * load_success) * confidence_factor
         return np.clip(success_prob, 0, 1)
 
+    # ==================== 决策 ====================
+
     def _emergency_select(self, uav) -> Tuple[Optional[int], float]:
-        best_bs = None
-        best_sinr = -999
-        best_ratio = 1.0
+        """紧急切换：选择SINR最高且有足够容量的基站"""
+        best_bs, best_sinr, best_ratio = None, -999, 1.0
         for bs_id in self.env.base_stations.keys():
             sinr = self.env.sinr_matrix[uav.uav_id, bs_id]
             if sinr > best_sinr:
                 bs = self.env.base_stations[bs_id]
                 for ratio in uav.qos_profile.get_feasible_downgrade_ratios():
-                    required = uav.required_rate * ratio
-                    if bs.available_capacity >= required * 0.9:
-                        best_bs = bs_id
-                        best_sinr = sinr
-                        best_ratio = ratio
+                    if bs.available_capacity >= uav.required_rate * ratio * 0.9:
+                        best_bs, best_sinr, best_ratio = bs_id, sinr, ratio
                         break
         return best_bs, best_ratio
 
     def make_intelligent_decision(self, uav_id: int) -> Optional[Tuple[int, float]]:
+        """增强决策：业务感知效用函数 + 动态阈值 + 降级搜索"""
         from time import time
         t_start = time()
         self.decision_calls += 1
         uav = self.env.uavs[uav_id]
         current_bs_id = uav.connected_bs_id
 
-        # 调试信息：记录决策阶段的详细状态
-        debug_info = {
-            'uav_id': uav_id,
-            'step': self.env.current_step,
-            'business_type': uav.business_type.name if hasattr(uav, 'business_type') else 'unknown',
-            'current_bs_id': current_bs_id,
-            'current_sinr': None,
-            'current_satisfaction': uav.current_satisfaction,
-            'emergency': False,
-            'num_candidates': 0,
-            'num_high_success': 0,
-            'best_success_prob': None,
-            'best_utility': None,
-            'best_bs_id': None,
-            'filter_reason': None,
-            'filter_details': {}
-        }
-
-        # 重连逻辑：如果UAV未连接，使用与传统一致的宽松策略
+        # 未连接：使用宽松策略
         if current_bs_id is None:
-            best_bs = None
-            best_utility = -1
-            best_ratio = 1.0
-            all_ratios = [1.0, 0.8, 0.6, 0.4, 0.2]
+            best_bs, best_utility, best_ratio = None, -1, 1.0
             for bs_id in self.env.base_stations.keys():
-                for ratio in all_ratios:
+                for ratio in [1.0, 0.8, 0.6, 0.4, 0.2]:
                     utility, _ = self.calculate_utility_with_downgrade(uav, bs_id, ratio)
                     if utility > best_utility:
-                        best_utility = utility
-                        best_bs = bs_id
-                        best_ratio = ratio
-            t_end = time()
-            self.decision_time_history.append((t_end - t_start) * 1000)
+                        best_utility, best_bs, best_ratio = utility, bs_id, ratio
+            self.decision_time_history.append((time() - t_start) * 1000)
             if best_bs is not None:
                 self.reconnect_attempts += 1
                 return (best_bs, best_ratio)
             return None
 
+        # 紧急切换判定
         emergency = False
         if current_bs_id is not None:
             current_sinr = self.env.sinr_matrix[uav_id, current_bs_id]
-            # SINR极低时触发紧急
-            control_signal_sinr_threshold = 0 if uav.business_type == BusinessType.CONTROL_SIGNAL else self.emergency_sinr_threshold
-            if current_sinr < control_signal_sinr_threshold:
+            sinr_thresh = 0 if uav.business_type == BusinessType.CONTROL_SIGNAL else self.emergency_sinr_threshold
+            if current_sinr < sinr_thresh:
                 emergency = True
-            # 控制信号UAV的紧急判定保持不变
             if uav.business_type == BusinessType.CONTROL_SIGNAL and current_sinr < 5 and uav.current_satisfaction < 0.85:
                 emergency = True
+
         if emergency:
             self.emergency_count += 1
             self.current_step_emergency += 1
             best_bs, best_ratio = self._emergency_select(uav)
-            if best_bs is not None:
-                t_end = time()
-                self.decision_time_history.append((t_end - t_start) * 1000)
-                return (best_bs, best_ratio)
-            t_end = time()
-            self.decision_time_history.append((t_end - t_start) * 1000)
-            return None
-        # 核心决策：使用与传统一致的降级比例，但用业务感知效用函数
-        all_ratios = [1.0, 0.8, 0.6, 0.4, 0.2]  # 与传统算法一致
+            self.decision_time_history.append((time() - t_start) * 1000)
+            return (best_bs, best_ratio) if best_bs is not None else None
+
+        # 核心决策：降级比例搜索 + 效用比较
+        all_ratios = [1.0, 0.8, 0.6, 0.4, 0.2]
         current_utility, _ = self.calculate_utility_with_downgrade(uav, current_bs_id, 1.0)
-        best_bs = None
-        best_utility = current_utility
-        best_ratio = 1.0
+        best_bs, best_utility, best_ratio = None, current_utility, 1.0
         for bs_id in self.env.base_stations.keys():
             if bs_id == current_bs_id:
                 continue
             for ratio in all_ratios:
                 utility, _ = self.calculate_utility_with_downgrade(uav, bs_id, ratio)
                 if utility > best_utility:
-                    best_utility = utility
-                    best_bs = bs_id
-                    best_ratio = ratio
+                    best_utility, best_bs, best_ratio = utility, bs_id, ratio
+
         if best_bs is not None:
             dynamic_threshold = self.calculate_dynamic_threshold(uav)
             self.utility_history.append({'current': current_utility, 'best': best_utility})
             self.threshold_history.append(dynamic_threshold)
             if best_utility > current_utility + dynamic_threshold:
                 self.decision_log.append({
-                    'uav_id': uav.uav_id,
-                    'step': self.env.current_step,
-                    'current_bs': current_bs_id,
-                    'target_bs': best_bs,
-                    'best_success_prob': None,
-                    'current_satisfaction': uav.current_satisfaction,
-                    'downgrade_ratio': best_ratio,
-                    'filter_reason': None
+                    'uav_id': uav.uav_id, 'step': self.env.current_step,
+                    'current_bs': current_bs_id, 'target_bs': best_bs,
+                    'downgrade_ratio': best_ratio, 'filter_reason': None
                 })
-                t_end = time()
-                self.decision_time_history.append((t_end - t_start) * 1000)
+                self.decision_time_history.append((time() - t_start) * 1000)
                 return (best_bs, best_ratio)
-        t_end = time()
-        self.decision_time_history.append((t_end - t_start) * 1000)
+
+        self.decision_time_history.append((time() - t_start) * 1000)
         return None
 
+    # ==================== 执行 ====================
+
     def _soft_migrate_kicked_uavs(self, kicked_ids: list, exclude_bs_id: int):
-        """为被抢占的UAV尝试软迁移到其他BS，减少级联断连"""
+        """为被抢占的UAV尝试软迁移到其他基站"""
         for kicked_id in kicked_ids:
             kicked_uav = self.env.uavs.get(kicked_id)
             if kicked_uav is None or kicked_uav.connected_bs_id is not None:
-                continue  # 已经被迁移或连接
-            best_alt_bs = None
-            best_alt_score = -1
-            best_ratio = 1.0
+                continue
+            best_alt_bs, best_alt_score, best_ratio = None, -1, 1.0
             for bs_id, bs in self.env.base_stations.items():
                 if bs_id == exclude_bs_id:
                     continue
                 for r in kicked_uav.qos_profile.get_feasible_downgrade_ratios():
                     needed = kicked_uav.required_rate * r
                     if bs.available_capacity >= needed * 0.9:
-                        sinr = self.env.sinr_matrix[kicked_id, bs_id]
-                        score = sinr + bs.available_capacity * 0.01
+                        score = self.env.sinr_matrix[kicked_id, bs_id] + bs.available_capacity * 0.01
                         if score > best_alt_score:
-                            best_alt_score = score
-                            best_alt_bs = bs_id
-                            best_ratio = r
+                            best_alt_score, best_alt_bs, best_ratio = score, bs_id, r
                         break
             if best_alt_bs is not None:
-                alt_bs = self.env.base_stations[best_alt_bs]
                 needed = kicked_uav.required_rate * best_ratio
-                if alt_bs.allocate(kicked_id, needed):
+                if self.env.base_stations[best_alt_bs].allocate(kicked_id, needed):
                     kicked_uav.connected_bs_id = best_alt_bs
                     kicked_uav.current_allocated_rate = needed
                     self.env.connection_matrix[kicked_id, best_alt_bs] = 1
@@ -442,187 +427,195 @@ class EnhancedHandoverAlgorithm:
 
     def execute_handover(self, uav_id: int, target_bs_id: int, downgrade_ratio: float) -> bool:
         """
-        切换执行：先释放旧基站，再分配新基站（与传统算法一致）
-        失败时回滚到旧基站，避免UAV断连
-        回滚失败时清空connected_bs_id，使UAV进入重连路径
-        重连失败时设置冷却期，避免级联重连尝试
+        执行切换：先释放旧基站 -> 分配新基站 -> 失败则抢占 -> 失败则回滚 -> 回滚失败则断连
+
+        Args:
+            uav_id: 无人机ID
+            target_bs_id: 目标基站ID
+            downgrade_ratio: 降级比例
+
+        Returns:
+            是否成功
         """
         from time import time
         t_start = time()
-
         uav = self.env.uavs[uav_id]
         target_bs = self.env.base_stations[target_bs_id]
         required_rate = uav.required_rate * downgrade_ratio
-
-        # 区分重连和正常切换
         is_reconnect = (uav.connected_bs_id is None)
-
-        # 所有调用都计入尝试
         self.handover_attempts += 1
 
-        # 记录旧基站信息以便回滚
+        # 记录旧基站信息
         old_bs_id = uav.connected_bs_id
         old_bs = self.env.base_stations[old_bs_id] if old_bs_id is not None else None
         old_allocated_rate = uav.current_allocated_rate
 
-        # 先释放旧基站资源（减少资源竞争）
+        # 1. 释放旧基站
         if old_bs_id is not None and old_bs_id != target_bs_id:
             old_bs.release(uav_id)
             self.env.connection_matrix[uav_id, old_bs_id] = 0
 
-        # 再尝试分配到新基站
+        # 2. 直接分配
         if target_bs.allocate(uav_id, required_rate):
-            uav.connected_bs_id = target_bs_id
-            uav.current_allocated_rate = required_rate
-            self.env.connection_matrix[uav_id, target_bs_id] = 1
-            uav.handover_count += 1
-            self.handover_successes += 1
-            if is_reconnect:
-                self.reconnect_successes += 1
-                self.reconnect_cooldown.pop(uav_id, None)  # 清除冷却
-            t_end = time()
-            self.switching_latency_history.append((t_end - t_start) * 1000)
-            return True
+            return self._complete_handover(uav_id, target_bs_id, required_rate, is_reconnect, t_start)
 
-        # 直接分配失败，尝试抢占低优先级UAV
+        # 3. 抢占低优先级
         self.failure_reasons['allocation_failed'] += 1
         freed, kicked_ids = target_bs.kick_low_priority(uav, self.env.uavs)
         if freed >= required_rate and target_bs.allocate(uav_id, required_rate):
-            uav.connected_bs_id = target_bs_id
-            uav.current_allocated_rate = required_rate
-            self.env.connection_matrix[uav_id, target_bs_id] = 1
-            uav.handover_count += 1
-            self.handover_successes += 1
-            if is_reconnect:
-                self.reconnect_successes += 1
-                self.reconnect_cooldown.pop(uav_id, None)
-                self.disconnect_timer.pop(uav_id, None)
             self._soft_migrate_kicked_uavs(kicked_ids, target_bs_id)
-            t_end = time()
-            self.switching_latency_history.append((t_end - t_start) * 1000)
-            return True
+            return self._complete_handover(uav_id, target_bs_id, required_rate, is_reconnect, t_start)
 
-        # 抢占也失败，回滚到旧基站（避免断连）
+        # 4. 回滚到旧基站
         self.failure_reasons['preemption_failed'] += 1
         rollback_ok = False
         if old_bs_id is not None and old_bs_id != target_bs_id:
-            if old_bs.available_capacity >= old_allocated_rate:
-                old_bs.allocate(uav_id, old_allocated_rate)
-                self.env.connection_matrix[uav_id, old_bs_id] = 1
-                uav.connected_bs_id = old_bs_id
-                rollback_ok = True
-            else:
-                # 尝试通过抢占旧基站低优先级UAV来回滚
-                rollback_freed, rollback_kicked = old_bs.kick_low_priority(uav, self.env.uavs)
-                if rollback_freed >= old_allocated_rate and old_bs.allocate(uav_id, old_allocated_rate):
-                    self.env.connection_matrix[uav_id, old_bs_id] = 1
-                    uav.connected_bs_id = old_bs_id
-                    rollback_ok = True
-                    self._soft_migrate_kicked_uavs(rollback_kicked, old_bs_id)
-                else:
-                    self.failure_reasons['rollback_failed'] += 1
+            rollback_ok = self._try_rollback(uav_id, old_bs_id, old_bs, old_allocated_rate)
 
+        # 5. 回滚失败，断连
         if not rollback_ok:
-            # 回滚失败（有旧基站）或重连失败（无旧基站）
-            if is_reconnect:
-                # 重连失败：设置冷却期，防止反复尝试
-                self.reconnect_cooldown[uav_id] = self.RECONNECT_COOLDOWN_STEPS
-                self.disconnect_timer[uav_id] = self.disconnect_timer.get(uav_id, 0) + 1
-            else:
-                # 正常切换回滚失败：清空连接，进入重连路径
+            if not is_reconnect:
                 uav.connected_bs_id = None
                 uav.current_allocated_rate = 0.0
                 self.rollback_fail_count += 1
                 self.ghost_disconnect_count += 1
-                self.reconnect_cooldown[uav_id] = self.RECONNECT_COOLDOWN_STEPS
+            self.reconnect_cooldown[uav_id] = 0
+            if not is_reconnect:
                 self.disconnect_timer[uav_id] = 0
+            else:
+                self.disconnect_timer[uav_id] = self.disconnect_timer.get(uav_id, 0) + 1
 
-        t_end = time()
-        self.switching_latency_history.append((t_end - t_start) * 1000)
+        self.switching_latency_history.append((time() - t_start) * 1000)
         return False
 
+    def _complete_handover(self, uav_id, target_bs_id, required_rate, is_reconnect, t_start) -> bool:
+        """完成切换分配"""
+        from time import time
+        uav = self.env.uavs[uav_id]
+        uav.connected_bs_id = target_bs_id
+        uav.current_allocated_rate = required_rate
+        self.env.connection_matrix[uav_id, target_bs_id] = 1
+        uav.handover_count += 1
+        self.handover_successes += 1
+        if is_reconnect:
+            self.reconnect_successes += 1
+            self.reconnect_cooldown.pop(uav_id, None)
+            self.disconnect_timer.pop(uav_id, None)
+        self.switching_latency_history.append((time() - t_start) * 1000)
+        return True
+
+    def _try_rollback(self, uav_id, old_bs_id, old_bs, old_allocated_rate) -> bool:
+        """尝试回滚到旧基站"""
+        if old_bs.available_capacity >= old_allocated_rate:
+            old_bs.allocate(uav_id, old_allocated_rate)
+            self.env.connection_matrix[uav_id, old_bs_id] = 1
+            self.env.uavs[uav_id].connected_bs_id = old_bs_id
+            return True
+        # 尝试通过抢占回滚
+        rollback_freed, rollback_kicked = old_bs.kick_low_priority(self.env.uavs[uav_id], self.env.uavs)
+        if rollback_freed >= old_allocated_rate and old_bs.allocate(uav_id, old_allocated_rate):
+            self.env.connection_matrix[uav_id, old_bs_id] = 1
+            self.env.uavs[uav_id].connected_bs_id = old_bs_id
+            self._soft_migrate_kicked_uavs(rollback_kicked, old_bs_id)
+            return True
+        self.failure_reasons['rollback_failed'] += 1
+        return False
+
+    # ==================== 负载均衡 ====================
+
     def global_load_balancing_v2(self) -> int:
-        migrations = 0
+        """全局负载均衡：将高负载基站的低优先级UAV迁移到低负载基站"""
         load_ratios = [bs.load_ratio for bs in self.env.base_stations.values()]
-        load_std = np.std(load_ratios)
-        if load_std < 0.05:  # 降低阈值，更积极地均衡
+        if np.std(load_ratios) < 0.05:
             return 0
-        load_with_id = [(bs_id, bs.load_ratio) for bs_id, bs in self.env.base_stations.items()]
-        load_with_id.sort(key=lambda x: x[1], reverse=True)
-        high_bs_id, high_load = load_with_id[0]
-        low_bs_id, low_load = load_with_id[-1]
-        if high_load - low_load < 0.1:  # 降低差距阈值
+
+        load_with_id = sorted(self.env.base_stations.items(), key=lambda x: x[1].load_ratio, reverse=True)
+        high_bs_id, high_load = load_with_id[0][0], load_with_id[0][1].load_ratio
+        low_bs_id, low_load = load_with_id[-1][0], load_with_id[-1][1].load_ratio
+        if high_load - low_load < 0.1:
             return 0
+
         high_bs = self.env.base_stations[high_bs_id]
         low_bs = self.env.base_stations[low_bs_id]
+
+        # 选择迁移候选
         candidates = []
         for uav_id in list(high_bs.connected_uavs.keys()):
             uav = self.env.uavs[uav_id]
-            current_sinr = self.env.sinr_matrix[uav_id, high_bs_id]
-            target_sinr = self.env.sinr_matrix[uav_id, low_bs_id]
-            sinr_loss = current_sinr - target_sinr
-            if sinr_loss > 5:  # 放宽SINR损失容忍(从3到5)
+            sinr_loss = self.env.sinr_matrix[uav_id, high_bs_id] - self.env.sinr_matrix[uav_id, low_bs_id]
+            if sinr_loss > 5:
                 continue
             required = uav.current_allocated_rate
-            if low_bs.available_capacity <= required * 0.3:  # 降低容量要求(从1.2到0.3)
+            if low_bs.available_capacity <= required * 0.3:
                 continue
-            # 移除is_feasible和success_prob检查，直接用效用比较
             current_utility, _ = self.calculate_utility_with_downgrade(uav, high_bs_id, 1.0)
             target_utility, _ = self.calculate_utility_with_downgrade(uav, low_bs_id, 1.0)
             if target_utility - current_utility < -0.05:
                 continue
             score = (required / max(uav.qos_profile.priority, 0.1)) * (1 - uav.qos_profile.criticality)
             candidates.append((uav_id, score))
+
         candidates.sort(key=lambda x: x[1], reverse=True)
-        max_migrations = min(5, len(candidates))  # 从3增加到5
-        for uav_id, _ in candidates[:max_migrations]:
+        migrations = 0
+        for uav_id, _ in candidates[:5]:
             self.migration_attempts += 1
             if self.execute_handover(uav_id, low_bs_id, 1.0):
                 migrations += 1
                 self.migration_successes += 1
         return migrations
 
-    def run_step(self, enable_load_balancing=True) -> Tuple[int, int]:
-        handover_count = 0
-        self.current_step_emergency = 0  # 每步重置
+    def get_disconnected_count(self) -> int:
+        """统计当前处于断连状态的UAV数量"""
+        return sum(1 for uav in self.env.uavs.values() if uav.connected_bs_id is None)
 
-        # 优先处理断连UAV（按断连时长降序，断连越久优先级越高）
+    # ==================== 主循环 ====================
+
+    def run_step(self, enable_load_balancing=True) -> Tuple[int, int]:
+        """
+        执行一个仿真步
+
+        Args:
+            enable_load_balancing: 是否启用负载均衡
+
+        Returns:
+            (切换次数, 迁移次数)
+        """
+        handover_count = 0
+        self.current_step_emergency = 0
+
+        # 优先处理断连UAV
         disconnected_ids = [uid for uid in self.env.uavs.keys()
                             if self.env.uavs[uid].connected_bs_id is None]
         if disconnected_ids:
-            # 递增断连计时器
             for uid in disconnected_ids:
                 self.disconnect_timer[uid] = self.disconnect_timer.get(uid, 0) + 1
-            # 按断连时长排序，最久的先处理
             disconnected_ids.sort(key=lambda uid: self.disconnect_timer.get(uid, 0), reverse=True)
-            # 每步最多尝试重连所有断连UAV（冷却已禁用）
             for uav_id in disconnected_ids:
                 decision = self.make_intelligent_decision(uav_id)
                 if decision is not None:
-                    target_bs_id, ratio = decision
-                    if self.execute_handover(uav_id, target_bs_id, ratio):
+                    if self.execute_handover(uav_id, decision[0], decision[1]):
                         handover_count += 1
                         self.disconnect_timer.pop(uav_id, None)
 
-        # 再处理已连接UAV
-        connected_ids = [uid for uid in self.env.uavs.keys()
-                         if self.env.uavs[uid].connected_bs_id is not None]
-        for uav_id in connected_ids:
-            decision = self.make_intelligent_decision(uav_id)
-            if decision is not None:
-                target_bs_id, ratio = decision
-                if self.execute_handover(uav_id, target_bs_id, ratio):
-                    handover_count += 1
+        # 处理已连接UAV
+        for uav_id in self.env.uavs.keys():
+            if self.env.uavs[uav_id].connected_bs_id is not None:
+                decision = self.make_intelligent_decision(uav_id)
+                if decision is not None:
+                    if self.execute_handover(uav_id, decision[0], decision[1]):
+                        handover_count += 1
 
+        # 周期性负载均衡
         migration_count = 0
         if enable_load_balancing and self.env.current_step % 5 == 0:
             migration_count = self.global_load_balancing_v2()
+
         return handover_count, migration_count
 
     def get_detailed_stats(self) -> Dict:
-        # 切换成功率：仅计正常切换（排除重连），与传统算法对齐
+        """获取算法详细统计"""
         normal_attempts = max(self.handover_attempts - self.reconnect_attempts, 1)
-        normal_success_rate = (self.handover_successes - self.reconnect_successes) / normal_attempts if normal_attempts > 0 else 0
+        normal_success_rate = (self.handover_successes - self.reconnect_successes) / normal_attempts
         reconnect_success_rate = self.reconnect_successes / max(self.reconnect_attempts, 1)
         return {
             'avg_decision_time_ms': np.mean(self.decision_time_history) if self.decision_time_history else 0,

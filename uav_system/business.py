@@ -1,15 +1,39 @@
+"""
+业务类型与QoS模型定义
+
+定义三类无人机业务（控制信令、视频回传、环境监测）的枚举、
+QoS配置文件、以及业务特征生成参数。
+"""
+
 from enum import Enum
 from dataclasses import dataclass
 from typing import List
 import numpy as np
 
+
 class BusinessType(Enum):
-    CONTROL_SIGNAL = 0
-    VIDEO_STREAMING = 1
-    ENVIRONMENT_MONITORING = 2
+    """无人机业务类型枚举"""
+    CONTROL_SIGNAL = 0           # 控制信令：高优先级，低时延，低带宽
+    VIDEO_STREAMING = 1          # 视频回传：中优先级，高带宽，中时延
+    ENVIRONMENT_MONITORING = 2   # 环境监测：低优先级，低带宽，高时延容忍
+
 
 @dataclass
 class QoSProfile:
+    """
+    QoS配置文件
+
+    Attributes:
+        business_type: 业务类型
+        min_rate: 最低保障速率(Mbps)
+        ideal_rate: 理想速率(Mbps)
+        max_delay: 最大允许时延(ms)
+        max_loss_rate: 最大允许丢包率
+        priority: 业务优先级(0-1)
+        downgrade_tolerance: 降级容忍度(0-1)
+        criticality: 关键程度(0-1)
+        latency_sensitivity: 时延敏感度(0-1)
+    """
     business_type: BusinessType
     min_rate: float
     ideal_rate: float
@@ -21,8 +45,18 @@ class QoSProfile:
     latency_sensitivity: float = 0.5
 
     def calculate_satisfaction(self, allocated_rate: float) -> float:
+        """
+        根据分配速率计算满意度
+
+        各业务类型有不同的满意度曲线：
+        - 控制信令：严格阈值型，低于70%速率满意度直接归零
+        - 视频回传：平滑过渡型，使用Smoothstep函数
+        - 环境监测：线性型，容忍较大的速率波动
+        """
         rate_ratio = allocated_rate / self.ideal_rate
+
         if self.business_type == BusinessType.CONTROL_SIGNAL:
+            # 控制信令：严格阶梯函数
             if rate_ratio >= 0.95:
                 return 1.0
             elif rate_ratio >= 0.85:
@@ -31,17 +65,21 @@ class QoSProfile:
                 return 0.3 + 0.4 * (rate_ratio - 0.7) / 0.15
             else:
                 return 0.0
+
         elif self.business_type == BusinessType.VIDEO_STREAMING:
+            # 视频回传：Smoothstep平滑过渡
             if rate_ratio >= 0.9:
                 return 1.0
             elif rate_ratio >= 0.7:
                 x = (rate_ratio - 0.7) / 0.2
-                return 0.5 + 0.5 * (3*x**2 - 2*x**3)
+                return 0.5 + 0.5 * (3 * x**2 - 2 * x**3)
             elif rate_ratio >= 0.5:
                 return 0.2 + 0.3 * (rate_ratio - 0.5) / 0.2
             else:
                 return max(0.0, rate_ratio / 0.5 * 0.2)
-        else:
+
+        else:  # ENVIRONMENT_MONITORING
+            # 环境监测：线性衰减
             if rate_ratio >= 0.8:
                 return 1.0
             elif rate_ratio >= 0.3:
@@ -50,6 +88,11 @@ class QoSProfile:
                 return max(0.0, rate_ratio / 0.3 * 0.4)
 
     def get_feasible_downgrade_ratios(self) -> List[float]:
+        """
+        获取可行的降级比例列表
+
+        控制信令容忍最低降级(5%)，环境监测容忍最大降级(70%)。
+        """
         if self.business_type == BusinessType.CONTROL_SIGNAL:
             return [1.0, 0.95, 0.9]
         elif self.business_type == BusinessType.VIDEO_STREAMING:
@@ -57,6 +100,8 @@ class QoSProfile:
         else:
             return [1.0, 0.8, 0.6, 0.4, 0.3]
 
+
+# ==================== 预定义QoS配置 ====================
 QOS_PROFILES = {
     BusinessType.CONTROL_SIGNAL: QoSProfile(
         business_type=BusinessType.CONTROL_SIGNAL,
@@ -78,17 +123,29 @@ QOS_PROFILES = {
     )
 }
 
+
+# ==================== 业务特征生成参数 ====================
+# 用于模拟各业务类型的网络流量特征（时延ms、带宽Mbps、丢包率、抖动ms）
 BUSINESS_FEATURE_PARAMS = {
     BusinessType.CONTROL_SIGNAL: {
-        'delay': (5, 2), 'bandwidth': (50, 10),
-        'loss_beta': (1, 50), 'loss_scale': 0.5, 'jitter': (1, 0.5)
+        'delay': (5, 2),                # (均值, 标准差)
+        'bandwidth': (50, 10),
+        'loss_beta': (1, 50),           # Beta分布参数
+        'loss_scale': 0.5,              # 丢包率缩放因子
+        'jitter': (1, 0.5)
     },
     BusinessType.VIDEO_STREAMING: {
-        'delay': (30, 10), 'bandwidth': (200, 50),
-        'loss_beta': (2, 10), 'loss_scale': 1.0, 'jitter': (5, 2)
+        'delay': (30, 10),
+        'bandwidth': (200, 50),
+        'loss_beta': (2, 10),
+        'loss_scale': 1.0,
+        'jitter': (5, 2)
     },
     BusinessType.ENVIRONMENT_MONITORING: {
-        'delay': (10, 3), 'bandwidth': (100, 30),
-        'loss_beta': (2, 20), 'loss_scale': 0.5, 'jitter': (2, 1)
+        'delay': (10, 3),
+        'bandwidth': (100, 30),
+        'loss_beta': (2, 20),
+        'loss_scale': 0.5,
+        'jitter': (2, 1)
     }
 }
