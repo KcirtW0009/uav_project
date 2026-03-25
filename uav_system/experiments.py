@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib
+matplotlib.use('Agg')  # 使用非交互式后端，避免plt.show()弹窗阻塞程序
 import matplotlib.pyplot as plt
 import os
 import warnings
@@ -83,7 +84,7 @@ class Experiment1:
 
                 # 使用不带随机事件的环境进行对比实验
                 env = EnhancedNetworkEnvironment(
-                    num_bs=8, num_uav=150,  # 方案B: 调整为150台
+                    num_bs=8, num_uav=110,  # 实际工程规模: ~65%利用率
                     recognition_model=None, scaler=None,
                     seed=condition_seed,
                     event_probability=0.0  # 关闭随机事件，专注于识别准确率的影响
@@ -375,7 +376,7 @@ class Experiment1:
 
         plt.tight_layout()
         plt.savefig(os.path.join(RESULT_DIR, 'exp1_results.png'), dpi=200, bbox_inches='tight')
-        plt.show()
+        plt.close(fig)
         
         return summary
 
@@ -629,7 +630,7 @@ class Experiment3:
 
             # 增强算法
             env_enh = EnhancedNetworkEnvironment(
-                num_bs=8, num_uav=220,  # 方案B-保守型: 8基站220无人机，利用率124.6%
+                num_bs=8, num_uav=155,  # 实际工程规模: ~90%利用率，峰值运营场景
                 recognition_model=recognition_model, scaler=scaler,
                 seed=GLOBAL_SEED + rep, event_probability=0.05
             )
@@ -637,7 +638,7 @@ class Experiment3:
 
             # 传统算法
             env_trad = EnhancedNetworkEnvironment(
-                num_bs=8, num_uav=220,  # 方案B-保守型: 8基站220无人机，利用率124.6%
+                num_bs=8, num_uav=155,  # 实际工程规模: ~90%利用率
                 recognition_model=recognition_model, scaler=scaler,
                 seed=GLOBAL_SEED + rep, event_probability=0.05
             )
@@ -910,7 +911,7 @@ class Experiment3:
                 verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
 
         plt.savefig(os.path.join(RESULT_DIR, 'exp3_results.png'), dpi=200, bbox_inches='tight')
-        plt.show()
+        plt.close(fig)
 
 
 # -------------------- 实验2：机制有效性验证 --------------------
@@ -953,7 +954,7 @@ class Experiment2:
             set_global_seed(GLOBAL_SEED + rep)
             for mechanism in Experiment2.MECHANISMS.keys():
                 env = EnhancedNetworkEnvironment(
-                    num_bs=8, num_uav=180,  # 方案B: 调整为180台
+                    num_bs=8, num_uav=130,  # 实际工程规模: ~75%利用率
                     recognition_model=recognition_model, scaler=scaler,
                     seed=GLOBAL_SEED + rep, event_probability=0.05
                 )
@@ -1217,7 +1218,7 @@ class Experiment2:
 
         plt.tight_layout()
         plt.savefig(os.path.join(RESULT_DIR, 'exp2_results.png'), dpi=200, bbox_inches='tight')
-        plt.show()
+        plt.close(fig)
 
 
 # -------------------- 实验2b：机制组合验证 --------------------
@@ -1272,7 +1273,7 @@ class Experiment2b:
 
             for combo_name in Experiment2b.COMBINATIONS.keys():
                 env = EnhancedNetworkEnvironment(
-                    num_bs=8, num_uav=120,  # 方案D: 增加UAV数量
+                    num_bs=8, num_uav=100,  # 实际工程规模: ~60%利用率，留足余量展示机制效果
                     recognition_model=recognition_model, scaler=scaler,
                     seed=GLOBAL_SEED + rep, event_probability=0.05
                 )
@@ -1611,7 +1612,7 @@ class Experiment2b:
                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
 
         plt.savefig(os.path.join(RESULT_DIR, 'exp2b_results.png'), dpi=200, bbox_inches='tight')
-        plt.show()
+        plt.close(fig)
 
 
 # -------------------- 实验4 --------------------
@@ -1640,14 +1641,14 @@ class Experiment4:
                 set_global_seed(GLOBAL_SEED + rep)
 
                 env_enh = EnhancedNetworkEnvironment(
-                    num_bs=8, num_uav=180,  # 方案B: 调整为8基站180台
+                    num_bs=8, num_uav=120,  # 实际工程规模: ~68%利用率，场景对比保持一致
                     recognition_model=recognition_model, scaler=scaler,
                     seed=GLOBAL_SEED + rep, scenario=scenario, event_probability=0.05
                 )
                 algo_enh = EnhancedHandoverAlgorithm(env_enh)
 
                 env_trad = EnhancedNetworkEnvironment(
-                    num_bs=8, num_uav=180,  # 方案B: 调整为8基站180台
+                    num_bs=8, num_uav=120,  # 实际工程规模: ~68%利用率
                     recognition_model=recognition_model, scaler=scaler,
                     seed=GLOBAL_SEED + rep, scenario=scenario, event_probability=0.05
                 )
@@ -1826,4 +1827,4 @@ class Experiment4:
 
         plt.tight_layout()
         plt.savefig(os.path.join(RESULT_DIR, 'exp4_results.png'), dpi=200, bbox_inches='tight')
-        plt.show()
+        plt.close(fig)

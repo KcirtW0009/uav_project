@@ -51,7 +51,11 @@ class BaseStation:
             self.current_load -= rate
             self.current_load = max(0, self.current_load)
 
-    def kick_low_priority(self, target_uav, uav_pool: Dict[int, 'UAV']) -> float:
+    def kick_low_priority(self, target_uav, uav_pool: Dict[int, 'UAV']) -> Tuple[float, List[int]]:
+        """
+        抢占低优先级UAV资源。返回 (释放的空间, 被踢UAV的ID列表)。
+        调用方可对被踢UAV做软迁移。
+        """
         target_priority = target_uav.qos_profile.priority
         freed_space = 0.0
         to_kick = []
@@ -62,17 +66,17 @@ class BaseStation:
                         uav.business_type != BusinessType.CONTROL_SIGNAL):
                     to_kick.append((uav_id, rate, uav.qos_profile.priority))
         to_kick.sort(key=lambda x: x[2])
+        kicked_uav_ids = []
         for uav_id, rate, _ in to_kick:
             self.release(uav_id)
             freed_space += rate
             if uav_id in uav_pool:
                 uav_pool[uav_id].current_allocated_rate = 0.0
-                # 关键修复：清空被抢占UAV的连接状态
-                # 避免被抢占UAV持有指向已释放基站的幽灵连接
                 uav_pool[uav_id].connected_bs_id = None
+                kicked_uav_ids.append(uav_id)
             if freed_space > target_uav.qos_profile.ideal_rate:
                 break
-        return freed_space
+        return freed_space, kicked_uav_ids
 
     def set_failure(self, failed: bool):
         self.failure_state = failed
