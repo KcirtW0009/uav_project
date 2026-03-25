@@ -67,6 +67,9 @@ class BaseStation:
             freed_space += rate
             if uav_id in uav_pool:
                 uav_pool[uav_id].current_allocated_rate = 0.0
+                # 关键修复：清空被抢占UAV的连接状态
+                # 避免被抢占UAV持有指向已释放基站的幽灵连接
+                uav_pool[uav_id].connected_bs_id = None
             if freed_space > target_uav.qos_profile.ideal_rate:
                 break
         return freed_space

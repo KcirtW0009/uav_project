@@ -660,8 +660,10 @@ class Experiment3:
                 filtered_low_prob = sum(1 for log in algo_enh.decision_log if log.get('filter_reason') == 'low_success_prob')
                 filtered_low_gain = sum(1 for log in algo_enh.decision_log if log.get('filter_reason') == 'low_gain')
                 exec_filtered = algo_enh.execution_filter_stats.get('below_threshold', 0)
+                capacity_precheck = algo_enh.execution_filter_stats.get('capacity_precheck', 0)
                 print(f" [决策日志] 总决策: {total_decisions}, 低负载过滤: {filtered_low_load}, "
-                      f"低成功率过滤: {filtered_low_prob}, 低增益过滤: {filtered_low_gain}, 执行层过滤: {exec_filtered}")
+                      f"低成功率过滤: {filtered_low_prob}, 低增益过滤: {filtered_low_gain}, "
+                      f"容量预检: {capacity_precheck}")
 
                 # 打印前5条决策示例
                 print(" [决策示例] 前5条:")
@@ -683,11 +685,22 @@ class Experiment3:
             traditional_results.append(trad_stats)
 
             print(f" 增强算法 - 满足率: {enh_stats['avg_satisfaction']:.3f}, "
-                  f"切换成功率: {enh_stats['handover_success_rate']*100:.1f}%, "
-                  f"吞吐量: {enh_stats['total_load']:.1f} Mbps")
+                  f"切换成功率: {enh_stats['handover_success_rate']*100:.1f}% "
+                  f"(正常{max(algo_enh.handover_attempts-algo_enh.reconnect_attempts,0)}次, "
+                  f"紧急{algo_enh.emergency_count}次), "
+                  f"重连: {algo_enh.reconnect_successes}/{algo_enh.reconnect_attempts}, "
+                  f"吞吐量: {enh_stats['total_load']:.1f} Mbps, "
+                  f"回滚失败: {algo_enh.rollback_fail_count}, "
+                  f"断连数: {enh_stats.get('disconnected_count', 'N/A')}")
             print(f" 传统算法 - 满足率: {trad_stats['avg_satisfaction']:.3f}, "
-                  f"切换成功率: {trad_stats['handover_success_rate']*100:.1f}%, "
-                  f"吞吐量: {trad_stats['total_load']:.1f} Mbps")
+                  f"切换成功率: {trad_stats['handover_success_rate']*100:.1f}% "
+                  f"(正常{max(algo_trad.handover_attempts-algo_trad.reconnect_attempts,0)}次), "
+                  f"重连率: {trad_stats.get('reconnect_success_rate', 0)*100:.1f}% "
+                  f"({algo_trad.reconnect_successes}/{algo_trad.reconnect_attempts}), "
+                  f"吞吐量: {trad_stats['total_load']:.1f} Mbps, "
+                  f"尝试: {algo_trad.handover_attempts}, "
+                  f"成功: {algo_trad.handover_successes}, "
+                  f"失败: {dict(algo_trad.failure_reasons)}")
 
         summary = Experiment3._summarize(enhanced_results, traditional_results)
         Experiment3._print_results_table(summary)

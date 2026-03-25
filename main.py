@@ -71,6 +71,6 @@ if __name__ == "__main__":
     set_global_seed(GLOBAL_SEED)
     # 运行实验2b（机制组合验证）
     # 可以传入数字或字符串: [1, 2, '2b', 3, 4]
-    # main(force_retrain=False, run_experiments=[3])
+    main(force_retrain=False, run_experiments=[3])
     # 运行所有实验
-    main(force_retrain=False, run_experiments=[ 1,2,'2b', 4])
+    # main(force_retrain=False, run_experiments=[ 1,2,'2b', 4])
