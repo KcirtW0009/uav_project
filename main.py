@@ -86,4 +86,4 @@ def main(force_retrain=False, run_experiments=None):
 
 if __name__ == "__main__":
     set_global_seed(GLOBAL_SEED)
-    main(force_retrain=False, run_experiments=[3])
+    main(force_retrain=False, run_experiments=[1,2,'2b',3,4])
