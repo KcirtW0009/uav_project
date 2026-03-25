@@ -618,7 +618,7 @@ class Experiment3:
     }
 
     @staticmethod
-    def run(recognition_model, scaler, num_steps=350, repeats=6):  # 方案B: 合理规模
+    def run(recognition_model, scaler, num_steps=350, repeats=10):  # 10次重复确保统计显著性
         print("\n" + "="*80)
         print("实验3：增强算法 vs 传统算法（全面对比）")
         print("="*80)
@@ -673,9 +673,15 @@ class Experiment3:
                     sinr_gain = log.get('sinr_gain', 'N/A')
                     if sinr_gain != 'N/A':
                         reason = f"{reason}(增益{sinr_gain:.1f}dB)"
-                    print(f"   {i+1}. UAV{log['uav_id']}: 负载={log.get('current_load', 'N/A'):.2f}, "
-                          f"预测={log.get('best_success_prob', 'N/A'):.2f}, "
-                          f"满足率={log.get('current_satisfaction', 'N/A'):.2f}, "
+                    load = log.get('current_load', None)
+                    prob = log.get('best_success_prob', None)
+                    sat = log.get('current_satisfaction', None)
+                    load_s = f"{load:.2f}" if load is not None else "N/A"
+                    prob_s = f"{prob:.2f}" if prob is not None else "N/A"
+                    sat_s = f"{sat:.2f}" if sat is not None else "N/A"
+                    print(f"   {i+1}. UAV{log['uav_id']}: 负载={load_s}, "
+                          f"预测={prob_s}, "
+                          f"满足率={sat_s}, "
                           f"结果={reason}")
 
             enhanced_results.append(enh_stats)
@@ -692,7 +698,8 @@ class Experiment3:
                   f"重连: {algo_enh.reconnect_successes}/{algo_enh.reconnect_attempts}, "
                   f"吞吐量: {enh_stats['total_load']:.1f} Mbps, "
                   f"回滚失败: {algo_enh.rollback_fail_count}, "
-                  f"断连数: {enh_stats.get('disconnected_count', 'N/A')}")
+                  f"断连数: {enh_stats.get('disconnected_count', 'N/A')}, "
+                  f"失败: {enh_stats.get('failure_reasons', {})}")
             print(f" 传统算法 - 满足率: {trad_stats['avg_satisfaction']:.3f}, "
                   f"切换成功率: {trad_stats['handover_success_rate']*100:.1f}% "
                   f"(正常{max(algo_trad.handover_attempts-algo_trad.reconnect_attempts,0)}次), "
