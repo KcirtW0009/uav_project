@@ -80,9 +80,10 @@ class Experiment1:
                 condition_seed = GLOBAL_SEED + rep * 10000 + idx * 100
                 set_global_seed(condition_seed)
 
+
                 # 使用不带随机事件的环境进行对比实验
                 env = EnhancedNetworkEnvironment(
-                    num_bs=8, num_uav=50,
+                    num_bs=8, num_uav=150,  # 方案B: 调整为150台
                     recognition_model=None, scaler=None,
                     seed=condition_seed,
                     event_probability=0.0  # 关闭随机事件，专注于识别准确率的影响
@@ -939,7 +940,7 @@ class Experiment2:
             set_global_seed(GLOBAL_SEED + rep)
             for mechanism in Experiment2.MECHANISMS.keys():
                 env = EnhancedNetworkEnvironment(
-                    num_bs=8, num_uav=50,
+                    num_bs=8, num_uav=180,  # 方案B: 调整为180台
                     recognition_model=recognition_model, scaler=scaler,
                     seed=GLOBAL_SEED + rep, event_probability=0.05
                 )
@@ -1626,14 +1627,14 @@ class Experiment4:
                 set_global_seed(GLOBAL_SEED + rep)
 
                 env_enh = EnhancedNetworkEnvironment(
-                    num_bs=10, num_uav=80,
+                    num_bs=8, num_uav=180,  # 方案B: 调整为8基站180台
                     recognition_model=recognition_model, scaler=scaler,
                     seed=GLOBAL_SEED + rep, scenario=scenario, event_probability=0.05
                 )
                 algo_enh = EnhancedHandoverAlgorithm(env_enh)
 
                 env_trad = EnhancedNetworkEnvironment(
-                    num_bs=10, num_uav=80,
+                    num_bs=8, num_uav=180,  # 方案B: 调整为8基站180台
                     recognition_model=recognition_model, scaler=scaler,
                     seed=GLOBAL_SEED + rep, scenario=scenario, event_probability=0.05
                 )
