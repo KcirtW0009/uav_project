@@ -234,10 +234,10 @@ class EnhancedHandoverAlgorithm:
         bs = self.env.base_stations[bs_id]
         sinr_success = 1 / (1 + np.exp(-0.5 * (sinr + 5)))
 
-        # 修复：使用更保守的负载预测模型
-        # 原公式：load_success = 1 - load_ratio * 0.5，负载80%时预测60%
-        # 新公式：使用指数衰减，负载80%时预测降至约20%
-        load_success = np.exp(-3.0 * bs.load_ratio)
+        # 优化：放松负载预测模型，提高预测成功率
+        # 原系数：-3.0 → 负载80%时预测：exp(-2.4) = 0.090
+        # 新系数：-2.0 → 负载80%时预测：exp(-1.6) = 0.202 (提升124%)
+        load_success = np.exp(-2.0 * bs.load_ratio)
 
         # 实际可用容量检查
         required_rate = uav.required_rate * downgrade_ratio
@@ -316,23 +316,33 @@ class EnhancedHandoverAlgorithm:
                 continue
             for ratio in feasible_ratios:
                 utility, is_feasible = self.calculate_utility_with_downgrade(uav, bs_id, ratio)
-                if is_feasible and ratio >= 0.6:
+                # 优化：放宽ratio限制，从0.6降至0.4，增加候选数量
+                if is_feasible and ratio >= 0.4:
                     success_prob = self.predict_handover_success(uav, bs_id, ratio)
                     candidates.append((bs_id, ratio, utility, success_prob))
         if not candidates:
             t_end = time()
             self.decision_time_history.append((t_end - t_start) * 1000)
             return None
-        high_success_candidates = [c for c in candidates if c[3] >= 0.55]  # 统一阈值
+
+        # 统一预测阈值（优化：从0.55放松至0.52）
+        UNIFIED_THRESHOLD = 0.52
+
+        # 筛选候选（不再分层，使用统一阈值）
+        high_success_candidates = [c for c in candidates if c[3] >= UNIFIED_THRESHOLD]
+
+        # 如果仍然没有候选（极端情况），才使用兜底策略
         if not high_success_candidates:
-            high_success_candidates = [c for c in candidates if c[3] >= 0.4]
-        if not high_success_candidates:
-            high_success_candidates = candidates
+            # 兜底：选择预测最高的候选（但预测都很低）
+            high_success_candidates = sorted(candidates, key=lambda x: x[3], reverse=True)
+            # 只取前3个最优候选
+            high_success_candidates = high_success_candidates[:3]
         if np.random.rand() < self.epsilon:
             choice = high_success_candidates[np.random.randint(len(high_success_candidates))]
             best_bs, best_ratio = choice[0], choice[1]
         else:
-            high_ratio_candidates = [c for c in high_success_candidates if c[1] >= 0.8]
+            # 优化：调整high_ratio阈值，从0.8降至0.6
+            high_ratio_candidates = [c for c in high_success_candidates if c[1] >= 0.6]
             if high_ratio_candidates:
                 candidates_to_use = high_ratio_candidates
             else:
@@ -375,11 +385,14 @@ class EnhancedHandoverAlgorithm:
                 'current_satisfaction': uav.current_satisfaction
             })
 
+            # 定义统一阈值常量（优化：与决策阶段对齐）
+            DECISION_THRESHOLD = 0.52  # 决策阶段的统一预测阈值
+            HIGH_SUCCESS_THRESHOLD = 0.70  # 高成功率阈值（用于稳定性检查）
+
             # 过滤条件1：当前基站负载较低时不切换（避免不必要的切换）
-            # 放松阈值：从0.5降到0.3，成功率阈值从0.65降到0.55
+            # 优化：阈值对齐至0.52，与决策阶段保持一致
             if current_bs is not None and current_bs.load_ratio < 0.3:
-                # 只有当预测成功率非常高（≥0.55）时才允许切换
-                if best_success_prob < 0.55:
+                if best_success_prob < DECISION_THRESHOLD:
                     # 记录过滤原因
                     self.decision_log[-1]['filter_reason'] = 'low_load'
                     self.decision_log[-1]['load_threshold'] = 0.3
@@ -388,23 +401,25 @@ class EnhancedHandoverAlgorithm:
                     self.missed_opportunity += 1
                     return None
 
-            # 过滤条件2：目标基站历史成功率较低时谨慎切换
-            if best_success_prob < 0.55 and uav.current_satisfaction >= 0.7:
+            # 过滤条件2：目标基站预测成功率较低时谨慎切换
+            # 优化：阈值从0.55降至0.48，与决策阶段保持一致
+            if best_success_prob < DECISION_THRESHOLD and uav.current_satisfaction >= 0.7:
                 # 记录过滤原因
                 self.decision_log[-1]['filter_reason'] = 'low_success_prob'
-                self.decision_log[-1]['prob_threshold'] = 0.55
+                self.decision_log[-1]['prob_threshold'] = DECISION_THRESHOLD
                 t_end = time()
                 self.decision_time_history.append((t_end - t_start) * 1000)
                 self.missed_opportunity += 1
                 return None
 
             # 过滤条件3：连接稳定性检查
+            # 优化：保持高阈值0.70，确保连接稳定性
             if current_bs is not None and current_bs.load_ratio < 0.7:
                 current_sinr = self.env.sinr_matrix[uav_id, current_bs_id]
                 target_sinr = self.env.sinr_matrix[uav_id, best_bs]
                 sinr_gain = target_sinr - current_sinr
                 # 如果SINR提升很小且当前满足率较高，过滤切换
-                if sinr_gain < 2.0 and uav.current_satisfaction >= 0.8 and best_success_prob < 0.7:
+                if sinr_gain < 2.0 and uav.current_satisfaction >= 0.8 and best_success_prob < HIGH_SUCCESS_THRESHOLD:
                     self.decision_log[-1]['filter_reason'] = 'low_gain'
                     self.decision_log[-1]['sinr_gain'] = sinr_gain
                     t_end = time()
@@ -416,24 +431,23 @@ class EnhancedHandoverAlgorithm:
         return (best_bs, best_ratio)
 
     def execute_handover(self, uav_id: int, target_bs_id: int, downgrade_ratio: float) -> bool:
+        """
+        优化：移除执行阶段的预测过滤和统计过滤
+
+        核心改进：
+        1. 所有进入execute的切换都计入handover_attempts（移除统计偏差）
+        2. 不再重新计算预测，直接执行切换
+        3. 保持决策阶段的筛选逻辑，执行阶段只负责执行
+        """
         from time import time
         t_start = time()
 
         uav = self.env.uavs[uav_id]
-
-        # 计算预测成功率，只有预测成功率≥0.55时才计入正式尝试
-        success_prob = self.predict_handover_success(uav, target_bs_id, downgrade_ratio)
-        count_as_attempt = success_prob >= 0.55  # 是否计入正式尝试
-        if count_as_attempt:
-            self.handover_attempts += 1
-        else:
-            # 低于阈值的切换不计入尝试，避免降低成功率
-            self.execution_filter_stats['below_threshold'] = self.execution_filter_stats.get('below_threshold', 0) + 1
-            t_end = time()
-            return False
-
         target_bs = self.env.base_stations[target_bs_id]
         required_rate = uav.required_rate * downgrade_ratio
+
+        # 优化：所有调用都计入尝试（移除统计过滤）
+        self.handover_attempts += 1
 
         # 记录旧基站信息以便回滚
         old_bs_id = uav.connected_bs_id
@@ -450,8 +464,7 @@ class EnhancedHandoverAlgorithm:
             uav.current_allocated_rate = required_rate
             self.env.connection_matrix[uav_id, target_bs_id] = 1
             uav.handover_count += 1
-            if count_as_attempt:  # 只有正式尝试的成功才计入
-                self.handover_successes += 1
+            self.handover_successes += 1  # 所有成功都计入
             t_end = time()
             self.switching_latency_history.append((t_end - t_start) * 1000)
             return True
@@ -468,8 +481,7 @@ class EnhancedHandoverAlgorithm:
                 uav.current_allocated_rate = required_rate
                 self.env.connection_matrix[uav_id, target_bs_id] = 1
                 uav.handover_count += 1
-                if count_as_attempt:  # 只有正式尝试的成功才计入
-                    self.handover_successes += 1
+                self.handover_successes += 1  # 所有成功都计入
                 t_end = time()
                 self.switching_latency_history.append((t_end - t_start) * 1000)
                 return True
