@@ -68,7 +68,7 @@ class DQNAgent:
                  hidden_dim: int = 128, buffer_size: int = 10000,
                  batch_size: int = 64, epsilon_start: float = 1.0,
                  epsilon_end: float = 0.01, epsilon_decay: float = 0.995,
-                 target_update_freq: int = 100,
+                 target_update_freq: int = 100, tau: float = 0.005,
                  device: Optional[str] = None):
 
         self.state_dim = state_dim
@@ -76,6 +76,7 @@ class DQNAgent:
         self.gamma = gamma
         self.batch_size = batch_size
         self.target_update_freq = target_update_freq
+        self.tau = tau  # 软更新系数 (Polyak averaging)
         self.train_step_count = 0
 
         # 设备
@@ -205,8 +206,8 @@ class DQNAgent:
             max_next_q = next_q_all.max(dim=1).values
             target_q = rewards + self.gamma * max_next_q * (1 - dones)
 
-        # MSE Loss
-        loss = nn.MSELoss()(q_values, target_q)
+        # Huber Loss (比 MSE 更鲁棒，防止 Q 值发散时 loss 爆炸)
+        loss = nn.SmoothL1Loss()(q_values, target_q)
 
         # 反向传播
         self.optimizer.zero_grad()
@@ -219,9 +220,11 @@ class DQNAgent:
         loss_val = loss.item()
         self.loss_history.append(loss_val)
 
-        # 定期更新目标网络
-        if self.train_step_count % self.target_update_freq == 0:
-            self.target_network.load_state_dict(self.q_network.state_dict())
+        # 软更新目标网络 (Polyak averaging): θ_target = τ·θ + (1-τ)·θ_target
+        # 比硬拷贝更平滑，防止 TD target 突变导致策略跳变
+        for target_param, param in zip(self.target_network.parameters(),
+                                       self.q_network.parameters()):
+            target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
         return loss_val
 

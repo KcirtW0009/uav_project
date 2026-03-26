@@ -57,15 +57,15 @@ def train_dqn(num_episodes: int = 200, num_bs: int = 8, num_uav: int = 15,
     agent = DQNAgent(
         state_dim=rl_env.state_dim,
         action_dim=rl_env.action_dim,
-        lr=1e-3,
-        gamma=0.99,
+        lr=5e-4,
+        gamma=0.95,
         hidden_dim=128,
         buffer_size=50000,
         batch_size=64,
         epsilon_start=1.0,
         epsilon_end=0.01,
         epsilon_decay=0.995,
-        target_update_freq=100,
+        target_update_freq=500,
     )
 
     # 训练记录
@@ -78,14 +78,10 @@ def train_dqn(num_episodes: int = 200, num_bs: int = 8, num_uav: int = 15,
     epsilon_history = []
 
     t_start_total = time.time()
+    best_eval_reward = -float('inf')  # 追踪最佳评估奖励
 
     for episode in range(num_episodes):
-        # 每50个episode重建环境，获取不同拓扑防止过拟合
-        if episode % 50 == 0:
-            rl_env = create_rl_env(
-                num_bs=num_bs, num_uav=num_uav, target_uav_id=target_uav_id,
-                max_steps=max_steps, seed=seed + episode, skip_recognition=True
-            )
+        # 固定拓扑训练：让 DQN 充分收敛，评估时再用不同种子测泛化
         t_start_ep = time.time()
         state = rl_env.reset()
         total_reward = 0.0
@@ -134,6 +130,12 @@ def train_dqn(num_episodes: int = 200, num_bs: int = 8, num_uav: int = 15,
             eval_reward, eval_sat = _evaluate(agent, rl_env, num_eval=3, max_steps=max_steps)
             eval_rewards.append((episode + 1, eval_reward))
             eval_satisfactions.append((episode + 1, eval_sat))
+
+            # 保存最佳模型（基于 eval reward，防止过拟合退化）
+            if eval_reward > best_eval_reward:
+                best_eval_reward = eval_reward
+                best_path = os.path.join('experiment_results', 'dqn_model_best.pt')
+                agent.save(best_path)
 
             elapsed = time.time() - t_start_total
             eta = elapsed / (episode + 1) * (num_episodes - episode - 1)

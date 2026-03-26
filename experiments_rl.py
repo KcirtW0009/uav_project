@@ -97,10 +97,10 @@ class Experiment5:
         agent = DQNAgent(
             state_dim=rl_env_template.state_dim,
             action_dim=rl_env_template.action_dim,
-            lr=1e-3, gamma=0.99, hidden_dim=128,
+            lr=5e-4, gamma=0.95, hidden_dim=128,
             buffer_size=50000, batch_size=64,
             epsilon_start=1.0, epsilon_end=0.01, epsilon_decay=0.995,
-            target_update_freq=100,
+            target_update_freq=500,
         )
 
         if load_model and model_path and os.path.exists(model_path):
@@ -108,14 +108,13 @@ class Experiment5:
             print(f"  已加载模型: {model_path}")
         else:
             print(f"  训练 DQN ({dqn_train_episodes} episodes)...")
+            rl_env_train = RLHandoverEnv(
+                NetworkEnvironmentWithRecognition(num_bs=num_bs, num_uav=num_uav, seed=GLOBAL_SEED),
+                target_uav_id=target_uav_id, max_steps=num_steps
+            )
             train_rewards = []
             for ep in range(dqn_train_episodes):
-                # 每50个episode重建环境，获取不同拓扑防止过拟合
-                if ep % 50 == 0:
-                    rl_env_train = RLHandoverEnv(
-                        NetworkEnvironmentWithRecognition(num_bs=num_bs, num_uav=num_uav, seed=GLOBAL_SEED + ep),
-                        target_uav_id=target_uav_id, max_steps=num_steps
-                    )
+                # 固定拓扑训练：让 DQN 充分收敛，评估时再用不同种子测泛化
                 state = rl_env_train.reset()
                 ep_reward = 0.0
                 ep_sat_sum = 0.0
@@ -663,20 +662,19 @@ class Experiment5b:
             agent = DQNAgent(
                 state_dim=rl_env_template.state_dim,
                 action_dim=rl_env_template.action_dim,
-                lr=1e-3, gamma=0.99, hidden_dim=128,
+                lr=5e-4, gamma=0.95, hidden_dim=128,
                 buffer_size=50000, batch_size=64,
                 epsilon_start=1.0, epsilon_end=0.01, epsilon_decay=0.995,
-                target_update_freq=100,
+                target_update_freq=500,
             )
 
+            rl_env_train = RLHandoverEnv(
+                NetworkEnvironmentWithRecognition(num_bs=num_bs, num_uav=num_uav, seed=GLOBAL_SEED),
+                target_uav_id=target_uav_id, max_steps=num_steps
+            )
             train_rewards = []
             for ep in range(dqn_train_episodes):
-                # 每50个episode重建环境，获取不同拓扑防止过拟合
-                if ep % 50 == 0:
-                    rl_env_train = RLHandoverEnv(
-                        NetworkEnvironmentWithRecognition(num_bs=num_bs, num_uav=num_uav, seed=GLOBAL_SEED + ep),
-                        target_uav_id=target_uav_id, max_steps=num_steps
-                    )
+                # 固定拓扑训练：让 DQN 充分收敛，评估时再用不同种子测泛化
                 state = rl_env_train.reset()
                 ep_reward = 0.0
                 ep_sat_sum = 0.0

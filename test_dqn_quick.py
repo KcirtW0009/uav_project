@@ -52,25 +52,22 @@ def quick_test():
     agent = DQNAgent(
         state_dim=NUM_BS * 4 + 7,
         action_dim=1 + NUM_BS,
-        lr=1e-3, gamma=0.99, hidden_dim=128,
+        lr=5e-4, gamma=0.95, hidden_dim=128,
         buffer_size=50000, batch_size=64,
         epsilon_start=1.0, epsilon_end=0.01, epsilon_decay=0.995,
-        target_update_freq=100,
+        target_update_freq=500,
     )
 
-    rl_env_train = None
+    rl_env_train = RLHandoverEnv(
+        NetworkEnvironmentWithRecognition(num_bs=NUM_BS, num_uav=NUM_UAV, seed=SEED),
+        target_uav_id=TARGET_ID, max_steps=MAX_STEPS
+    )
     train_rewards = []
     stay_counts = []
     switch_counts = []
 
     for ep in range(TRAIN_EPS):
-        # 每20 ep重建环境获取不同拓扑
-        if ep % 20 == 0:
-            set_global_seed(SEED + ep)
-            rl_env_train = RLHandoverEnv(
-                NetworkEnvironmentWithRecognition(num_bs=NUM_BS, num_uav=NUM_UAV, seed=SEED + ep),
-                target_uav_id=TARGET_ID, max_steps=MAX_STEPS
-            )
+        # 固定拓扑训练：让 DQN 充分收敛，评估时再用不同种子测泛化
         state = rl_env_train.reset()
         ep_reward = 0.0
         ep_sat_sum = 0.0
