@@ -3,7 +3,8 @@
 
 用法:
     python main.py                  # 默认运行实验3
-    python main.py --all            # 运行所有实验(1, 2, 3, 4)
+    python main.py --all            # 运行所有实验(1, 2, 2b, 3, 4, 5, 5b)
+    python main.py --exp 5 5b       # 运行 RL 实验
 """
 
 import sys
@@ -25,7 +26,7 @@ def main(force_retrain=False, run_experiments=None):
 
     Args:
         force_retrain: 是否强制重新训练识别模型
-        run_experiments: 要运行的实验列表，如 [1, 2, 3, 4] 或 ['2b']，默认 [3]
+        run_experiments: 要运行的实验列表，如 [1, 2, 3, 4] 或 ['2b', 5, '5b']，默认 [3]
     """
     print("\n" + "=" * 80)
     print("无人机业务识别与切换决策联动系统")
@@ -61,6 +62,8 @@ def main(force_retrain=False, run_experiments=None):
         '2b': lambda: Experiment2b.run(recognition_model, scaler, num_steps=150, repeats=8),
         '3': lambda: Experiment3.run(recognition_model, scaler),
         '4': lambda: Experiment4.run(recognition_model, scaler, num_steps=150, repeats=10),
+        '5': lambda: _run_exp5(),
+        '5b': lambda: _run_exp5b(),
     }
 
     for exp_id_str in run_experiments_str:
@@ -84,6 +87,54 @@ def main(force_retrain=False, run_experiments=None):
     return results
 
 
+def _run_exp5():
+    """运行实验5（RL对比实验）"""
+    from experiments_rl import Experiment5
+    return Experiment5.run(
+        num_steps=150,
+        repeats=10,
+        num_bs=8,
+        num_uav=20,
+        target_uav_id=0,
+        dqn_train_episodes=1000,
+        load_model=False,
+        verbose=True,
+    )
+
+
+def _run_exp5b():
+    """运行实验5b（多场景对比）"""
+    from experiments_rl import Experiment5b
+    return Experiment5b.run(
+        num_steps=150,
+        repeats=10,
+        num_bs=8,
+        uav_counts=(10, 20, 30, 40),
+        target_uav_id=0,
+        dqn_train_episodes=1000,
+        verbose=True,
+    )
+
+
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description='无人机业务识别与切换决策联动系统')
+    parser.add_argument('--exp', nargs='+', default=[1, 2, '2b', 3, 4],
+                        help='要运行的实验，如: --exp 1 2 2b 3 4 5 5b（默认: 1 2 2b 3 4）')
+    parser.add_argument('--all', action='store_true',
+                        help='运行所有实验 (1, 2, 2b, 3, 4, 5, 5b)')
+    parser.add_argument('--retrain', action='store_true',
+                        help='强制重新训练识别模型')
+    args = parser.parse_args()
+
+    if args.all:
+        run_experiments = [1, 2, '2b', 3, 4, 5, '5b']
+    else:
+        run_experiments = [int(e) if e.isdigit() else e for e in args.exp]
+
     set_global_seed(GLOBAL_SEED)
-    main(force_retrain=False, run_experiments=[1,2,'2b',3,4])
+    main(force_retrain=args.retrain, run_experiments=run_experiments)
+
+# python main.py 	只运行实验3（和之前一样）
+# python main.py --all 运行全部实验
+# python main.py --exp 5b 指定运行哪些实验

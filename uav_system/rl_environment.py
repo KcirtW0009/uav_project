@@ -17,7 +17,7 @@ class RLHandoverEnv:
     UAV 切换决策的 RL 环境
 
     将网络环境包装为标准的 reset / step 接口：
-    - 状态 (state): 目标 UAV 的 SINR 向量、基站负载率、业务类型、速度、满意度等
+    - 状态 (state): 目标 UAV 的 SINR 向量、基站负载率、业务类型、速度、满意度、当前连接 BS 等
     - 动作 (action): 离散动作，编码为 (保持 / 切换到基站X + 降级比例Y)
     - 奖励 (reward): 基于满意度变化、切换惩罚、吞吐量增益的组合奖励
 
@@ -27,8 +27,9 @@ class RLHandoverEnv:
     - 其余 UAV 由 EnhancedHandoverAlgorithm 自动管理
     """
 
-    # 动作编码：动作0=保持，动作1~N = 切换到 (bs_id, downgrade_ratio)
-    DOWNGRADE_RATIOS = [1.0, 0.8, 0.6]  # 3个降级档位
+    # 动作编码：动作0=保持，动作1~N = 切换到 bs_id（全速率）
+    # 简化动作空间：原 1+8*3=25 → 现 1+8=9，大幅提高 stay 的探索概率 (4%→11%)
+    DOWNGRADE_RATIOS = [1.0]
 
     def __init__(self, env: NetworkEnvironmentWithRecognition, target_uav_id: int = 0,
                  max_steps: int = 150, reward_config: Optional[Dict] = None,
@@ -51,14 +52,29 @@ class RLHandoverEnv:
         self._last_connected = True
         self._total_handovers = 0
 
+        # 切换时间追踪（防止乒乓振荡）
+        self._steps_since_last_switch = 0
+        self._last_switched_from_bs = None   # 上次切换前连接的 BS ID
+        self._consecutive_stays = 0           # 连续 stay 步数
+        self._pre_switch_cooldown = 0         # 动作前冷却步数（用于奖励计算）
+        self._cooldown_steps = 10             # 冷却窗口（步数）
+
         # 奖励权重配置
+        # 设计原则：让"保持连接"成为默认最优策略，仅在满意度显著下降时才值得切换
+        # 切换一次总成本最高: 1.5 + 0.3 + 0.5 = 2.3
+        # 需要delta_sat > 1.5/3.0 = 0.5 才值得切换（满意度大幅改善时）
+        # stay每步收益: 0.1 + 0.05 + sat*0.5 ≈ 0.65
         self.reward_config = reward_config or {
-            'satisfaction_weight': 10.0,       # 满意度变化权重
+            'satisfaction_weight': 3.0,        # 满意度变化权重（从10降低，防止delta_sat主导）
             'satisfaction_baseline': 0.3,      # 满意度绝对值奖励(当高于此阈值时)
-            'handover_penalty': 0.15,           # 每次切换惩罚
-            'disconnect_penalty': 2.0,          # 断连惩罚
-            'throughput_bonus': 0.01,           # 吞吐量增益权重
-            'stay_bonus': 0.02,                 # 维持连接的微小奖励
+            'handover_penalty': 1.5,           # 每次切换惩罚（从0.5提高，大幅增加切换成本）
+            'invalid_switch_penalty': 0.5,     # 无效切换惩罚
+            'disconnect_penalty': 3.0,         # 断连惩罚
+            'throughput_bonus': 0.01,          # 吞吐量增益权重
+            'stay_bonus': 0.1,                 # 维持连接的奖励（从0.05提高）
+            'cooldown_penalty': 0.3,           # 冷却期内切换的额外惩罚
+            'ping_pong_penalty': 0.5,          # 切回上一个 BS 的额外惩罚
+            'consecutive_stay_bonus': 0.05,    # 连续 stay >5 步的额外奖励
         }
 
         # 为非目标 UAV 创建增强算法（自动管理）
@@ -77,8 +93,21 @@ class RLHandoverEnv:
 
     @property
     def state_dim(self) -> int:
-        """状态空间维度"""
-        return self.env.num_bs * 2 + 3 + 3  # SINR + 负载率 + 业务one-hot + 速度 + 满意度 + 连接状态
+        """
+        状态空间维度
+
+        状态组成 (共 num_bs*4 + 7 维):
+        - [0, num_bs): 对每个基站的 SINR 值 (归一化到 [0, 1])
+        - [num_bs, 2*num_bs): 各基站负载率
+        - [2*num_bs, 3*num_bs): 当前连接 BS one-hot
+        - [3*num_bs, 3*num_bs+3): 业务类型 one-hot 编码
+        - [3*num_bs+3, 3*num_bs+4): 移动速度 (归一化)
+        - [3*num_bs+4, 3*num_bs+5): 当前满意度
+        - [3*num_bs+5, 3*num_bs+6): 连接状态 (1=已连接, 0=断连)
+        - [3*num_bs+6, 3*num_bs+7): 切换冷却计时 (归一化，防止乒乓)
+        - [3*num_bs+7, 4*num_bs+7): 上次切换来源 BS one-hot
+        """
+        return self.env.num_bs * 4 + 7
 
     @property
     def action_dim(self) -> int:
@@ -94,13 +123,16 @@ class RLHandoverEnv:
         """
         获取当前状态向量
 
-        状态组成 (共 num_bs*2 + 3 + 3 维):
+        状态组成 (共 num_bs*4 + 7 维):
         - [0, num_bs): 对每个基站的 SINR 值 (归一化到 [0, 1])
         - [num_bs, 2*num_bs): 各基站负载率
-        - [2*num_bs, 2*num_bs+3): 业务类型 one-hot 编码
-        - [2*num_bs+3, 2*num_bs+4): 移动速度 (归一化)
-        - [2*num_bs+4, 2*num_bs+5): 当前满意度
-        - [2*num_bs+5, 2*num_bs+6): 连接状态 (1=已连接, 0=断连)
+        - [2*num_bs, 3*num_bs): 当前连接 BS one-hot 编码（让 DQN 知道自己连着哪个）
+        - [3*num_bs, 3*num_bs+3): 业务类型 one-hot 编码
+        - [3*num_bs+3, 3*num_bs+4): 移动速度 (归一化)
+        - [3*num_bs+4, 3*num_bs+5): 当前满意度
+        - [3*num_bs+5, 3*num_bs+6): 连接状态 (1=已连接, 0=断连)
+        - [3*num_bs+6, 3*num_bs+7): 切换冷却计时 (归一化)
+        - [3*num_bs+7, 4*num_bs+7): 上次切换来源 BS one-hot
         """
         uav = self.env.uavs[self.target_uav_id]
         n_bs = self.env.num_bs
@@ -112,20 +144,55 @@ class RLHandoverEnv:
         # 2. 基站负载率
         loads = np.array([bs.load_ratio for bs in self.env.base_stations.values()])
 
-        # 3. 业务类型 one-hot (使用真实类型，RL 不需要识别过程)
+        # 3. 当前连接 BS one-hot（关键新特征：让 DQN 知道当前连接）
+        connected_bs_onehot = np.zeros(n_bs)
+        if uav.connected_bs_id is not None and uav.connected_bs_id < n_bs:
+            connected_bs_onehot[uav.connected_bs_id] = 1.0
+
+        # 4. 业务类型 one-hot (使用真实类型，RL 不需要识别过程)
         biz = np.zeros(3)
         biz[uav.true_business_type.value] = 1
 
-        # 4. 移动速度 (归一化到 [0, 1]，假设最大 30 m/step)
+        # 5. 移动速度 (归一化到 [0, 1]，假设最大 30 m/step)
         velocity_norm = min(np.linalg.norm(uav.velocity) / 30.0, 1.0)
 
-        # 5. 当前满意度
+        # 6. 当前满意度
         satisfaction = uav.current_satisfaction
 
-        # 6. 连接状态
+        # 7. 连接状态
         connected = 1.0 if uav.connected_bs_id is not None else 0.0
 
-        return np.concatenate([sinr_norm, loads, biz, [velocity_norm, satisfaction, connected]])
+        # 8. 切换冷却计时（归一化，让 DQN 感知"刚切换过"）
+        cooldown_norm = min(self._steps_since_last_switch / 20.0, 1.0)
+
+        # 9. 上次切换来源 BS one-hot（让 DQN 知道从哪个 BS 切过来的）
+        last_bs_onehot = np.zeros(n_bs)
+        if self._last_switched_from_bs is not None and self._last_switched_from_bs < n_bs:
+            last_bs_onehot[self._last_switched_from_bs] = 1.0
+
+        return np.concatenate([sinr_norm, loads, connected_bs_onehot, biz,
+                              [velocity_norm, satisfaction, connected, cooldown_norm],
+                              last_bs_onehot])
+
+    def get_invalid_actions(self) -> List[int]:
+        """
+        获取当前状态下应屏蔽的无效动作索引
+
+        Returns:
+            无效动作索引列表（切换到当前已连接基站的所有降级档位）
+        """
+        uav = self.env.uavs[self.target_uav_id]
+        n_bs = self.env.num_bs
+        num_ratios = len(self.DOWNGRADE_RATIOS)
+        invalid = []
+
+        if uav.connected_bs_id is not None:
+            # 屏蔽"切换到当前基站"的所有降级档位
+            for r in range(num_ratios):
+                action_idx = 1 + uav.connected_bs_id * num_ratios + r
+                invalid.append(action_idx)
+
+        return invalid
 
     def _decode_action(self, action: int) -> Tuple[str, Optional[int], float]:
         """
@@ -141,7 +208,8 @@ class RLHandoverEnv:
             return ('stay', None, 1.0)
         return self._action_map[action]
 
-    def _compute_reward(self, action: int) -> float:
+    def _compute_reward(self, action: int, actual_switch: bool = False,
+                        invalid_action: bool = False) -> float:
         """
         计算即时奖励
 
@@ -149,9 +217,10 @@ class RLHandoverEnv:
         1. 满意度变化 (主奖励)
         2. 满意度绝对值奖励 (鼓励维持高满意度)
         3. 降级惩罚 (分配速率低于理想时扣分)
-        4. 切换惩罚 (抑制乒乓效应)
-        5. 断连惩罚
-        6. 维持连接奖励
+        4. 切换惩罚 (抑制乒乓效应，仅实际切换时)
+        5. 无效切换惩罚 (切换到同基站/故障基站，作为额外安全网)
+        6. 断连惩罚
+        7. 维持连接奖励
         """
         uav = self.env.uavs[self.target_uav_id]
         rc = self.reward_config
@@ -175,28 +244,52 @@ class RLHandoverEnv:
             rate_deficit = (ideal_rate - current_rate) / ideal_rate
             reward -= rate_deficit * 0.3
 
-        # 4. 切换惩罚（保持不变）
-        action_type, _, _ = self._decode_action(action)
-        if action_type == 'switch':
+        # 4. 切换惩罚（仅在 _apply_action 中实际切换了才惩罚）
+        if actual_switch:
             reward -= rc['handover_penalty']
-            self._total_handovers += 1
 
-        # 5. 断连惩罚
+            # 4a. 冷却惩罚：距上次切换越近，惩罚越大
+            if self._pre_switch_cooldown < self._cooldown_steps:
+                cooldown_ratio = 1 - self._pre_switch_cooldown / self._cooldown_steps
+                reward -= rc['cooldown_penalty'] * cooldown_ratio
+
+            # 4b. 乒乓惩罚：切回上一个 BS 时额外惩罚（仅在冷却期内）
+            _, target_bs_id, _ = self._decode_action(action)
+            if (self._last_switched_from_bs is not None and
+                    target_bs_id == self._last_switched_from_bs and
+                    self._pre_switch_cooldown < self._cooldown_steps):
+                reward -= rc['ping_pong_penalty']
+
+        # 5. 无效切换惩罚（安全网：如果动作掩码没生效，这里也会惩罚）
+        if invalid_action:
+            reward -= rc.get('invalid_switch_penalty', 0.3)
+
+        # 6. 断连惩罚
         if not is_connected and self._last_connected:
             reward -= rc['disconnect_penalty']
 
-        # 6. 维持连接奖励
+        # 7. 维持连接奖励 + 连续 stay 奖励（鼓励稳定性）
+        action_type = self._decode_action(action)[0]
         if is_connected and action_type == 'stay':
             reward += rc['stay_bonus']
+            if self._consecutive_stays > 5:
+                reward += rc['consecutive_stay_bonus']
 
         return reward
 
-    def _apply_action(self, action: int):
-        """将 RL 动作应用到目标 UAV"""
+    def _apply_action(self, action: int) -> Tuple[bool, bool]:
+        """
+        将 RL 动作应用到目标 UAV
+
+        Returns:
+            (actual_switch, invalid_action):
+            - actual_switch: 是否实际执行了有效切换
+            - invalid_action: 是否为无效动作（切到同基站/故障基站）
+        """
         action_type, target_bs_id, downgrade_ratio = self._decode_action(action)
 
         if action_type == 'stay':
-            return
+            return False, False
 
         # 执行切换
         uav = self.env.uavs[self.target_uav_id]
@@ -204,11 +297,11 @@ class RLHandoverEnv:
 
         # 跳过无效切换：切换到当前基站
         if uav.connected_bs_id == target_bs_id:
-            return
+            return False, True
 
         # 跳过故障基站
         if target_bs.failure_state:
-            return
+            return False, True
 
         required_rate = uav.required_rate * downgrade_ratio
         old_bs_id = uav.connected_bs_id
@@ -226,7 +319,8 @@ class RLHandoverEnv:
             uav.current_allocated_rate = required_rate
             self.env.connection_matrix[self.target_uav_id, target_bs_id] = 1
             uav.handover_count += 1
-            return
+            self._last_switched_from_bs = old_bs_id
+            return True, False
 
         # 分配失败，尝试抢占
         freed, kicked_ids = target_bs.kick_low_priority(uav, self.env.uavs)
@@ -235,9 +329,10 @@ class RLHandoverEnv:
             uav.current_allocated_rate = required_rate
             self.env.connection_matrix[self.target_uav_id, target_bs_id] = 1
             uav.handover_count += 1
+            self._last_switched_from_bs = old_bs_id
             # 为被抢占的 UAV 尝试软迁移
             self._soft_migrate_kicked(kicked_ids, target_bs_id)
-            return
+            return True, False
 
         # 抢占也失败，尝试回滚
         if old_bs_id is not None and old_bs_id != target_bs_id:
@@ -245,11 +340,12 @@ class RLHandoverEnv:
                 old_bs.allocate(self.target_uav_id, old_allocated_rate)
                 self.env.connection_matrix[self.target_uav_id, old_bs_id] = 1
                 uav.connected_bs_id = old_bs_id
-                return
+                return False, False
 
         # 回滚失败，断连
         uav.connected_bs_id = None
         uav.current_allocated_rate = 0.0
+        return False, False
 
     def _soft_migrate_kicked(self, kicked_ids: list, exclude_bs_id: int):
         """为被抢占的 UAV 尝试软迁移"""
@@ -312,9 +408,23 @@ class RLHandoverEnv:
         self._last_satisfaction = self.env.uavs[self.target_uav_id].current_satisfaction
         self._last_allocated_rate = self.env.uavs[self.target_uav_id].current_allocated_rate
         self._last_connected = self.env.uavs[self.target_uav_id].connected_bs_id is not None
+        self._pre_switch_cooldown = self._steps_since_last_switch
 
         # 1. 将 RL 动作应用到目标 UAV
-        self._apply_action(action)
+        actual_switch, invalid_action = self._apply_action(action)
+
+        # 更新切换追踪计数器
+        action_decoded = self._decode_action(action)
+        if actual_switch:
+            self._total_handovers += 1
+            self._steps_since_last_switch = 0
+            self._consecutive_stays = 0
+        elif action_decoded[0] == 'stay':
+            self._consecutive_stays += 1
+            self._steps_since_last_switch += 1
+        else:
+            self._consecutive_stays = 0
+            self._steps_since_last_switch += 1
 
         # 2. 用启发式算法管理其余 UAV
         self._manage_other_uavs()
@@ -336,7 +446,7 @@ class RLHandoverEnv:
         self._current_step += 1
 
         # 4. 计算奖励
-        reward = self._compute_reward(action)
+        reward = self._compute_reward(action, actual_switch, invalid_action)
 
         # 5. 获取下一步状态
         next_state = self.get_state()
@@ -353,7 +463,10 @@ class RLHandoverEnv:
             'allocated_rate': uav.current_allocated_rate,
             'handover_count': uav.handover_count,
             'total_handovers': self._total_handovers,
-            'action_type': self._decode_action(action)[0],
+            'action_type': action_decoded[0],
+            'action_target_bs': action_decoded[1],
+            'actual_switch': actual_switch,
+            'invalid_action': invalid_action,
         }
 
         return next_state, reward, done, info
@@ -368,6 +481,10 @@ class RLHandoverEnv:
         self.env.reset()
         self._current_step = 0
         self._total_handovers = 0
+        self._steps_since_last_switch = 0
+        self._last_switched_from_bs = None
+        self._consecutive_stays = 0
+        self._pre_switch_cooldown = 0
 
         # 重建动作映射表（reset 后 num_bs 可能变化）
         self._build_action_map()

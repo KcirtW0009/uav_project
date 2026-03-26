@@ -60,10 +60,10 @@ def train_dqn(num_episodes: int = 200, num_bs: int = 8, num_uav: int = 15,
         lr=1e-3,
         gamma=0.99,
         hidden_dim=128,
-        buffer_size=10000,
+        buffer_size=50000,
         batch_size=64,
         epsilon_start=1.0,
-        epsilon_end=0.05,
+        epsilon_end=0.01,
         epsilon_decay=0.995,
         target_update_freq=100,
     )
@@ -80,6 +80,12 @@ def train_dqn(num_episodes: int = 200, num_bs: int = 8, num_uav: int = 15,
     t_start_total = time.time()
 
     for episode in range(num_episodes):
+        # 每50个episode重建环境，获取不同拓扑防止过拟合
+        if episode % 50 == 0:
+            rl_env = create_rl_env(
+                num_bs=num_bs, num_uav=num_uav, target_uav_id=target_uav_id,
+                max_steps=max_steps, seed=seed + episode, skip_recognition=True
+            )
         t_start_ep = time.time()
         state = rl_env.reset()
         total_reward = 0.0
@@ -87,14 +93,17 @@ def train_dqn(num_episodes: int = 200, num_bs: int = 8, num_uav: int = 15,
         ep_losses = []
 
         for step_i in range(max_steps):
-            # 选择动作
-            action = agent.select_action(state, training=True)
+            # 选择动作（带动作掩码）
+            invalid = rl_env.get_invalid_actions()
+            action = agent.select_action(state, training=True, invalid_actions=invalid)
 
             # 执行动作
             next_state, reward, done, info = rl_env.step(action)
 
-            # 存储经验
-            agent.store_transition(state, action, reward, next_state, float(done))
+            # 存储经验（含 next_state 的无效动作掩码）
+            next_invalid = rl_env.get_invalid_actions()
+            agent.store_transition(state, action, reward, next_state, float(done),
+                                   next_invalid_actions=next_invalid)
 
             # 训练
             loss = agent.train_step()
@@ -186,7 +195,8 @@ def _evaluate(agent: DQNAgent, rl_env, num_eval: int = 3, max_steps: int = 150):
         total_reward = 0.0
         sat_sum = 0.0
         for step_i in range(max_steps):
-            action = agent.select_action(state, training=False)
+            invalid = rl_env.get_invalid_actions()
+            action = agent.select_action(state, training=False, invalid_actions=invalid)
             next_state, reward, done, info = rl_env.step(action)
             total_reward += reward
             sat_sum += info['satisfaction']

@@ -3,6 +3,7 @@ DQN Agent 模块
 
 实现 Deep Q-Network 强化学习智能体，用于 UAV 切换决策。
 包含 Q 网络、经验回放、目标网络等标准 DQN 组件。
+支持动作掩码（Action Masking）以屏蔽无效动作。
 """
 
 import numpy as np
@@ -12,7 +13,7 @@ import torch.optim as optim
 from collections import deque
 import random
 import os
-from typing import Tuple, Optional
+from typing import Tuple, Optional, List
 
 
 class DQNNetwork(nn.Module):
@@ -45,6 +46,7 @@ class DQNAgent:
     - Target Network: 目标网络，用于计算 TD 目标（定期同步）
     - Experience Replay: 经验回放缓冲区
     - Epsilon-Greedy: 探索-利用策略
+    - Action Masking: 动作掩码，屏蔽无效动作
 
     Args:
         state_dim: 状态空间维度
@@ -103,29 +105,70 @@ class DQNAgent:
         # 训练统计
         self.loss_history = deque(maxlen=1000)
 
-    def select_action(self, state: np.ndarray, training: bool = True) -> int:
+    def select_action(self, state: np.ndarray, training: bool = True,
+                      invalid_actions: Optional[List[int]] = None) -> int:
         """
-        选择动作 (epsilon-greedy)
+        选择动作 (epsilon-greedy + 动作掩码)
 
         Args:
             state: 状态向量
             training: 是否为训练模式（训练时探索，评估时利用）
+            invalid_actions: 无效动作索引列表，会被屏蔽（如切换到当前基站）
 
         Returns:
             动作索引
         """
-        if training and random.random() < self.epsilon:
-            return random.randrange(self.action_dim)
+        valid_actions = self._get_valid_actions(invalid_actions)
 
+        # 探索：偏向 stay 动作（提高"保持连接"的探索概率）
+        if training and random.random() < self.epsilon:
+            if 0 in valid_actions and random.random() < 0.3:
+                return 0  # 30% 概率直接选 stay
+            return random.choice(valid_actions)
+
+        # 利用：在有效动作中选 Q 值最大的
         with torch.no_grad():
             state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
-            q_values = self.q_network(state_tensor)
-            return q_values.argmax(dim=1).item()
+            q_values = self.q_network(state_tensor).squeeze(0)
+            # 屏蔽无效动作（设为极小值）
+            for invalid_idx in (invalid_actions or []):
+                q_values[invalid_idx] = -1e9
+            return q_values.argmax().item()
+
+    def _get_valid_actions(self, invalid_actions: Optional[List[int]] = None) -> List[int]:
+        """获取有效动作列表"""
+        if invalid_actions is None:
+            return list(range(self.action_dim))
+        return [a for a in range(self.action_dim) if a not in invalid_actions]
+
+    def get_invalid_actions(self, connected_bs_id: Optional[int],
+                            num_bs: int, num_ratios: int = 3) -> List[int]:
+        """
+        计算当前状态下应该被屏蔽的无效动作
+
+        Args:
+            connected_bs_id: 当前连接的基站 ID（None 表示未连接）
+            num_bs: 基站数量
+            num_ratios: 每个基站的降级档位数
+
+        Returns:
+            无效动作索引列表
+        """
+        invalid = []
+        if connected_bs_id is not None:
+            # 屏蔽"切换到当前基站"的所有降级档位
+            # 动作映射: 0=stay, 1~num_bs*num_ratios = switch(bs, ratio)
+            # bs_i 的动作起始索引: 1 + bs_i * num_ratios
+            for r in range(num_ratios):
+                action_idx = 1 + connected_bs_id * num_ratios + r
+                invalid.append(action_idx)
+        return invalid
 
     def store_transition(self, state: np.ndarray, action: int,
-                         reward: float, next_state: np.ndarray, done: bool):
-        """存储一条经验到回放缓冲区"""
-        self.memory.append((state, action, reward, next_state, done))
+                         reward: float, next_state: np.ndarray, done: bool,
+                         next_invalid_actions: Optional[List[int]] = None):
+        """存储一条经验到回放缓冲区（含 next_state 的无效动作掩码）"""
+        self.memory.append((state, action, reward, next_state, done, next_invalid_actions))
 
     def train_step(self) -> Optional[float]:
         """
@@ -139,7 +182,7 @@ class DQNAgent:
 
         # 采样批次
         batch = random.sample(self.memory, self.batch_size)
-        states, actions, rewards, next_states, dones = zip(*batch)
+        states, actions, rewards, next_states, dones, next_invalid_actions = zip(*batch)
 
         states = torch.FloatTensor(np.array(states)).to(self.device)
         actions = torch.LongTensor(actions).to(self.device)
@@ -150,10 +193,17 @@ class DQNAgent:
         # 当前 Q 值: Q(s, a)
         q_values = self.q_network(states).gather(1, actions.unsqueeze(1)).squeeze(1)
 
-        # 目标 Q 值: r + gamma * max Q_target(s', a')
+        # 目标 Q 值: DQN（用目标网络评估）
+        # replay buffer 中存有 next_invalid_actions，用于屏蔽无效动作
         with torch.no_grad():
-            next_q_values = self.target_network(next_states).max(dim=1)[0]
-            target_q = rewards + self.gamma * next_q_values * (1 - dones)
+            next_q_all = self.target_network(next_states)
+            # 屏蔽 next_state 中的无效动作（设为极小值）
+            for i, inv_list in enumerate(next_invalid_actions):
+                if inv_list:
+                    for idx in inv_list:
+                        next_q_all[i, idx] = -1e9
+            max_next_q = next_q_all.max(dim=1).values
+            target_q = rewards + self.gamma * max_next_q * (1 - dones)
 
         # MSE Loss
         loss = nn.MSELoss()(q_values, target_q)
