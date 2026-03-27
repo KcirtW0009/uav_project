@@ -112,7 +112,12 @@ class Experiment5:
                 NetworkEnvironmentWithRecognition(num_bs=num_bs, num_uav=num_uav, seed=GLOBAL_SEED),
                 target_uav_id=target_uav_id, max_steps=num_steps
             )
+            # 训练过程数据收集
             train_rewards = []
+            train_losses = []
+            train_sats = []
+            train_hos = []
+            epsilon_history = []
             for ep in range(dqn_train_episodes):
                 # 多样化训练种子：每个 episode 使用不同种子，让 DQN 见过各种拓扑
                 set_global_seed(GLOBAL_SEED + ep % 20)
@@ -121,6 +126,7 @@ class Experiment5:
                 ep_reward = 0.0
                 ep_sat_sum = 0.0
                 ep_ho = 0
+                ep_losses = []
                 for step_i in range(num_steps):
                     invalid = rl_env_train.get_invalid_actions()
                     action = agent.select_action(state, training=True, invalid_actions=invalid)
@@ -129,6 +135,8 @@ class Experiment5:
                     agent.store_transition(state, action, reward, next_state, float(done),
                                            next_invalid_actions=next_invalid)
                     loss = agent.train_step()
+                    if loss is not None:
+                        ep_losses.append(loss)
                     ep_reward += reward
                     ep_sat_sum += info['satisfaction']
                     ep_ho = info['total_handovers']
@@ -136,15 +144,40 @@ class Experiment5:
                     if done:
                         break
                 agent.decay_epsilon()
+
+                # 记录训练数据
                 train_rewards.append(ep_reward)
+                train_losses.append(np.mean(ep_losses) if ep_losses else 0.0)
+                train_sats.append(ep_sat_sum / num_steps)
+                train_hos.append(ep_ho)
+                epsilon_history.append(agent.epsilon)
+
                 if (ep + 1) % 100 == 0:
                     avg_r = np.mean(train_rewards[-100:])
+                    avg_loss = np.mean(train_losses[-100:])
                     print(f"    Ep {ep+1}/{dqn_train_episodes}, eps={agent.epsilon:.3f}, "
-                          f"avg_R={avg_r:.1f}, sat={ep_sat_sum/num_steps:.3f}, ho={ep_ho}")
+                          f"avg_R={avg_r:.1f}, avg_sat={np.mean(train_sats[-100:]):.3f}, "
+                          f"avg_ho={np.mean(train_hos[-100:]):.1f}, avg_loss={avg_loss:.4f}")
 
             # 保存训练好的模型
             save_path = os.path.join(RESULT_DIR, 'dqn_exp5_model.pt')
             agent.save(save_path)
+
+            # 保存训练数据
+            train_data_path = os.path.join(RESULT_DIR, 'dqn_exp5_training_data.npz')
+            np.savez(train_data_path,
+                     episode_rewards=train_rewards, episode_losses=train_losses,
+                     epsilon_history=epsilon_history, episode_satisfactions=train_sats,
+                     episode_handovers=train_hos)
+
+            # 绘制训练曲线
+            Experiment5._plot_single_training_curves(
+                {num_uav: {
+                    'rewards': train_rewards, 'losses': train_losses,
+                    'epsilon': epsilon_history, 'sats': train_sats, 'hos': train_hos,
+                }}, dqn_train_episodes,
+                save_name='dqn_training_curves_exp5.png'
+            )
 
         print(f"  模型准备完成, 耗时 {time.time()-t0:.1f}s")
 
@@ -198,6 +231,103 @@ class Experiment5:
         Experiment5._plot(summary, results)
 
         return summary
+
+    @staticmethod
+    def _plot_single_training_curves(all_training_data, num_episodes, save_name='dqn_training_curves.png'):
+        """
+        绘制 DQN 训练曲线（单场景或多场景）
+
+        Args:
+            all_training_data: {num_uav: {rewards, losses, epsilon, sats, hos}}
+            num_episodes: 训练总 episodes
+            save_name: 保存文件名
+        """
+        uav_counts = sorted(all_training_data.keys())
+        n = len(uav_counts)
+
+        fig, axes = plt.subplots(n, 4, figsize=(24, 5 * n))
+        if n == 1:
+            axes = axes.reshape(1, -1)
+
+        fig.suptitle('DQN 训练过程曲线', fontsize=16, fontweight='bold', y=1.01)
+
+        for row_idx, num_uav in enumerate(uav_counts):
+            data = all_training_data[num_uav]
+            rewards = data['rewards']
+            losses = data['losses']
+            epsilon = data['epsilon']
+            sats = data['sats']
+            hos = data['hos']
+
+            episodes = range(1, len(rewards) + 1)
+            title_prefix = f'{num_uav} UAV'
+            color_r = '#667eea'
+            color_s = '#4ECDC4'
+            color_l = '#FF6B6B'
+            color_e = '#764ba2'
+
+            # 1. 奖励曲线
+            ax = axes[row_idx, 0]
+            ax.plot(list(episodes), rewards, alpha=0.3, color=color_r, linewidth=0.8)
+            window = min(20, len(rewards))
+            if window >= 5:
+                ma = np.convolve(rewards, np.ones(window)/window, mode='valid')
+                ax.plot(range(window, len(rewards) + 1), ma,
+                        color=color_r, linewidth=2, label=f'MA(w={window})')
+            ax.set_title(f'{title_prefix} - 奖励曲线', fontweight='bold')
+            ax.set_xlabel('Episode')
+            ax.set_ylabel('总奖励')
+            ax.legend(fontsize=8)
+            ax.grid(True, alpha=0.3)
+
+            # 2. 满意度曲线
+            ax = axes[row_idx, 1]
+            ax.plot(list(episodes), sats, alpha=0.3, color=color_s, linewidth=0.8)
+            if window >= 5:
+                ma = np.convolve(sats, np.ones(window)/window, mode='valid')
+                ax.plot(range(window, len(sats) + 1), ma,
+                        color=color_s, linewidth=2, label=f'MA(w={window})')
+            ax.set_title(f'{title_prefix} - 满意度曲线', fontweight='bold')
+            ax.set_xlabel('Episode')
+            ax.set_ylabel('平均满意度')
+            ax.set_ylim(-0.05, 1.1)
+            ax.legend(fontsize=8)
+            ax.grid(True, alpha=0.3)
+
+            # 3. Loss 曲线
+            ax = axes[row_idx, 2]
+            valid_losses = [l for l in losses if l > 0]
+            if valid_losses:
+                ax.plot(range(1, len(valid_losses) + 1), valid_losses,
+                        alpha=0.4, color=color_l, linewidth=0.8)
+                loss_window = min(50, len(valid_losses))
+                if loss_window >= 5:
+                    ma = np.convolve(valid_losses, np.ones(loss_window)/loss_window, mode='valid')
+                    ax.plot(range(loss_window, len(valid_losses) + 1), ma,
+                            color=color_l, linewidth=2, label=f'MA(w={loss_window})')
+            ax.set_title(f'{title_prefix} - Loss 曲线', fontweight='bold')
+            ax.set_xlabel('Episode')
+            ax.set_ylabel('Loss')
+            ax.legend(fontsize=8)
+            ax.grid(True, alpha=0.3)
+
+            # 4. Epsilon + 切换次数
+            ax = axes[row_idx, 3]
+            ax_twin = ax.twinx()
+            ax.plot(list(episodes), epsilon, color=color_e, linewidth=1.5, label='ε (探索率)')
+            ax_twin.plot(list(episodes), hos, alpha=0.4, color='#fbbf24',
+                         linewidth=0.8, label='切换次数')
+            ax.set_xlabel('Episode')
+            ax.set_ylabel('ε', color=color_e)
+            ax_twin.set_ylabel('切换次数', color='#fbbf24')
+            ax.set_title(f'{title_prefix} - 探索率 & 切换次数', fontweight='bold')
+            ax.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        save_path = os.path.join(RESULT_DIR, save_name)
+        plt.savefig(save_path, dpi=200, bbox_inches='tight')
+        plt.close(fig)
+        print(f"  训练曲线已保存: {save_path}")
 
     @staticmethod
     def _run_single(env, algo, num_steps, target_uav_id):
@@ -652,6 +782,7 @@ class Experiment5b:
         print(f"DQN 训练: {dqn_train_episodes} episodes / 场景")
 
         all_results = {}  # {num_uav: {'traditional': [...], 'enhanced': [...], 'dqn': [...]}}
+        all_training_data = {}  # {num_uav: 训练曲线数据}
 
         for num_uav in uav_counts:
             print(f"\n{'='*60}")
@@ -683,7 +814,12 @@ class Experiment5b:
                                                    bs_capacity_range=bs_capacity_range),
                 target_uav_id=target_uav_id, max_steps=num_steps
             )
+            # 训练过程数据收集
             train_rewards = []
+            train_losses = []
+            train_sats = []
+            train_hos = []
+            epsilon_history = []
             for ep in range(dqn_train_episodes):
                 # 多样化训练种子：每个 episode 使用不同种子，让 DQN 见过各种拓扑
                 set_global_seed(GLOBAL_SEED + ep % 20)
@@ -692,6 +828,7 @@ class Experiment5b:
                 ep_reward = 0.0
                 ep_sat_sum = 0.0
                 ep_ho = 0
+                ep_losses = []
                 for step_i in range(num_steps):
                     invalid = rl_env_train.get_invalid_actions()
                     action = agent.select_action(state, training=True, invalid_actions=invalid)
@@ -699,7 +836,9 @@ class Experiment5b:
                     next_invalid = rl_env_train.get_invalid_actions()
                     agent.store_transition(state, action, reward, next_state, float(done),
                                            next_invalid_actions=next_invalid)
-                    agent.train_step()
+                    loss = agent.train_step()
+                    if loss is not None:
+                        ep_losses.append(loss)
                     ep_reward += reward
                     ep_sat_sum += info['satisfaction']
                     ep_ho = info['total_handovers']
@@ -707,19 +846,36 @@ class Experiment5b:
                     if done:
                         break
                 agent.decay_epsilon()
+
+                # 记录训练数据
+                train_rewards.append(ep_reward)
+                train_losses.append(np.mean(ep_losses) if ep_losses else 0.0)
+                train_sats.append(ep_sat_sum / num_steps)
+                train_hos.append(ep_ho)
+                epsilon_history.append(agent.epsilon)
+
                 if (ep + 1) % 100 == 0:
-                    avg_r = np.mean(train_rewards[-100:]) if train_rewards else ep_reward
-                    train_rewards.append(ep_reward)
+                    avg_r = np.mean(train_rewards[-100:])
+                    avg_loss = np.mean(train_losses[-100:])
                     print(f"    Ep {ep+1}/{dqn_train_episodes}, eps={agent.epsilon:.3f}, "
-                          f"avg_R={avg_r:.1f}, last_sat={ep_sat_sum/num_steps:.3f}, "
-                          f"last_ho={ep_ho}")
-                else:
-                    train_rewards.append(ep_reward)
+                          f"avg_R={avg_r:.1f}, avg_sat={np.mean(train_sats[-100:]):.3f}, "
+                          f"avg_ho={np.mean(train_hos[-100:]):.1f}, avg_loss={avg_loss:.4f}")
 
             # 保存模型
             model_save_path = os.path.join(RESULT_DIR, f'dqn_exp5b_{num_uav}uav_model.pt')
             agent.save(model_save_path)
             print(f"  模型训练完成, 耗时 {time.time()-t0:.1f}s, 已保存至 {model_save_path}")
+
+            # 保存训练数据到 npz
+            train_data_path = os.path.join(RESULT_DIR, f'dqn_exp5b_{num_uav}uav_training_data.npz')
+            np.savez(train_data_path,
+                     episode_rewards=train_rewards, episode_losses=train_losses,
+                     epsilon_history=epsilon_history, episode_satisfactions=train_sats,
+                     episode_handovers=train_hos)
+            all_training_data[num_uav] = {
+                'rewards': train_rewards, 'losses': train_losses,
+                'epsilon': epsilon_history, 'sats': train_sats, 'hos': train_hos,
+            }
 
             # ---- 对比实验 ----
             scene_results = {'traditional': [], 'enhanced': [], 'dqn': []}
@@ -773,7 +929,106 @@ class Experiment5b:
         # ---- 汇总对比 ----
         Experiment5b._plot_comparison(all_results, uav_counts, num_bs)
 
+        # ---- 训练曲线可视化 ----
+        Experiment5b._plot_training_curves(all_training_data, dqn_train_episodes)
+
         return all_results
+
+    @staticmethod
+    def _plot_training_curves(all_training_data, num_episodes):
+        """
+        绘制多场景 DQN 训练曲线
+
+        Args:
+            all_training_data: {num_uav: {rewards, losses, epsilon, sats, hos}}
+            num_episodes: 训练总 episodes
+        """
+        uav_counts = sorted(all_training_data.keys())
+        n = len(uav_counts)
+
+        fig, axes = plt.subplots(n, 4, figsize=(24, 5 * n))
+        if n == 1:
+            axes = axes.reshape(1, -1)
+
+        fig.suptitle('DQN 训练过程曲线（多场景对比）', fontsize=16, fontweight='bold', y=1.01)
+
+        for row_idx, num_uav in enumerate(uav_counts):
+            data = all_training_data[num_uav]
+            rewards = data['rewards']
+            losses = data['losses']
+            epsilon = data['epsilon']
+            sats = data['sats']
+            hos = data['hos']
+
+            episodes = range(1, len(rewards) + 1)
+            title_prefix = f'{num_uav} UAV'
+            color_r = '#667eea'
+            color_s = '#4ECDC4'
+            color_l = '#FF6B6B'
+            color_e = '#764ba2'
+
+            # 1. 奖励曲线
+            ax = axes[row_idx, 0]
+            ax.plot(list(episodes), rewards, alpha=0.3, color=color_r, linewidth=0.8)
+            window = min(20, len(rewards))
+            if window >= 5:
+                ma = np.convolve(rewards, np.ones(window)/window, mode='valid')
+                ax.plot(range(window, len(rewards) + 1), ma,
+                        color=color_r, linewidth=2, label=f'MA(w={window})')
+            ax.set_title(f'{title_prefix} - 奖励曲线', fontweight='bold')
+            ax.set_xlabel('Episode')
+            ax.set_ylabel('总奖励')
+            ax.legend(fontsize=8)
+            ax.grid(True, alpha=0.3)
+
+            # 2. 满意度曲线
+            ax = axes[row_idx, 1]
+            ax.plot(list(episodes), sats, alpha=0.3, color=color_s, linewidth=0.8)
+            if window >= 5:
+                ma = np.convolve(sats, np.ones(window)/window, mode='valid')
+                ax.plot(range(window, len(sats) + 1), ma,
+                        color=color_s, linewidth=2, label=f'MA(w={window})')
+            ax.set_title(f'{title_prefix} - 满意度曲线', fontweight='bold')
+            ax.set_xlabel('Episode')
+            ax.set_ylabel('平均满意度')
+            ax.set_ylim(-0.05, 1.1)
+            ax.legend(fontsize=8)
+            ax.grid(True, alpha=0.3)
+
+            # 3. Loss 曲线
+            ax = axes[row_idx, 2]
+            valid_losses = [l for l in losses if l > 0]
+            if valid_losses:
+                ax.plot(range(1, len(valid_losses) + 1), valid_losses,
+                        alpha=0.4, color=color_l, linewidth=0.8)
+                loss_window = min(50, len(valid_losses))
+                if loss_window >= 5:
+                    ma = np.convolve(valid_losses, np.ones(loss_window)/loss_window, mode='valid')
+                    ax.plot(range(loss_window, len(valid_losses) + 1), ma,
+                            color=color_l, linewidth=2, label=f'MA(w={loss_window})')
+            ax.set_title(f'{title_prefix} - Loss 曲线', fontweight='bold')
+            ax.set_xlabel('Episode')
+            ax.set_ylabel('Loss')
+            ax.legend(fontsize=8)
+            ax.grid(True, alpha=0.3)
+
+            # 4. Epsilon + 切换次数
+            ax = axes[row_idx, 3]
+            ax_twin = ax.twinx()
+            ax.plot(list(episodes), epsilon, color=color_e, linewidth=1.5, label='ε (探索率)')
+            ax_twin.plot(list(episodes), hos, alpha=0.4, color='#fbbf24',
+                         linewidth=0.8, label='切换次数')
+            ax.set_xlabel('Episode')
+            ax.set_ylabel('ε', color=color_e)
+            ax_twin.set_ylabel('切换次数', color='#fbbf24')
+            ax.set_title(f'{title_prefix} - 探索率 & 切换次数', fontweight='bold')
+            ax.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        save_path = os.path.join(RESULT_DIR, 'dqn_training_curves_5b.png')
+        plt.savefig(save_path, dpi=200, bbox_inches='tight')
+        plt.close(fig)
+        print(f"\n  训练曲线已保存: {save_path}")
 
     @staticmethod
     def _plot_comparison(all_results, uav_counts, num_bs):
