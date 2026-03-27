@@ -33,7 +33,10 @@ class RLHandoverEnv:
 
     def __init__(self, env: NetworkEnvironmentWithRecognition, target_uav_id: int = 0,
                  max_steps: int = 150, reward_config: Optional[Dict] = None,
-                 skip_recognition: bool = True):
+                 skip_recognition: bool = True,
+                 use_capacity_ratios: bool = True,
+                 use_global_tension: bool = True,
+                 adaptive_penalty: bool = True):
         """
         Args:
             env: 底层网络环境实例
@@ -41,7 +44,13 @@ class RLHandoverEnv:
             max_steps: 每个 episode 的最大步数
             reward_config: 奖励函数权重配置，默认 None 使用默认值
             skip_recognition: 是否跳过业务识别（RL训练时建议 True 以加速仿真）
+            use_capacity_ratios: 是否包含 BS 可用容量/需求比值特征（消融实验用）
+            use_global_tension: 是否包含全局资源紧张度特征（消融实验用）
+            adaptive_penalty: 是否启用场景自适应切换惩罚（消融实验用，关闭则固定 1.0x）
         """
+        self.use_capacity_ratios = use_capacity_ratios
+        self.use_global_tension = use_global_tension
+        self.adaptive_penalty = adaptive_penalty
         self.env = env
         self.target_uav_id = target_uav_id
         self.max_steps = max_steps
@@ -94,22 +103,19 @@ class RLHandoverEnv:
     @property
     def state_dim(self) -> int:
         """
-        状态空间维度
-
-        状态组成 (共 num_bs*5 + 8 维):
-        - [0, num_bs): 对每个基站的 SINR 值 (归一化到 [0, 1])
-        - [num_bs, 2*num_bs): 各基站负载率
-        - [2*num_bs, 3*num_bs): 当前连接 BS one-hot
-        - [3*num_bs, 4*num_bs): 各 BS 可用容量 vs UAV 需求速率的比值 (归一化)
-        - [4*num_bs, 4*num_bs+3): 业务类型 one-hot 编码
-        - [4*num_bs+3, 4*num_bs+4): 移动速度 (归一化)
-        - [4*num_bs+4, 4*num_bs+5): 当前满意度
-        - [4*num_bs+5, 4*num_bs+6): 连接状态 (1=已连接, 0=断连)
-        - [4*num_bs+6, 4*num_bs+7): 切换冷却计时 (归一化，防止乒乓)
-        - [4*num_bs+7, 5*num_bs+7): 上次切换来源 BS one-hot
-        - [5*num_bs+7, 5*num_bs+8): 全局资源紧张度 (所有BS平均负载率)
+        状态空间维度 (受消融开关影响):
+        基础: num_bs*3 + 7 (SINR + 负载 + 连接BS onehot + biz + velocity + sat + connected + cooldown)
+        + capacity_ratios: num_bs
+        + last_bs_onehot: num_bs
+        + global_tension: 1
         """
-        return self.env.num_bs * 5 + 8
+        dim = self.env.num_bs * 3 + 7  # 基础维度
+        if self.use_capacity_ratios:
+            dim += self.env.num_bs
+        dim += self.env.num_bs  # last_bs_onehot (始终保留)
+        if self.use_global_tension:
+            dim += 1
+        return dim
 
     @property
     def action_dim(self) -> int:
@@ -154,16 +160,17 @@ class RLHandoverEnv:
         if uav.connected_bs_id is not None and uav.connected_bs_id < n_bs:
             connected_bs_onehot[uav.connected_bs_id] = 1.0
 
-        # 4. 各 BS 可用容量 vs UAV 需求速率比值 (核心新特征)
-        #    >0.5 (归一化后) 表示该 BS 能满足需求，<0.5 表示资源不足
-        #    原始比值 clip 到 [0, 2.0]，归一化到 [0, 1]
-        if required_rate > 0:
-            capacity_ratios = np.array([
-                min(bs.available_capacity / required_rate, 2.0) / 2.0
-                for bs in self.env.base_stations.values()
-            ])
+        # 4. 各 BS 可用容量 vs UAV 需求速率比值 (核心新特征，消融可控)
+        if self.use_capacity_ratios:
+            if required_rate > 0:
+                capacity_ratios = np.array([
+                    min(bs.available_capacity / required_rate, 2.0) / 2.0
+                    for bs in self.env.base_stations.values()
+                ])
+            else:
+                capacity_ratios = np.ones(n_bs)
         else:
-            capacity_ratios = np.ones(n_bs)
+            capacity_ratios = None
 
         # 5. 业务类型 one-hot (使用真实类型，RL 不需要识别过程)
         biz = np.zeros(3)
@@ -186,13 +193,20 @@ class RLHandoverEnv:
         if self._last_switched_from_bs is not None and self._last_switched_from_bs < n_bs:
             last_bs_onehot[self._last_switched_from_bs] = 1.0
 
-        # 11. 全局资源紧张度（所有 BS 平均负载率，让 DQN 感知整体竞争程度）
-        global_tension = float(np.mean(loads))
+        # 11. 全局资源紧张度（消融可控）
+        global_tension_val = float(np.mean(loads)) if self.use_global_tension else None
 
-        return np.concatenate([sinr_norm, loads, connected_bs_onehot, capacity_ratios,
-                              biz,
-                              [velocity_norm, satisfaction, connected, cooldown_norm],
-                              last_bs_onehot, [global_tension]])
+        # 拼接状态向量
+        parts = [sinr_norm, loads, connected_bs_onehot]
+        if capacity_ratios is not None:
+            parts.append(capacity_ratios)
+        parts.append(biz)
+        parts.append([velocity_norm, satisfaction, connected, cooldown_norm])
+        parts.append(last_bs_onehot)
+        if global_tension_val is not None:
+            parts.append([global_tension_val])
+
+        return np.concatenate(parts)
 
     def get_invalid_actions(self) -> List[int]:
         """
@@ -267,17 +281,16 @@ class RLHandoverEnv:
         # 4. 切换惩罚（场景自适应：资源越紧张，切换惩罚越大）
         if actual_switch:
             # 4-A. 场景自适应切换惩罚
-            #    根据所有 BS 的平均负载率动态调整：
-            #    - 负载率 < 0.5 (充裕): 使用基础惩罚 (handover_penalty)
-            #    - 负载率 0.5~0.8 (均衡): 惩罚线性增加到 1.5x
-            #    - 负载率 > 0.8 (紧张): 惩罚增加到 2.5x，抑制不必要的冒险切换
-            avg_load = np.mean([bs.load_ratio for bs in self.env.base_stations.values()])
-            if avg_load < 0.5:
-                tension_multiplier = 1.0
-            elif avg_load < 0.8:
-                tension_multiplier = 1.0 + (avg_load - 0.5) / 0.3 * 0.5  # 1.0 ~ 1.5
+            if self.adaptive_penalty:
+                avg_load = np.mean([bs.load_ratio for bs in self.env.base_stations.values()])
+                if avg_load < 0.5:
+                    tension_multiplier = 1.0
+                elif avg_load < 0.8:
+                    tension_multiplier = 1.0 + (avg_load - 0.5) / 0.3 * 0.5  # 1.0 ~ 1.5
+                else:
+                    tension_multiplier = 1.5 + (avg_load - 0.8) / 0.2 * 1.0  # 1.5 ~ 2.5
             else:
-                tension_multiplier = 1.5 + (avg_load - 0.8) / 0.2 * 1.0  # 1.5 ~ 2.5
+                tension_multiplier = 1.0
             reward -= rc['handover_penalty'] * tension_multiplier
 
             # 4a. 冷却惩罚：距上次切换越近，惩罚越大

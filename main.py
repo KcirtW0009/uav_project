@@ -4,7 +4,7 @@
 用法:
     python main.py                  # 默认运行实验3
     python main.py --all            # 运行所有实验(1, 2, 2b, 3, 4, 5, 5b)
-    python main.py --exp 5 5b       # 运行 RL 实验
+    python main.py --exp 5 5b 5c    # 运行 RL 实验
 """
 
 import sys
@@ -64,6 +64,7 @@ def main(force_retrain=False, run_experiments=None):
         '4': lambda: Experiment4.run(recognition_model, scaler, num_steps=150, repeats=10),
         '5': lambda: _run_exp5(),
         '5b': lambda: _run_exp5b(),
+        '5c': lambda: _run_exp5c(),
     }
 
     for exp_id_str in run_experiments_str:
@@ -117,19 +118,34 @@ def _run_exp5b():
     )
 
 
+def _run_exp5c():
+    """运行实验5c（DQN 特征消融实验）"""
+    from experiments_rl import Experiment5c
+    return Experiment5c.run(
+        num_steps=150,
+        repeats=5,
+        num_bs=8,
+        num_uav=30,
+        target_uav_id=0,
+        dqn_train_episodes=500,
+        bs_capacity_range=(250, 450),
+        verbose=True,
+    )
+
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='无人机业务识别与切换决策联动系统')
     parser.add_argument('--exp', nargs='+', default=[1, 2, '2b', 3, 4],
-                        help='要运行的实验，如: --exp 1 2 2b 3 4 5 5b（默认: 1 2 2b 3 4）')
+                        help='要运行的实验，如: --exp 1 2 2b 3 4 5 5b 5c（默认: 1 2 2b 3 4）')
     parser.add_argument('--all', action='store_true',
-                        help='运行所有实验 (1, 2, 2b, 3, 4, 5, 5b)')
+                        help='运行所有实验 (1, 2, 2b, 3, 4, 5, 5b, 5c)')
     parser.add_argument('--retrain', action='store_true',
                         help='强制重新训练识别模型')
     args = parser.parse_args()
 
     if args.all:
-        run_experiments = [1, 2, '2b', 3, 4, 5, '5b']
+        run_experiments = [1, 2, '2b', 3, 4, 5, '5b', '5c']
     else:
         run_experiments = [int(e) if e.isdigit() else e for e in args.exp]
 

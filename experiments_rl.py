@@ -1160,3 +1160,279 @@ if __name__ == '__main__':
         load_model=False,
         verbose=True,
     )
+
+
+class Experiment5c:
+    """
+    实验5c：DQN 特征消融实验
+
+    在 30 UAV 资源紧张场景下，逐一关闭创新特征，验证各特征的独立贡献：
+    - Full (完整): capacity_ratios + global_tension + adaptive_penalty
+    - A: 关闭 capacity_ratios
+    - B: 关闭 global_tension
+    - C: 关闭 adaptive_penalty (固定 1.0x)
+    - D: 关闭全部 (回到旧版基线)
+
+    每组: 500ep 训练 + 5 次评估
+    """
+
+    ABLATION_CONFIGS = {
+        'Full (完整)': {
+            'use_capacity_ratios': True,
+            'use_global_tension': True,
+            'adaptive_penalty': True,
+        },
+        '-capacity_ratios': {
+            'use_capacity_ratios': False,
+            'use_global_tension': True,
+            'adaptive_penalty': True,
+        },
+        '-global_tension': {
+            'use_capacity_ratios': True,
+            'use_global_tension': False,
+            'adaptive_penalty': True,
+        },
+        '-adaptive_penalty': {
+            'use_capacity_ratios': True,
+            'use_global_tension': True,
+            'adaptive_penalty': False,
+        },
+        '-全部 (旧版)': {
+            'use_capacity_ratios': False,
+            'use_global_tension': False,
+            'adaptive_penalty': False,
+        },
+    }
+
+    @staticmethod
+    def run(num_steps=150, repeats=5, num_bs=8, num_uav=30,
+            target_uav_id=0, dqn_train_episodes=500, verbose=False,
+            bs_capacity_range=(250, 450)):
+        """
+        运行消融实验
+
+        Args:
+            num_steps: 每个 episode 的步数
+            repeats: 重复实验次数
+            num_bs: 基站数量
+            num_uav: UAV 总数（建议 30，资源紧张场景）
+            target_uav_id: RL 控制的目标 UAV
+            dqn_train_episodes: DQN 训练 episodes
+            verbose: 是否打印详细调试信息
+            bs_capacity_range: 基站容量范围
+        """
+        print("=" * 80)
+        print("实验5c：DQN 特征消融实验")
+        print("=" * 80)
+        print(f"\n配置: {num_bs} BS × {num_uav} UAV × {num_steps} 步")
+        print(f"每组: {dqn_train_episodes}ep 训练 + {repeats} 次评估")
+        print(f"消融组合: {len(Experiment5c.ABLATION_CONFIGS)} 组\n")
+
+        ablation_results = {}  # {config_name: [result_dict, ...]}
+
+        for config_name, config in Experiment5c.ABLATION_CONFIGS.items():
+            print(f"\n{'='*60}")
+            print(f"  消融组: {config_name}")
+            print(f"  配置: capacity_ratios={config['use_capacity_ratios']}, "
+                  f"global_tension={config['use_global_tension']}, "
+                  f"adaptive_penalty={config['adaptive_penalty']}")
+            print(f"{'='*60}")
+
+            # ---- 训练 DQN ----
+            t0 = time.time()
+
+            rl_env_template = RLHandoverEnv(
+                NetworkEnvironmentWithRecognition(
+                    num_bs=num_bs, num_uav=num_uav, seed=GLOBAL_SEED,
+                    bs_capacity_range=bs_capacity_range),
+                target_uav_id=target_uav_id, max_steps=num_steps,
+                use_capacity_ratios=config['use_capacity_ratios'],
+                use_global_tension=config['use_global_tension'],
+                adaptive_penalty=config['adaptive_penalty'],
+            )
+
+            agent = DQNAgent(
+                state_dim=rl_env_template.state_dim,
+                action_dim=rl_env_template.action_dim,
+                lr=5e-4, gamma=0.95, hidden_dim=128,
+                buffer_size=50000, batch_size=64,
+                epsilon_start=1.0, epsilon_end=0.01, epsilon_decay=0.995,
+                target_update_freq=500,
+            )
+
+            rl_env_train = RLHandoverEnv(
+                NetworkEnvironmentWithRecognition(
+                    num_bs=num_bs, num_uav=num_uav, seed=GLOBAL_SEED,
+                    bs_capacity_range=bs_capacity_range),
+                target_uav_id=target_uav_id, max_steps=num_steps,
+                use_capacity_ratios=config['use_capacity_ratios'],
+                use_global_tension=config['use_global_tension'],
+                adaptive_penalty=config['adaptive_penalty'],
+            )
+
+            train_rewards = []
+            for ep in range(dqn_train_episodes):
+                set_global_seed(GLOBAL_SEED + ep % 20)
+                state = rl_env_train.reset()
+                set_global_seed(GLOBAL_SEED + ep % 20)
+                ep_reward = 0.0
+                for step_i in range(num_steps):
+                    invalid = rl_env_train.get_invalid_actions()
+                    action = agent.select_action(state, training=True, invalid_actions=invalid)
+                    next_state, reward, done, info = rl_env_train.step(action)
+                    next_invalid = rl_env_train.get_invalid_actions()
+                    agent.store_transition(state, action, reward, next_state, float(done),
+                                           next_invalid_actions=next_invalid)
+                    agent.train_step()
+                    ep_reward += reward
+                    state = next_state
+                    if done:
+                        break
+                agent.decay_epsilon()
+                train_rewards.append(ep_reward)
+                if (ep + 1) % 100 == 0:
+                    avg_r = np.mean(train_rewards[-100:])
+                    print(f"    Ep {ep+1}/{dqn_train_episodes}, eps={agent.epsilon:.3f}, "
+                          f"avg_R={avg_r:.1f}")
+
+            model_path = os.path.join(RESULT_DIR, f'dqn_exp5c_{config_name.replace(" ", "_")}_model.pt')
+            agent.save(model_path)
+            print(f"  训练完成, 耗时 {time.time()-t0:.1f}s")
+
+            # ---- 评估 ----
+            eval_results = []
+            for rep in range(repeats):
+                seed = GLOBAL_SEED + rep
+                set_global_seed(seed)
+                env_eval = NetworkEnvironmentWithRecognition(
+                    num_bs=num_bs, num_uav=num_uav, seed=seed,
+                    bs_capacity_range=bs_capacity_range)
+                rl_env_eval = RLHandoverEnv(
+                    env_eval, target_uav_id=target_uav_id, max_steps=num_steps,
+                    use_capacity_ratios=config['use_capacity_ratios'],
+                    use_global_tension=config['use_global_tension'],
+                    adaptive_penalty=config['adaptive_penalty'],
+                )
+                result = Experiment5._run_dqn_eval(rl_env_eval, agent, num_steps, target_uav_id,
+                                                    verbose=(verbose and rep == 0))
+                eval_results.append(result)
+
+            ablation_results[config_name] = eval_results
+
+            # 打印该组摘要
+            sats = [r['avg_satisfaction'] for r in eval_results]
+            hos = [r['handover_count'] for r in eval_results]
+            conns = [r['connected_ratio'] for r in eval_results]
+            print(f"  [{config_name}] "
+                  f"Sat={np.mean(sats):.4f}+/-{np.std(sats):.4f}, "
+                  f"HO={np.mean(hos):.1f}+/-{np.std(hos):.1f}, "
+                  f"连接保持率={np.mean(conns)*100:.1f}%")
+
+        # ---- 汇总分析 ----
+        Experiment5c._summarize(ablation_results)
+        Experiment5c._plot(ablation_results)
+
+        return ablation_results
+
+    @staticmethod
+    def _summarize(ablation_results):
+        """打印消融实验汇总表"""
+        print(f"\n{'='*80}")
+        print(f"实验5c 消融实验汇总表 ({30} UAV 资源紧张场景)")
+        print(f"{'='*80}")
+
+        config_names = list(ablation_results.keys())
+        full_sat = np.mean([r['avg_satisfaction'] for r in ablation_results[config_names[0]]])
+
+        header = f"{'消融组':^20s} | {'平均满意度':^12s} | {'切换次数':^10s} | {'连接保持率':^10s} | {'vs Full':^10s}"
+        print(f"  {header}")
+        print(f"  {'-'*len(header)}")
+
+        for name, results in ablation_results.items():
+            sat = np.mean([r['avg_satisfaction'] for r in results])
+            sat_std = np.std([r['avg_satisfaction'] for r in results])
+            ho = np.mean([r['handover_count'] for r in results])
+            conn = np.mean([r['connected_ratio'] for r in results])
+            diff = (sat - full_sat) / full_sat * 100 if full_sat != 0 else 0
+            diff_str = f"{diff:+.1f}%" if name != config_names[0] else "基线"
+            print(f"  {name:^20s} | {sat:.4f}+/-{sat_std:.3f} | {ho:^10.1f} | {conn*100:>6.1f}%    | {diff_str:^10s}")
+
+        print(f"\n【消融结论】")
+        for name in config_names[1:]:
+            sat = np.mean([r['avg_satisfaction'] for r in ablation_results[name]])
+            diff = sat - full_sat
+            impact = "显著" if abs(diff) > 0.02 else "轻微" if abs(diff) > 0.005 else "微小"
+            direction = "下降" if diff < 0 else "上升"
+            print(f"  {name}: 满意度 {direction} {abs(diff):.4f} ({impact}影响)")
+
+    @staticmethod
+    def _plot(ablation_results):
+        """绘制消融实验对比图"""
+        config_names = list(ablation_results.keys())
+        n_configs = len(config_names)
+
+        fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+        fig.suptitle('实验5c：DQN 特征消融实验（30 UAV 资源紧张场景）',
+                     fontsize=14, fontweight='bold')
+
+        # 颜色：基线绿色，消融组红色渐变
+        colors = ['#2ecc71'] + ['#e74c3c'] * (n_configs - 1)
+        alphas = [1.0] + [0.5 + 0.5 * (i / max(n_configs - 2, 1)) for i in range(n_configs - 1)]
+
+        # 1. 满意度柱状图
+        ax = axes[0]
+        sats = [np.mean([r['avg_satisfaction'] for r in ablation_results[n]]) for n in config_names]
+        sat_stds = [np.std([r['avg_satisfaction'] for r in ablation_results[n]]) for n in config_names]
+        bars = ax.bar(range(n_configs), sats, yerr=sat_stds, color=colors, alpha=0.8,
+                      capsize=4, edgecolor='white', linewidth=1.5)
+        for bar, val in zip(bars, sats):
+            ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.008,
+                    f'{val:.3f}', ha='center', va='bottom', fontsize=9, fontweight='bold')
+        ax.set_xticks(range(n_configs))
+        ax.set_xticklabels(config_names, rotation=15, ha='right', fontsize=8)
+        ax.set_ylabel('平均满意度')
+        ax.set_title('满意度对比', fontweight='bold')
+        ax.set_ylim(min(sats) - 0.05, max(sats) + 0.05)
+        ax.grid(True, alpha=0.3, axis='y')
+
+        # 基线虚线
+        ax.axhline(y=sats[0], color='#2ecc71', linestyle='--', alpha=0.5, linewidth=1)
+
+        # 2. 切换次数柱状图
+        ax = axes[1]
+        hos = [np.mean([r['handover_count'] for r in ablation_results[n]]) for n in config_names]
+        ho_stds = [np.std([r['handover_count'] for r in ablation_results[n]]) for n in config_names]
+        bars = ax.bar(range(n_configs), hos, yerr=ho_stds, color=colors, alpha=0.8,
+                      capsize=4, edgecolor='white', linewidth=1.5)
+        for bar, val in zip(bars, hos):
+            ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 1,
+                    f'{val:.1f}', ha='center', va='bottom', fontsize=9, fontweight='bold')
+        ax.set_xticks(range(n_configs))
+        ax.set_xticklabels(config_names, rotation=15, ha='right', fontsize=8)
+        ax.set_ylabel('切换次数')
+        ax.set_title('切换次数对比', fontweight='bold')
+        ax.grid(True, alpha=0.3, axis='y')
+        ax.axhline(y=hos[0], color='#2ecc71', linestyle='--', alpha=0.5, linewidth=1)
+
+        # 3. 连接保持率柱状图
+        ax = axes[2]
+        conns = [np.mean([r['connected_ratio'] for r in ablation_results[n]]) * 100 for n in config_names]
+        conn_stds = [np.std([r['connected_ratio'] for r in ablation_results[n]]) * 100 for n in config_names]
+        bars = ax.bar(range(n_configs), conns, yerr=conn_stds, color=colors, alpha=0.8,
+                      capsize=4, edgecolor='white', linewidth=1.5)
+        for bar, val in zip(bars, conns):
+            ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5,
+                    f'{val:.1f}%', ha='center', va='bottom', fontsize=9, fontweight='bold')
+        ax.set_xticks(range(n_configs))
+        ax.set_xticklabels(config_names, rotation=15, ha='right', fontsize=8)
+        ax.set_ylabel('连接保持率 (%)')
+        ax.set_title('连接保持率对比', fontweight='bold')
+        ax.grid(True, alpha=0.3, axis='y')
+        ax.axhline(y=conns[0], color='#2ecc71', linestyle='--', alpha=0.5, linewidth=1)
+        ax.set_ylim(min(conns) - 5, max(conns) + 5)
+
+        plt.tight_layout()
+        save_path = os.path.join(RESULT_DIR, 'exp5c_ablation_results.png')
+        plt.savefig(save_path, dpi=200, bbox_inches='tight')
+        plt.close(fig)
+        print(f"\n  图表已保存: {save_path}")
