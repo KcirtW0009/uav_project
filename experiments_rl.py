@@ -114,8 +114,10 @@ class Experiment5:
             )
             train_rewards = []
             for ep in range(dqn_train_episodes):
-                # 固定拓扑训练：让 DQN 充分收敛，评估时再用不同种子测泛化
+                # 多样化训练种子：每个 episode 使用不同种子，让 DQN 见过各种拓扑
+                set_global_seed(GLOBAL_SEED + ep % 20)
                 state = rl_env_train.reset()
+                set_global_seed(GLOBAL_SEED + ep % 20)  # reset 会重置种子，再设一次
                 ep_reward = 0.0
                 ep_sat_sum = 0.0
                 ep_ho = 0
@@ -209,7 +211,7 @@ class Experiment5:
             env.step()
             if hasattr(algo, 'run_step'):
                 if isinstance(algo, EnhancedHandoverAlgorithm):
-                    algo.run_step(enable_load_balancing=True)
+                    algo.run_step(enable_load_balancing=False)
                 else:
                     algo.run_step()
 
@@ -622,7 +624,8 @@ class Experiment5b:
     @staticmethod
     def run(num_steps=150, repeats=10, num_bs=8,
              uav_counts=(10, 20, 30, 40), target_uav_id=0,
-             dqn_train_episodes=1000, verbose=False):
+             dqn_train_episodes=1000, verbose=False,
+             bs_capacity_range=(250, 450)):
         """
         运行实验5b
 
@@ -634,11 +637,17 @@ class Experiment5b:
             target_uav_id: RL 控制的目标 UAV
             dqn_train_episodes: DQN 训练 episodes
             verbose: 是否打印详细调试信息
+            bs_capacity_range: 基站容量范围 (low, high) Mbps，
+                默认 (250, 450) 使得 30+ UAV 出现资源竞争
+                (8 BS 总容量 ~2800 Mbps, UAV 平均需求 ~104 Mbps:
+                 10UAV=37%, 20UAV=74%, 30UAV=111%, 40UAV=149%)
         """
         print("=" * 80)
         print("实验5b：不同 UAV 密度下的多场景对比")
         print("=" * 80)
         print(f"\n配置: {num_bs} 基站 × UAV数量 {uav_counts}")
+        print(f"BS 容量范围: {bs_capacity_range[0]}-{bs_capacity_range[1]} Mbps/BS "
+              f"(总计 ~{num_bs * (bs_capacity_range[0]+bs_capacity_range[1])/2:.0f} Mbps)")
         print(f"每个场景: {num_steps} 步 × {repeats} 次重复")
         print(f"DQN 训练: {dqn_train_episodes} episodes / 场景")
 
@@ -655,7 +664,8 @@ class Experiment5b:
             t0 = time.time()
 
             rl_env_template = RLHandoverEnv(
-                NetworkEnvironmentWithRecognition(num_bs=num_bs, num_uav=num_uav, seed=GLOBAL_SEED),
+                NetworkEnvironmentWithRecognition(num_bs=num_bs, num_uav=num_uav, seed=GLOBAL_SEED,
+                                                   bs_capacity_range=bs_capacity_range),
                 target_uav_id=target_uav_id, max_steps=num_steps
             )
 
@@ -669,13 +679,16 @@ class Experiment5b:
             )
 
             rl_env_train = RLHandoverEnv(
-                NetworkEnvironmentWithRecognition(num_bs=num_bs, num_uav=num_uav, seed=GLOBAL_SEED),
+                NetworkEnvironmentWithRecognition(num_bs=num_bs, num_uav=num_uav, seed=GLOBAL_SEED,
+                                                   bs_capacity_range=bs_capacity_range),
                 target_uav_id=target_uav_id, max_steps=num_steps
             )
             train_rewards = []
             for ep in range(dqn_train_episodes):
-                # 固定拓扑训练：让 DQN 充分收敛，评估时再用不同种子测泛化
+                # 多样化训练种子：每个 episode 使用不同种子，让 DQN 见过各种拓扑
+                set_global_seed(GLOBAL_SEED + ep % 20)
                 state = rl_env_train.reset()
+                set_global_seed(GLOBAL_SEED + ep % 20)  # reset 会重置种子，再设一次
                 ep_reward = 0.0
                 ep_sat_sum = 0.0
                 ep_ho = 0
@@ -716,14 +729,16 @@ class Experiment5b:
 
                 # 传统算法
                 set_global_seed(seed)
-                env_trad = NetworkEnvironmentWithRecognition(num_bs=num_bs, num_uav=num_uav, seed=seed)
+                env_trad = NetworkEnvironmentWithRecognition(num_bs=num_bs, num_uav=num_uav, seed=seed,
+                                                              bs_capacity_range=bs_capacity_range)
                 algo_trad = IntegratedHandoverAlgorithm(env_trad)
                 trad_result = Experiment5._run_single(env_trad, algo_trad, num_steps, target_uav_id)
                 scene_results['traditional'].append(trad_result)
 
                 # 增强启发式
                 set_global_seed(seed)
-                env_enh = NetworkEnvironmentWithRecognition(num_bs=num_bs, num_uav=num_uav, seed=seed)
+                env_enh = NetworkEnvironmentWithRecognition(num_bs=num_bs, num_uav=num_uav, seed=seed,
+                                                             bs_capacity_range=bs_capacity_range)
                 algo_enh = EnhancedHandoverAlgorithm(env_enh)
                 algo_enh.epsilon = 0.0
                 enh_result = Experiment5._run_single(env_enh, algo_enh, num_steps, target_uav_id)
@@ -731,7 +746,8 @@ class Experiment5b:
 
                 # DQN
                 set_global_seed(seed)
-                env_dqn = NetworkEnvironmentWithRecognition(num_bs=num_bs, num_uav=num_uav, seed=seed)
+                env_dqn = NetworkEnvironmentWithRecognition(num_bs=num_bs, num_uav=num_uav, seed=seed,
+                                                             bs_capacity_range=bs_capacity_range)
                 rl_env = RLHandoverEnv(env_dqn, target_uav_id=target_uav_id, max_steps=num_steps)
                 dqn_result = Experiment5._run_dqn_eval(rl_env, agent, num_steps, target_uav_id,
                                                          verbose=(verbose and rep == repeats - 1))

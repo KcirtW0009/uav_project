@@ -27,13 +27,14 @@ class NetworkEnvironmentWithRecognition:
     """
 
     def __init__(self, num_bs=8, num_uav=50, recognition_model=None, scaler=None,
-                 seed=GLOBAL_SEED, scenario='default'):
+                 seed=GLOBAL_SEED, scenario='default', bs_capacity_range=None):
         np.random.seed(seed)
         self.num_bs = num_bs
         self.num_uav = num_uav
         self.recognition_model = recognition_model
         self.scaler = scaler
         self.scenario = scenario
+        self.bs_capacity_range = bs_capacity_range
         self.current_step = 0
         self.recognition_updater = AdaptiveRecognitionUpdater(min_update_interval=5, drift_threshold=0.25)
         self.feedback_buffer = deque(maxlen=100)
@@ -69,11 +70,14 @@ class NetworkEnvironmentWithRecognition:
 
     def _init_base_stations(self, scenario: str):
         """根据场景初始化基站"""
-        capacity_map = {
-            'urban': (1500, 2500), 'emergency': (2000, 3000),
-            'agriculture': (1200, 1800), 'default': (1500, 2500)
-        }
-        low, high = capacity_map.get(scenario, capacity_map['default'])
+        if self.bs_capacity_range is not None:
+            low, high = self.bs_capacity_range
+        else:
+            capacity_map = {
+                'urban': (1500, 2500), 'emergency': (2000, 3000),
+                'agriculture': (1200, 1800), 'default': (1500, 2500)
+            }
+            low, high = capacity_map.get(scenario, capacity_map['default'])
         pos_range_map = {'urban': 800, 'emergency': 1200, 'agriculture': 1500, 'default': 1000}
         pos_range = pos_range_map.get(scenario, 1000)
 

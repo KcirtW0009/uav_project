@@ -123,8 +123,8 @@ class DQNAgent:
 
         # 探索：偏向 stay 动作（提高"保持连接"的探索概率）
         if training and random.random() < self.epsilon:
-            if 0 in valid_actions and random.random() < 0.3:
-                return 0  # 30% 概率直接选 stay
+            if 0 in valid_actions and random.random() < 0.1:
+                return 0  # 10% 概率直接选 stay（从30%降低，鼓励更多切换探索）
             return random.choice(valid_actions)
 
         # 利用：在有效动作中选 Q 值最大的

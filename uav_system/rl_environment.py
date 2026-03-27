@@ -65,16 +65,16 @@ class RLHandoverEnv:
         # 需要delta_sat > 1.5/3.0 = 0.5 才值得切换（满意度大幅改善时）
         # stay每步收益: 0.1 + 0.05 + sat*0.5 ≈ 0.65
         self.reward_config = reward_config or {
-            'satisfaction_weight': 3.0,        # 满意度变化权重（从10降低，防止delta_sat主导）
+            'satisfaction_weight': 3.0,        # 满意度变化权重
             'satisfaction_baseline': 0.3,      # 满意度绝对值奖励(当高于此阈值时)
-            'handover_penalty': 1.5,           # 每次切换惩罚（从0.5提高，大幅增加切换成本）
+            'handover_penalty': 0.8,           # 每次切换惩罚（从1.5降低，减少"绝不切换"倾向）
             'invalid_switch_penalty': 0.5,     # 无效切换惩罚
             'disconnect_penalty': 3.0,         # 断连惩罚
             'throughput_bonus': 0.01,          # 吞吐量增益权重
-            'stay_bonus': 0.1,                 # 维持连接的奖励（从0.05提高）
+            'stay_bonus': 0.05,                # 维持连接的奖励（从0.1降低，减少stay偏差）
             'cooldown_penalty': 0.3,           # 冷却期内切换的额外惩罚
             'ping_pong_penalty': 0.5,          # 切回上一个 BS 的额外惩罚
-            'consecutive_stay_bonus': 0.05,    # 连续 stay >5 步的额外奖励
+            'consecutive_stay_bonus': 0.02,    # 连续 stay >5 步的额外奖励（从0.05降低）
         }
 
         # 为非目标 UAV 创建增强算法（自动管理）

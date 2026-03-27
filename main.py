@@ -112,6 +112,7 @@ def _run_exp5b():
         uav_counts=(10, 20, 30, 40),
         target_uav_id=0,
         dqn_train_episodes=1000,
+        bs_capacity_range=(250, 450),
         verbose=True,
     )
 
