@@ -1372,8 +1372,10 @@ class Experiment5Unified:
     def run(uav_counts=(10, 20, 30, 40),
             num_steps=150, repeats=10, num_bs=8,
             target_uav_id=0, dqn_train_episodes=1000,
+            ablation_train_episodes=None,
             bs_capacity_range=(250, 450),
-            verbose=False, demo=False):
+            verbose=False, demo=False,
+            load_models=False, phase='both'):
         """
         运行统一 RL 实验
 
@@ -1383,175 +1385,232 @@ class Experiment5Unified:
             repeats: 评估重复次数
             num_bs: 基站数量
             target_uav_id: RL 控制的目标 UAV
-            dqn_train_episodes: DQN 训练 episodes（Phase 1 & Phase 2 共用）
+            dqn_train_episodes: Phase 1 DQN 训练 episodes（默认 1000）
+            ablation_train_episodes: Phase 2 消融训练 episodes
+                默认 None 表示与 dqn_train_episodes 相同，
+                设为 500 可节省约一半 Phase 2 时间
             bs_capacity_range: 基站容量范围
             verbose: 是否打印详细调试信息
             demo: 快速验证模式（50ep 训练 + 2 次评估）
+            load_models: 是否加载已有模型（跳过训练）
+            phase: 运行哪些阶段，'both' / 'phase1' / 'phase2'
         """
         if demo:
             dqn_train_episodes = 50
+            ablation_train_episodes = 50
             repeats = 2
             verbose = False
+
+        if ablation_train_episodes is None:
+            ablation_train_episodes = dqn_train_episodes
 
         print("=" * 80)
         print("统一 RL 实验 (原实验 5 + 5b + 5c)")
         print("=" * 80)
-        print(f"\nPhase 1: {num_bs} BS × UAV {uav_counts} 场景")
-        print(f"Phase 2: 30 UAV 消融实验 ({len(Experiment5Unified.ABLATION_CONFIGS)} 组)")
-        print(f"公共参数: {num_steps} 步/episode, {dqn_train_episodes}ep 训练, "
-              f"{repeats} 次评估")
+        print(f"\nPhase 1: {num_bs} BS × UAV {uav_counts} 场景 "
+              f"({'加载已有模型' if load_models else f'{dqn_train_episodes}ep 训练'})")
+        print(f"Phase 2: 30 UAV 消融实验 ({len(Experiment5Unified.ABLATION_CONFIGS)} 组, "
+              f"{ablation_train_episodes}ep 训练)")
+        print(f"公共参数: {num_steps} 步/episode, {repeats} 次评估")
+        print(f"运行阶段: {phase}")
         if demo:
             print("*** DEMO 模式: 快速验证 ***")
+        if load_models:
+            print("*** 加载模式: 跳过训练，直接评估 ***")
 
         total_t0 = time.time()
 
         # ========== Phase 1: 多场景训练 + 算法对比 ==========
-        print(f"\n{'='*80}")
-        print(f"Phase 1: 多场景 DQN 训练 + 算法对比")
-        print(f"{'='*80}")
+        scene_agents = {}
+        scene_results = {}
+        training_data = {}
 
-        scene_agents = {}     # {num_uav: DQNAgent}
-        scene_results = {}    # {num_uav: {'traditional': [...], 'enhanced': [...], 'dqn': [...]}}
-        training_data = {}    # {num_uav: 训练曲线数据}
+        if phase in ('both', 'phase1'):
+            print(f"\n{'='*80}")
+            print(f"Phase 1: 多场景 DQN 训练 + 算法对比")
+            print(f"{'='*80}")
 
-        for num_uav in uav_counts:
-            print(f"\n{'—'*60}")
-            print(f"  场景: {num_bs} BS × {num_uav} UAV "
-                  f"(每BS平均 {num_uav/num_bs:.1f} UAV)")
-            print(f"{'—'*60}")
+            for num_uav in uav_counts:
+                print(f"\n{'—'*60}")
+                print(f"  场景: {num_bs} BS × {num_uav} UAV "
+                      f"(每BS平均 {num_uav/num_bs:.1f} UAV)")
+                print(f"{'—'*60}")
 
-            # 训练 DQN
-            print(f"  [训练 DQN - {num_uav} UAV]")
-            t0 = time.time()
+                t0 = time.time()
 
-            rl_env_template = RLHandoverEnv(
-                NetworkEnvironmentWithRecognition(
-                    num_bs=num_bs, num_uav=num_uav, seed=GLOBAL_SEED,
-                    bs_capacity_range=bs_capacity_range),
-                target_uav_id=target_uav_id, max_steps=num_steps)
+                rl_env_template = RLHandoverEnv(
+                    NetworkEnvironmentWithRecognition(
+                        num_bs=num_bs, num_uav=num_uav, seed=GLOBAL_SEED,
+                        bs_capacity_range=bs_capacity_range),
+                    target_uav_id=target_uav_id, max_steps=num_steps)
 
-            agent = _create_dqn_agent(rl_env_template.state_dim, rl_env_template.action_dim)
+                agent = _create_dqn_agent(rl_env_template.state_dim,
+                                          rl_env_template.action_dim)
 
-            rl_env_train = RLHandoverEnv(
-                NetworkEnvironmentWithRecognition(
-                    num_bs=num_bs, num_uav=num_uav, seed=GLOBAL_SEED,
-                    bs_capacity_range=bs_capacity_range),
-                target_uav_id=target_uav_id, max_steps=num_steps)
+                model_path = os.path.join(RESULT_DIR,
+                                          f'dqn_unified_{num_uav}uav_model.pt')
 
-            td = _train_dqn(agent, rl_env_train, dqn_train_episodes, num_steps)
-            training_data[num_uav] = td
+                if load_models and os.path.exists(model_path):
+                    agent.load(model_path)
+                    print(f"  已加载已有模型: {model_path}")
+                    training_data[num_uav] = None
+                else:
+                    print(f"  [训练 DQN - {num_uav} UAV, {dqn_train_episodes}ep]")
+                    rl_env_train = RLHandoverEnv(
+                        NetworkEnvironmentWithRecognition(
+                            num_bs=num_bs, num_uav=num_uav, seed=GLOBAL_SEED,
+                            bs_capacity_range=bs_capacity_range),
+                        target_uav_id=target_uav_id, max_steps=num_steps)
+                    td = _train_dqn(agent, rl_env_train, dqn_train_episodes, num_steps)
+                    training_data[num_uav] = td
+                    agent.save(model_path)
 
-            # 保存模型
-            model_path = os.path.join(RESULT_DIR, f'dqn_unified_{num_uav}uav_model.pt')
-            agent.save(model_path)
+                print(f"  场景准备完成, 耗时 {time.time()-t0:.1f}s")
+                scene_agents[num_uav] = agent
 
-            print(f"  训练完成, 耗时 {time.time()-t0:.1f}s")
-            scene_agents[num_uav] = agent
+                # 评估
+                print(f"  [评估 - 三种算法 × {repeats} 次]")
+                scene_results[num_uav] = _eval_three_algorithms(
+                    agent, num_bs, num_uav, num_steps, target_uav_id,
+                    repeats, bs_capacity_range, verbose=verbose)
 
-            # 评估
-            print(f"  [评估 - 三种算法 × {repeats} 次]")
-            scene_results[num_uav] = _eval_three_algorithms(
-                agent, num_bs, num_uav, num_steps, target_uav_id,
-                repeats, bs_capacity_range, verbose=verbose)
+                for algo_name in ['traditional', 'enhanced', 'dqn']:
+                    sats = [r['avg_satisfaction'] for r in scene_results[num_uav][algo_name]]
+                    hos = [r['handover_count'] for r in scene_results[num_uav][algo_name]]
+                    print(f"  [{Experiment5Unified.ALGO_NAMES[algo_name]}] "
+                          f"Sat={np.mean(sats):.4f}+/-{np.std(sats):.4f}, "
+                          f"HO={np.mean(hos):.1f}+/-{np.std(hos):.1f}")
 
-            # 打印摘要
-            for algo_name in ['traditional', 'enhanced', 'dqn']:
-                sats = [r['avg_satisfaction'] for r in scene_results[num_uav][algo_name]]
-                hos = [r['handover_count'] for r in scene_results[num_uav][algo_name]]
-                print(f"  [{Experiment5Unified.ALGO_NAMES[algo_name]}] "
-                      f"Sat={np.mean(sats):.4f}+/-{np.std(sats):.4f}, "
-                      f"HO={np.mean(hos):.1f}+/-{np.std(hos):.1f}")
-
-        # Phase 1 绘图
-        Experiment5Unified._plot_comparison(scene_results, uav_counts, num_bs)
-        Experiment5._plot_single_training_curves(training_data, dqn_train_episodes,
-                                                  save_name='dqn_unified_training.png')
+            # Phase 1 绘图
+            Experiment5Unified._plot_comparison(scene_results, uav_counts, num_bs)
+            # 训练曲线仅在有训练数据时绘制
+            avail_td = {k: v for k, v in training_data.items() if v is not None}
+            if avail_td:
+                max_ep = max(dqn_train_episodes,
+                             max(len(v['rewards']) for v in avail_td.values()))
+                Experiment5._plot_single_training_curves(
+                    avail_td, max_ep, save_name='dqn_unified_training.png')
 
         # ========== Phase 2: 30 UAV 消融实验 ==========
-        print(f"\n{'='*80}")
-        print(f"Phase 2: 30 UAV 特征消融实验")
-        print(f"{'='*80}")
+        ablation_results = {}
 
-        ablation_results = {}  # {config_name: [result_dict, ...]}
+        if phase in ('both', 'phase2'):
+            print(f"\n{'='*80}")
+            print(f"Phase 2: 30 UAV 特征消融实验")
+            print(f"{'='*80}")
 
-        # Full 组：复用 Phase 1 的 30 UAV 模型
-        if 30 in scene_agents:
-            print(f"\n  消融组: Full (完整) [复用 Phase 1 模型]")
-            full_eval = _eval_dqn_agent(
-                scene_agents[30], num_bs, 30, num_steps, target_uav_id,
-                repeats, bs_capacity_range,
-                use_capacity_ratios=True, use_global_tension=True,
-                adaptive_penalty=True, verbose=verbose)
-            ablation_results['Full (完整)'] = full_eval
-            sats = [r['avg_satisfaction'] for r in full_eval]
-            hos = [r['handover_count'] for r in full_eval]
-            conns = [r['connected_ratio'] for r in full_eval]
-            print(f"  [Full (完整)] Sat={np.mean(sats):.4f}+/-{np.std(sats):.4f}, "
-                  f"HO={np.mean(hos):.1f}+/-{np.std(hos):.1f}, "
-                  f"连接保持率={np.mean(conns)*100:.1f}%")
+            # Full 组：复用 Phase 1 的 30 UAV 模型
+            if 30 in scene_agents:
+                print(f"\n  消融组: Full (完整) [复用 Phase 1 模型]")
+                full_eval = _eval_dqn_agent(
+                    scene_agents[30], num_bs, 30, num_steps, target_uav_id,
+                    repeats, bs_capacity_range,
+                    use_capacity_ratios=True, use_global_tension=True,
+                    adaptive_penalty=True, verbose=verbose)
+                ablation_results['Full (完整)'] = full_eval
+                sats = [r['avg_satisfaction'] for r in full_eval]
+                hos = [r['handover_count'] for r in full_eval]
+                conns = [r['connected_ratio'] for r in full_eval]
+                print(f"  [Full (完整)] Sat={np.mean(sats):.4f}+/-{np.std(sats):.4f}, "
+                      f"HO={np.mean(hos):.1f}+/-{np.std(hos):.1f}, "
+                      f"连接保持率={np.mean(conns)*100:.1f}%")
+            elif phase == 'phase2':
+                # 独立运行 phase2 时，需要训练 Full 模型
+                print(f"\n  消融组: Full (完整) [独立训练]")
+                t0 = time.time()
+                rl_env_template = RLHandoverEnv(
+                    NetworkEnvironmentWithRecognition(
+                        num_bs=num_bs, num_uav=30, seed=GLOBAL_SEED,
+                        bs_capacity_range=bs_capacity_range),
+                    target_uav_id=target_uav_id, max_steps=num_steps)
+                agent = _create_dqn_agent(rl_env_template.state_dim,
+                                          rl_env_template.action_dim)
+                rl_env_train = RLHandoverEnv(
+                    NetworkEnvironmentWithRecognition(
+                        num_bs=num_bs, num_uav=30, seed=GLOBAL_SEED,
+                        bs_capacity_range=bs_capacity_range),
+                    target_uav_id=target_uav_id, max_steps=num_steps)
+                _train_dqn(agent, rl_env_train, ablation_train_episodes, num_steps)
+                model_path = os.path.join(RESULT_DIR, 'dqn_unified_30uav_model.pt')
+                agent.save(model_path)
+                print(f"  Full 训练完成, 耗时 {time.time()-t0:.1f}s")
+                full_eval = _eval_dqn_agent(
+                    agent, num_bs, 30, num_steps, target_uav_id,
+                    repeats, bs_capacity_range,
+                    use_capacity_ratios=True, use_global_tension=True,
+                    adaptive_penalty=True, verbose=verbose)
+                ablation_results['Full (完整)'] = full_eval
+                sats = [r['avg_satisfaction'] for r in full_eval]
+                print(f"  [Full (完整)] Sat={np.mean(sats):.4f}+/-{np.std(sats):.4f}")
 
-        # 消融组训练 + 评估
-        for config_name, config in Experiment5Unified.ABLATION_CONFIGS.items():
-            print(f"\n{'—'*60}")
-            print(f"  消融组: {config_name}")
-            print(f"  配置: capacity_ratios={config['use_capacity_ratios']}, "
-                  f"global_tension={config['use_global_tension']}, "
-                  f"adaptive_penalty={config['adaptive_penalty']}")
-            print(f"{'—'*60}")
+            # 消融组训练 + 评估
+            for config_name, config in Experiment5Unified.ABLATION_CONFIGS.items():
+                print(f"\n{'—'*60}")
+                print(f"  消融组: {config_name}")
+                print(f"  配置: capacity_ratios={config['use_capacity_ratios']}, "
+                      f"global_tension={config['use_global_tension']}, "
+                      f"adaptive_penalty={config['adaptive_penalty']}")
+                print(f"{'—'*60}")
 
-            t0 = time.time()
+                t0 = time.time()
 
-            # 训练
-            print(f"  [训练消融 DQN]")
-            rl_env_template = RLHandoverEnv(
-                NetworkEnvironmentWithRecognition(
-                    num_bs=num_bs, num_uav=30, seed=GLOBAL_SEED,
-                    bs_capacity_range=bs_capacity_range),
-                target_uav_id=target_uav_id, max_steps=num_steps,
-                use_capacity_ratios=config['use_capacity_ratios'],
-                use_global_tension=config['use_global_tension'],
-                adaptive_penalty=config['adaptive_penalty'])
+                rl_env_template = RLHandoverEnv(
+                    NetworkEnvironmentWithRecognition(
+                        num_bs=num_bs, num_uav=30, seed=GLOBAL_SEED,
+                        bs_capacity_range=bs_capacity_range),
+                    target_uav_id=target_uav_id, max_steps=num_steps,
+                    use_capacity_ratios=config['use_capacity_ratios'],
+                    use_global_tension=config['use_global_tension'],
+                    adaptive_penalty=config['adaptive_penalty'])
 
-            agent = _create_dqn_agent(rl_env_template.state_dim, rl_env_template.action_dim)
+                agent = _create_dqn_agent(rl_env_template.state_dim,
+                                          rl_env_template.action_dim)
 
-            rl_env_train = RLHandoverEnv(
-                NetworkEnvironmentWithRecognition(
-                    num_bs=num_bs, num_uav=30, seed=GLOBAL_SEED,
-                    bs_capacity_range=bs_capacity_range),
-                target_uav_id=target_uav_id, max_steps=num_steps,
-                use_capacity_ratios=config['use_capacity_ratios'],
-                use_global_tension=config['use_global_tension'],
-                adaptive_penalty=config['adaptive_penalty'])
+                safe_name = config_name.replace(" ", "_")
+                model_path = os.path.join(
+                    RESULT_DIR,
+                    f'dqn_unified_30uav_{safe_name}_model.pt')
 
-            _train_dqn(agent, rl_env_train, dqn_train_episodes, num_steps)
+                if load_models and os.path.exists(model_path):
+                    agent.load(model_path)
+                    print(f"  已加载已有模型: {model_path}")
+                else:
+                    print(f"  [训练消融 DQN, {ablation_train_episodes}ep]")
+                    rl_env_train = RLHandoverEnv(
+                        NetworkEnvironmentWithRecognition(
+                            num_bs=num_bs, num_uav=30, seed=GLOBAL_SEED,
+                            bs_capacity_range=bs_capacity_range),
+                        target_uav_id=target_uav_id, max_steps=num_steps,
+                        use_capacity_ratios=config['use_capacity_ratios'],
+                        use_global_tension=config['use_global_tension'],
+                        adaptive_penalty=config['adaptive_penalty'])
+                    _train_dqn(agent, rl_env_train, ablation_train_episodes, num_steps)
+                    agent.save(model_path)
 
-            model_path = os.path.join(
-                RESULT_DIR,
-                f'dqn_unified_30uav_{config_name.replace(" ", "_")}_model.pt')
-            agent.save(model_path)
-            print(f"  训练完成, 耗时 {time.time()-t0:.1f}s")
+                print(f"  消融组准备完成, 耗时 {time.time()-t0:.1f}s")
 
-            # 评估
-            print(f"  [评估 × {repeats} 次]")
-            eval_results = _eval_dqn_agent(
-                agent, num_bs, 30, num_steps, target_uav_id,
-                repeats, bs_capacity_range,
-                use_capacity_ratios=config['use_capacity_ratios'],
-                use_global_tension=config['use_global_tension'],
-                adaptive_penalty=config['adaptive_penalty'],
-                verbose=verbose)
-            ablation_results[config_name] = eval_results
+                # 评估
+                print(f"  [评估 × {repeats} 次]")
+                eval_results = _eval_dqn_agent(
+                    agent, num_bs, 30, num_steps, target_uav_id,
+                    repeats, bs_capacity_range,
+                    use_capacity_ratios=config['use_capacity_ratios'],
+                    use_global_tension=config['use_global_tension'],
+                    adaptive_penalty=config['adaptive_penalty'],
+                    verbose=verbose)
+                ablation_results[config_name] = eval_results
 
-            sats = [r['avg_satisfaction'] for r in eval_results]
-            hos = [r['handover_count'] for r in eval_results]
-            conns = [r['connected_ratio'] for r in eval_results]
-            print(f"  [{config_name}] Sat={np.mean(sats):.4f}+/-{np.std(sats):.4f}, "
-                  f"HO={np.mean(hos):.1f}+/-{np.std(hos):.1f}, "
-                  f"连接保持率={np.mean(conns)*100:.1f}%")
+                sats = [r['avg_satisfaction'] for r in eval_results]
+                hos = [r['handover_count'] for r in eval_results]
+                conns = [r['connected_ratio'] for r in eval_results]
+                print(f"  [{config_name}] Sat={np.mean(sats):.4f}+/-{np.std(sats):.4f}, "
+                      f"HO={np.mean(hos):.1f}+/-{np.std(hos):.1f}, "
+                      f"连接保持率={np.mean(conns)*100:.1f}%")
 
-        # Phase 2 汇总 + 绘图
-        Experiment5Unified._summarize_ablation(ablation_results)
-        Experiment5Unified._plot_ablation(ablation_results)
+            # Phase 2 汇总 + 绘图
+            if ablation_results:
+                Experiment5Unified._summarize_ablation(ablation_results)
+                Experiment5Unified._plot_ablation(ablation_results)
 
         # ========== 统计显著性检验 ==========
         if 30 in scene_results:
@@ -1559,7 +1618,8 @@ class Experiment5Unified:
 
         # ========== 总耗时 ==========
         print(f"\n{'='*80}")
-        print(f"统一实验全部完成, 总耗时 {time.time()-total_t0:.1f}s")
+        print(f"统一实验全部完成, 总耗时 {time.time()-total_t0:.1f}s "
+              f"({(time.time()-total_t0)/60:.1f}min)")
         print(f"结果保存在: {os.path.abspath(RESULT_DIR)}")
         print(f"{'='*80}")
 
