@@ -690,6 +690,7 @@ class Experiment3:
                 seed=GLOBAL_SEED + rep, event_probability=0.05
             )
             algo_enh = EnhancedHandoverAlgorithm(env_enh)
+            algo_enh.epsilon = 0.0  # 最终算法不含ε-greedy探索机制
 
             # 传统算法
             env_trad = EnhancedNetworkEnvironment(
@@ -1722,6 +1723,7 @@ class Experiment4:
                     seed=GLOBAL_SEED + rep, scenario=scenario, event_probability=0.05
                 )
                 algo_enh = EnhancedHandoverAlgorithm(env_enh)
+                algo_enh.epsilon = 0.0  # 最终算法不含ε-greedy探索机制
 
                 env_trad = EnhancedNetworkEnvironment(
                     num_bs=8, num_uav=num_uav,
@@ -1975,17 +1977,23 @@ class Experiment2c:
         print("="*80)
 
         results = {key: [] for key in Experiment2c.CONFIGS.keys()}
+        config_keys = list(Experiment2c.CONFIGS.keys())
 
         for rep in range(repeats):
             print(f"\n--- 重复 {rep+1}/{repeats} ---")
             set_global_seed(GLOBAL_SEED + rep)
 
-            for config_key, config in Experiment2c.CONFIGS.items():
+            for idx, config_key in enumerate(config_keys):
+                # 每个配置使用独立种子，避免环境初始化受前一个配置影响
+                cfg_seed = GLOBAL_SEED + rep * 100 + idx
+                set_global_seed(cfg_seed)
+
+                config = Experiment2c.CONFIGS[config_key]
                 env = EnhancedNetworkEnvironment(
                     num_bs=16, num_uav=600,
                     recognition_model=recognition_model, scaler=scaler,
-                    seed=GLOBAL_SEED + rep, event_probability=0.05,
-                    bs_capacity_range=(1500, 2500)  # 扩大容量以适配大规模场景，保持~77%负载率
+                    seed=cfg_seed, event_probability=0.05,
+                    bs_capacity_range=(1500, 2500)
                 )
 
                 algo = EnhancedHandoverAlgorithm(env)

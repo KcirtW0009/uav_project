@@ -401,6 +401,23 @@ class EnhancedHandoverAlgorithm:
             self.decision_time_history.append((time() - t_start) * 1000)
             return (best_bs, best_ratio) if best_bs is not None else None
 
+        # ε-greedy探索：以epsilon概率随机选择基站
+        if self.epsilon > 0 and np.random.rand() < self.epsilon:
+            candidate_bs_ids = [bs_id for bs_id in self.env.base_stations.keys() if bs_id != current_bs_id]
+            if candidate_bs_ids:
+                random_bs = np.random.choice(candidate_bs_ids)
+                # 随机选择时仍需满足最低可行性
+                for ratio in [1.0, 0.8, 0.6]:
+                    _, feasible = self.calculate_utility_with_downgrade(uav, random_bs, ratio)
+                    if feasible:
+                        self.decision_log.append({
+                            'uav_id': uav.uav_id, 'step': self.env.current_step,
+                            'current_bs': current_bs_id, 'target_bs': random_bs,
+                            'downgrade_ratio': ratio, 'filter_reason': 'epsilon_greedy'
+                        })
+                        self.decision_time_history.append((time() - t_start) * 1000)
+                        return (random_bs, ratio)
+
         # 核心决策：降级比例搜索 + 效用比较
         all_ratios = [1.0, 0.8, 0.6, 0.4, 0.2]
         current_utility, _ = self.calculate_utility_with_downgrade(uav, current_bs_id, 1.0)
