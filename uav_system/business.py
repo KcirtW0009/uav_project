@@ -44,48 +44,105 @@ class QoSProfile:
     criticality: float = 0.5
     latency_sensitivity: float = 0.5
 
-    def calculate_satisfaction(self, allocated_rate: float) -> float:
+    def calculate_satisfaction(self, allocated_rate: float,
+                              estimated_delay: float = None,
+                              loss_rate: float = None) -> float:
         """
-        根据分配速率计算满意度
+        根据分配速率、时延、丢包率综合计算满意度
 
-        各业务类型有不同的满意度曲线：
-        - 控制信令：严格阈值型，低于70%速率满意度直接归零
-        - 视频回传：平滑过渡型，使用Smoothstep函数
-        - 环境监测：线性型，容忍较大的速率波动
+        各业务类型的满意度由三个维度加权合成：
+        - 速率满意度：分配速率与理想速率的比值
+        - 时延满意度：估计时延与最大允许时延的关系
+        - 丢包满意度：丢包率与最大允许丢包率的关系
+
+        权重由 latency_sensitivity（时延敏感度）决定：
+        - latency_sensitivity=1.0(控制信令): 时延权重高
+        - latency_sensitivity=0.8(视频回传): 时延和丢包都有一定权重
+        - latency_sensitivity=0.2(环境监测): 速率权重占主导
+
+        向后兼容：estimated_delay/loss_rate 为 None 时退化为纯速率评估。
         """
+        # ========== 速率满意度（保留原有逻辑） ==========
         rate_ratio = allocated_rate / self.ideal_rate
 
         if self.business_type == BusinessType.CONTROL_SIGNAL:
-            # 控制信令：严格阶梯函数
             if rate_ratio >= 0.95:
-                return 1.0
+                rate_sat = 1.0
             elif rate_ratio >= 0.85:
-                return 0.7 + 0.3 * (rate_ratio - 0.85) / 0.1
+                rate_sat = 0.7 + 0.3 * (rate_ratio - 0.85) / 0.1
             elif rate_ratio >= 0.7:
-                return 0.3 + 0.4 * (rate_ratio - 0.7) / 0.15
+                rate_sat = 0.3 + 0.4 * (rate_ratio - 0.7) / 0.15
             else:
-                return 0.0
+                rate_sat = 0.0
 
         elif self.business_type == BusinessType.VIDEO_STREAMING:
-            # 视频回传：Smoothstep平滑过渡
             if rate_ratio >= 0.9:
-                return 1.0
+                rate_sat = 1.0
             elif rate_ratio >= 0.7:
                 x = (rate_ratio - 0.7) / 0.2
-                return 0.5 + 0.5 * (3 * x**2 - 2 * x**3)
+                rate_sat = 0.5 + 0.5 * (3 * x**2 - 2 * x**3)
             elif rate_ratio >= 0.5:
-                return 0.2 + 0.3 * (rate_ratio - 0.5) / 0.2
+                rate_sat = 0.2 + 0.3 * (rate_ratio - 0.5) / 0.2
             else:
-                return max(0.0, rate_ratio / 0.5 * 0.2)
+                rate_sat = max(0.0, rate_ratio / 0.5 * 0.2)
 
         else:  # ENVIRONMENT_MONITORING
-            # 环境监测：线性衰减
             if rate_ratio >= 0.8:
-                return 1.0
+                rate_sat = 1.0
             elif rate_ratio >= 0.3:
-                return 0.4 + 0.6 * (rate_ratio - 0.3) / 0.5
+                rate_sat = 0.4 + 0.6 * (rate_ratio - 0.3) / 0.5
             else:
-                return max(0.0, rate_ratio / 0.3 * 0.4)
+                rate_sat = max(0.0, rate_ratio / 0.3 * 0.4)
+
+        # ========== 向后兼容：无时延/丢包数据时退化为纯速率 ==========
+        if estimated_delay is None and loss_rate is None:
+            return rate_sat
+
+        # ========== 时延满意度 ==========
+        if estimated_delay is not None and self.max_delay > 0:
+            delay_ratio = self.max_delay / (estimated_delay + 1e-6)
+            if delay_ratio >= 1.0:
+                delay_sat = 1.0
+            elif delay_ratio >= 0.5:
+                delay_sat = 0.5 + 0.5 * (delay_ratio - 0.5) / 0.5
+            else:
+                delay_sat = max(0.0, delay_ratio)
+        else:
+            delay_sat = 1.0  # 无时延数据时视为满足
+
+        # ========== 丢包率满意度 ==========
+        if loss_rate is not None and self.max_loss_rate > 0:
+            loss_ratio = self.max_loss_rate / (loss_rate + 1e-6)
+            if loss_ratio >= 1.0:
+                loss_sat = 1.0
+            elif loss_ratio >= 0.3:
+                loss_sat = 0.5 + 0.5 * (loss_ratio - 0.3) / 0.7
+            else:
+                loss_sat = max(0.0, loss_ratio)
+        else:
+            loss_sat = 1.0  # 无丢包数据时视为满足
+
+        # ========== 多维度加权综合 ==========
+        ls = self.latency_sensitivity
+        # 速率权重：时延敏感度越高，速率权重越低（但最低0.4）
+        w_rate = max(0.4, 1.0 - ls * 0.4)
+        # 时延权重：直接由 latency_sensitivity 决定
+        w_delay = ls
+        # 丢包权重：时延敏感度越高，丢包权重越高（反映业务对传输质量的要求）
+        w_loss = 0.2 + ls * 0.3
+        # 归一化
+        w_total = w_rate + w_delay + w_loss
+        w_rate /= w_total
+        w_delay /= w_total
+        w_loss /= w_total
+
+        overall = w_rate * rate_sat + w_delay * delay_sat + w_loss * loss_sat
+
+        # 任何维度严重不满足时，整体满意度惩罚
+        if rate_sat < 0.2 or delay_sat < 0.2 or loss_sat < 0.2:
+            overall *= 0.5
+
+        return np.clip(overall, 0.0, 1.0)
 
     def get_feasible_downgrade_ratios(self) -> List[float]:
         """

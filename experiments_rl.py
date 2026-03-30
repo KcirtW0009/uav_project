@@ -230,6 +230,27 @@ class Experiment5:
         Experiment5._statistical_tests(results)
         Experiment5._plot(summary, results)
 
+        # 保存数据
+        import pickle, json
+        from datetime import datetime
+        def _convert(obj):
+            if isinstance(obj, (np.integer,)):
+                return int(obj)
+            elif isinstance(obj, (np.floating,)):
+                return float(obj)
+            elif isinstance(obj, np.ndarray):
+                return obj.tolist()
+            elif isinstance(obj, dict):
+                return {k: _convert(v) for k, v in obj.items()}
+            elif isinstance(obj, (list, tuple)):
+                return [_convert(v) for v in obj]
+            return obj
+        with open(os.path.join(RESULT_DIR, 'exp5_data.pkl'), 'wb') as f:
+            pickle.dump(summary, f)
+        with open(os.path.join(RESULT_DIR, 'exp5_data.json'), 'w', encoding='utf-8') as f:
+            json.dump(_convert(summary), f, ensure_ascii=False, indent=2)
+        print(f"  数据已保存: exp5_data.pkl / exp5_data.json")
+
         return summary
 
     @staticmethod
@@ -1622,6 +1643,43 @@ class Experiment5Unified:
               f"({(time.time()-total_t0)/60:.1f}min)")
         print(f"结果保存在: {os.path.abspath(RESULT_DIR)}")
         print(f"{'='*80}")
+
+        # ========== 保存实验数据到文件 ==========
+        import pickle, json
+        from datetime import datetime
+
+        def _convert(obj):
+            if isinstance(obj, (np.integer,)):
+                return int(obj)
+            elif isinstance(obj, (np.floating,)):
+                return float(obj)
+            elif isinstance(obj, np.ndarray):
+                return obj.tolist()
+            elif isinstance(obj, dict):
+                return {k: _convert(v) for k, v in obj.items()}
+            elif isinstance(obj, (list, tuple)):
+                return [_convert(v) for v in obj]
+            return obj
+
+        # 保存场景对比结果
+        if scene_results:
+            scene_path = os.path.join(RESULT_DIR, 'exp5_scene_data.pkl')
+            with open(scene_path, 'wb') as f:
+                pickle.dump(scene_results, f)
+            print(f"  场景数据已保存: {scene_path}")
+
+            # JSON 格式（人类可读）
+            json_path = os.path.join(RESULT_DIR, 'exp5_scene_data.json')
+            with open(json_path, 'w', encoding='utf-8') as f:
+                json.dump(_convert(scene_results), f, ensure_ascii=False, indent=2)
+            print(f"  场景数据已保存: {json_path}")
+
+        # 保存消融实验结果
+        if ablation_results:
+            abl_path = os.path.join(RESULT_DIR, 'exp5_ablation_data.pkl')
+            with open(abl_path, 'wb') as f:
+                pickle.dump(ablation_results, f)
+            print(f"  消融数据已保存: {abl_path}")
 
         return {
             'scene_results': scene_results,

@@ -94,7 +94,7 @@ class BaseStation:
         抢占低优先级UAV的资源
 
         按优先级从低到高踢出UAV，直到释放足够空间或遍历完所有候选。
-        控制信令类型的UAV不会被踢出。
+        关键业务（criticality >= 0.9）的UAV不会被踢出。
 
         Args:
             target_uav: 发起抢占的目标UAV
@@ -110,7 +110,7 @@ class BaseStation:
             if uav_id in uav_pool:
                 uav = uav_pool[uav_id]
                 if (uav.qos_profile.priority < target_priority and
-                        uav.business_type != BusinessType.CONTROL_SIGNAL):
+                        uav.qos_profile.criticality < 0.9):
                     to_kick.append((uav_id, rate, uav.qos_profile.priority))
         to_kick.sort(key=lambda x: x[2])  # 按优先级升序
         kicked_uav_ids = []
@@ -191,12 +191,17 @@ class UAV:
     @property
     def current_satisfaction(self) -> float:
         """
-        当前满意度（基于真实业务类型计算）
+        当前满意度（基于真实业务类型的多维度评估）
 
-        使用真实业务类型的QoS配置计算，确保识别错误会正确反映为性能下降。
+        使用真实业务类型的QoS配置，综合速率、时延、丢包率三个维度计算满意度，
+        确保识别错误会正确反映为性能下降。
         """
         true_qos = QOS_PROFILES[self.true_business_type]
-        return true_qos.calculate_satisfaction(self.current_allocated_rate)
+        return true_qos.calculate_satisfaction(
+            self.current_allocated_rate,
+            estimated_delay=self.current_latency,
+            loss_rate=self.packet_loss_rate
+        )
 
     def update_recognition(self, recognized_type: BusinessType, confidence: float):
         """

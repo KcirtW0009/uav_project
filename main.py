@@ -114,7 +114,7 @@ def _run_exp5_unified(load_models=False, phase='both', ablation_train_episodes=N
         target_uav_id=0,
         dqn_train_episodes=1000,
         ablation_train_episodes=ablation_train_episodes,
-        bs_capacity_range=(250, 450),
+        bs_capacity_range=(400, 800),
         verbose=True,
         load_models=load_models,
         phase=phase,
@@ -124,8 +124,8 @@ def _run_exp5_unified(load_models=False, phase='both', ablation_train_episodes=N
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='无人机业务识别与切换决策联动系统')
-    parser.add_argument('--exp', nargs='+', default=[1, 2, '2b', 3, 4],
-                        help='要运行的实验，如: --exp 1 2 2b 3 4 5（默认: 1 2 2b 3 4）')
+    parser.add_argument('--exp', nargs='+', default=[3],
+                        help='要运行的实验，如: --exp 1 2 2b 3 4 5（默认: 3）')
     parser.add_argument('--all', action='store_true',
                         help='运行所有实验 (1, 2, 2b, 3, 4, 5)')
     parser.add_argument('--retrain', action='store_true',
@@ -142,7 +142,7 @@ if __name__ == "__main__":
     if args.all:
         run_experiments = [1, 2, '2b', 3, 4, 5]
     else:
-        run_experiments = [int(e) if e.isdigit() else e for e in args.exp]
+        run_experiments = [int(e) if isinstance(e, str) and e.isdigit() else e for e in args.exp]
 
     set_global_seed(GLOBAL_SEED)
     main(force_retrain=args.retrain, run_experiments=run_experiments,

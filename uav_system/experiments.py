@@ -3,8 +3,11 @@ import matplotlib
 matplotlib.use('Agg')  # 使用非交互式后端，避免plt.show()弹窗阻塞程序
 import matplotlib.pyplot as plt
 import os
+import json
+import pickle
 import warnings
 from collections import defaultdict
+from datetime import datetime
 from typing import Dict, List, Any, Tuple
 from scipy import stats
 from .config import GLOBAL_SEED, set_global_seed, RESULT_DIR, COLORS, CMAP_PRIMARY, CMAP_SUCCESS, CMAP_WARNING
@@ -14,6 +17,55 @@ from .recognition import AdaptiveRecognitionUpdater, BusinessRecognitionModel, t
 from .environment import EnhancedNetworkEnvironment
 from .algorithms import IntegratedHandoverAlgorithm, EnhancedHandoverAlgorithm
 from .visualization import VisualizationHelper
+
+
+def save_experiment_data(exp_name: str, data: dict, extra_formats: list = None):
+    """
+    保存实验关键数据到文件，防止终端输出丢失。
+
+    Args:
+        exp_name: 实验名称标识（如 'exp1', 'exp2'）
+        data: 要保存的数据字典
+        extra_formats: 额外保存格式列表，可选 'json', 'csv'
+    """
+    if extra_formats is None:
+        extra_formats = ['json']
+
+    # 将 numpy 类型转换为 Python 原生类型以便 JSON 序列化
+    def _convert(obj):
+        if isinstance(obj, (np.integer,)):
+            return int(obj)
+        elif isinstance(obj, (np.floating,)):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, dict):
+            return {k: _convert(v) for k, v in obj.items()}
+        elif isinstance(obj, (list, tuple)):
+            return [_convert(v) for v in obj]
+        return obj
+
+    serializable_data = _convert(data)
+    serializable_data['_meta'] = {
+        'experiment': exp_name,
+        'saved_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'global_seed': GLOBAL_SEED,
+    }
+
+    base_path = os.path.join(RESULT_DIR, f'{exp_name}_data')
+
+    # 1. pickle 格式（保留完整 Python 对象结构）
+    pkl_path = base_path + '.pkl'
+    with open(pkl_path, 'wb') as f:
+        pickle.dump(data, f)
+    print(f"  数据已保存(pickle): {pkl_path}")
+
+    # 2. JSON 格式（人类可读，可跨语言使用）
+    if 'json' in extra_formats:
+        json_path = base_path + '.json'
+        with open(json_path, 'w', encoding='utf-8') as f:
+            json.dump(serializable_data, f, ensure_ascii=False, indent=2)
+        print(f"  数据已保存(json):   {json_path}")
 
 # 配置字体和警告抑制
 matplotlib.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
@@ -84,7 +136,7 @@ class Experiment1:
 
                 # 使用不带随机事件的环境进行对比实验
                 env = EnhancedNetworkEnvironment(
-                    num_bs=8, num_uav=110,  # 实际工程规模: ~65%利用率
+                    num_bs=8, num_uav=300,  # 调整后: 实际带宽参数对齐，300架约77%负载率
                     recognition_model=None, scaler=None,
                     seed=condition_seed,
                     event_probability=0.0  # 关闭随机事件，专注于识别准确率的影响
@@ -377,7 +429,8 @@ class Experiment1:
         plt.tight_layout()
         plt.savefig(os.path.join(RESULT_DIR, 'exp1_results.png'), dpi=200, bbox_inches='tight')
         plt.close(fig)
-        
+
+        save_experiment_data('exp1', summary)
         return summary
 
 
@@ -630,7 +683,7 @@ class Experiment3:
 
             # 增强算法
             env_enh = EnhancedNetworkEnvironment(
-                num_bs=8, num_uav=155,  # 实际工程规模: ~90%利用率，峰值运营场景
+                num_bs=8, num_uav=300,  # 与带宽参数对齐: ~77%负载率
                 recognition_model=recognition_model, scaler=scaler,
                 seed=GLOBAL_SEED + rep, event_probability=0.05
             )
@@ -638,7 +691,7 @@ class Experiment3:
 
             # 传统算法
             env_trad = EnhancedNetworkEnvironment(
-                num_bs=8, num_uav=155,  # 实际工程规模: ~90%利用率
+                num_bs=8, num_uav=300,  # 与带宽参数对齐: ~77%负载率
                 recognition_model=recognition_model, scaler=scaler,
                 seed=GLOBAL_SEED + rep, event_probability=0.05
             )
@@ -877,6 +930,9 @@ class Experiment3:
         plt.savefig(os.path.join(RESULT_DIR, 'exp3_results.png'), dpi=200, bbox_inches='tight')
         plt.close(fig)
 
+        save_experiment_data('exp3', summary)
+        return summary
+
 
 # -------------------- 实验2：机制有效性验证 --------------------
 class Experiment2:
@@ -918,7 +974,7 @@ class Experiment2:
             set_global_seed(GLOBAL_SEED + rep)
             for mechanism in Experiment2.MECHANISMS.keys():
                 env = EnhancedNetworkEnvironment(
-                    num_bs=8, num_uav=130,  # 实际工程规模: ~75%利用率
+                    num_bs=8, num_uav=300,  # 与带宽参数对齐: ~77%负载率
                     recognition_model=recognition_model, scaler=scaler,
                     seed=GLOBAL_SEED + rep, event_probability=0.05
                 )
@@ -1184,6 +1240,9 @@ class Experiment2:
         plt.savefig(os.path.join(RESULT_DIR, 'exp2_results.png'), dpi=200, bbox_inches='tight')
         plt.close(fig)
 
+        save_experiment_data('exp2', summary)
+        return summary
+
 
 # -------------------- 实验2b：机制组合验证 --------------------
 class Experiment2b:
@@ -1237,7 +1296,7 @@ class Experiment2b:
 
             for combo_name in Experiment2b.COMBINATIONS.keys():
                 env = EnhancedNetworkEnvironment(
-                    num_bs=8, num_uav=100,  # 实际工程规模: ~60%利用率，留足余量展示机制效果
+                    num_bs=8, num_uav=300,  # 调整后: 实际带宽对齐，300架约77%负载率
                     recognition_model=recognition_model, scaler=scaler,
                     seed=GLOBAL_SEED + rep, event_probability=0.05
                 )
@@ -1578,14 +1637,58 @@ class Experiment2b:
         plt.savefig(os.path.join(RESULT_DIR, 'exp2b_results.png'), dpi=200, bbox_inches='tight')
         plt.close(fig)
 
+        save_experiment_data('exp2b', summary)
+        return summary
+
 
 # -------------------- 实验4 --------------------
 class Experiment4:
+    """
+    实验4：多场景对比实验
+
+    场景设计与论文"典型5G应用场景适配性与需求映射"完全对齐：
+    - 智慧城市监控: eMBB高带宽+URLLC切片，安防巡逻视频为主
+    - 工业巡检: eMBB+MEC实时处理，4K视频巡视为主
+    - 农业植保: mMTC大量传感+eMBB数据，环境监测为主
+    - 应急救援: URLLC超可靠低时延，控制信令为主
+    - 物流配送: eMBB+网络切片，控制与监测并重
+    """
     SCENARIOS = {
-        'default': {'name': '默认场景', 'desc': '标准仿真环境'},
-        'urban': {'name': '城市物流', 'desc': '密集部署，障碍物多，时延敏感'},
-        'emergency': {'name': '应急救援', 'desc': '高容量需求，低时延容忍，重视视频回传'},
-        'agriculture': {'name': '农田监测', 'desc': '稀疏部署，大范围覆盖，周期性数据'}
+        'smart_city': {
+            'name': '智慧城市监控',
+            'desc': '安防巡逻视频，eMBB高带宽+URLLC切片，优先保证视频流畅',
+            '5g_feature': 'eMBB+URLLC切片',
+            'switch_focus': '优先保证视频流畅，低延时控制',
+            'num_uav': 400,
+        },
+        'industrial_inspection': {
+            'name': '工业巡检',
+            'desc': '4K视频巡视，eMBB+MEC实时处理，边缘节点接入',
+            '5g_feature': 'eMBB+MEC',
+            'switch_focus': '边缘节点接入、通信恢复机制',
+            'num_uav': 300,
+        },
+        'agriculture': {
+            'name': '农业植保',
+            'desc': '植物健康监测，mMTC大量传感+eMBB数据，大范围覆盖',
+            '5g_feature': 'mMTC+eMBB',
+            'switch_focus': '大范围网联覆盖、能效切换',
+            'num_uav': 350,
+        },
+        'emergency_rescue': {
+            'name': '应急救援',
+            'desc': '实时指挥通信，URLLC超可靠低时延，最低切换时延保障',
+            '5g_feature': 'URLLC',
+            'switch_focus': '最低切换时延、可靠链路保障',
+            'num_uav': 300,
+        },
+        'logistics_delivery': {
+            'name': '物流配送',
+            'desc': '路径导航与状态，eMBB+网络切片，长航程持续覆盖',
+            '5g_feature': 'eMBB+网络切片',
+            'switch_focus': '长航程持续覆盖、服务切换平稳',
+            'num_uav': 500,
+        },
     }
 
 
@@ -1594,25 +1697,32 @@ class Experiment4:
         print("\n" + "="*80)
         print("实验4：多场景对比实验")
         print("="*80)
+        print("\n场景设计依据论文'典型5G应用场景适配性与需求映射'：")
+        for key, info in Experiment4.SCENARIOS.items():
+            print(f"  {info['name']:8s} | 5G特性: {info['5g_feature']:16s} | "
+                  f"切换重点: {info['switch_focus']}")
+        print("="*80)
 
         results = {scenario: {'enhanced': [], 'traditional': []} for scenario in Experiment4.SCENARIOS.keys()}
         for scenario, info in Experiment4.SCENARIOS.items():
+            num_uav = info['num_uav']
             print(f"\n{'='*60}")
             print(f"场景: {info['name']} - {info['desc']}")
+            print(f"UAV数量: {num_uav}  5G特性: {info['5g_feature']}")
             print('='*60)
             for rep in range(repeats):
                 print(f"\n 重复 {rep+1}/{repeats}")
                 set_global_seed(GLOBAL_SEED + rep)
 
                 env_enh = EnhancedNetworkEnvironment(
-                    num_bs=8, num_uav=120,  # 实际工程规模: ~68%利用率，场景对比保持一致
+                    num_bs=8, num_uav=num_uav,
                     recognition_model=recognition_model, scaler=scaler,
                     seed=GLOBAL_SEED + rep, scenario=scenario, event_probability=0.05
                 )
                 algo_enh = EnhancedHandoverAlgorithm(env_enh)
 
                 env_trad = EnhancedNetworkEnvironment(
-                    num_bs=8, num_uav=120,  # 实际工程规模: ~68%利用率
+                    num_bs=8, num_uav=num_uav,
                     recognition_model=recognition_model, scaler=scaler,
                     seed=GLOBAL_SEED + rep, scenario=scenario, event_probability=0.05
                 )
@@ -1792,3 +1902,5 @@ class Experiment4:
         plt.tight_layout()
         plt.savefig(os.path.join(RESULT_DIR, 'exp4_results.png'), dpi=200, bbox_inches='tight')
         plt.close(fig)
+
+        save_experiment_data('exp4', summary)

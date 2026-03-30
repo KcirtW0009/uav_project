@@ -9,7 +9,7 @@
 import numpy as np
 from typing import Optional, Tuple, Dict
 from collections import defaultdict
-from .business import BusinessType
+from .business import BusinessType, QOS_PROFILES
 from .environment import NetworkEnvironmentWithRecognition
 
 
@@ -46,6 +46,8 @@ class IntegratedHandoverAlgorithm:
         self.failure_reasons = defaultdict(int)
         self.reconnect_attempts = 0
         self.reconnect_successes = 0
+        # 按业务类型统计切换成功/失败
+        self.handover_by_business = {bt: {'attempts': 0, 'successes': 0} for bt in BusinessType}
 
     def make_decision(self, uav_id: int) -> Optional[Tuple[int, float]]:
         """基于纯SINR的切换决策（3GPP A3事件）"""
@@ -113,6 +115,11 @@ class IntegratedHandoverAlgorithm:
         if is_reconnect:
             self.reconnect_attempts += 1
 
+        # 按业务类型统计
+        biz_type = uav.business_type
+        if biz_type in self.handover_by_business:
+            self.handover_by_business[biz_type]['attempts'] += 1
+
         # 先释放旧基站
         if uav.connected_bs_id is not None:
             old_bs = self.env.base_stations[uav.connected_bs_id]
@@ -126,6 +133,8 @@ class IntegratedHandoverAlgorithm:
             self.env.connection_matrix[uav_id, target_bs_id] = 1
             uav.handover_count += 1
             self.handover_successes += 1
+            if biz_type in self.handover_by_business:
+                self.handover_by_business[biz_type]['successes'] += 1
             if is_reconnect:
                 self.reconnect_successes += 1
             self.switching_latency_history.append((time() - t_start) * 1000)
@@ -163,8 +172,28 @@ class IntegratedHandoverAlgorithm:
             'reconnect_success_rate': reconnect_success_rate,
             'reconnect_attempts': self.reconnect_attempts,
             'reconnect_successes': self.reconnect_successes,
-            'missed_opportunity_rate': self.missed_opportunity / max(self.decision_calls, 1)
+            'missed_opportunity_rate': self.missed_opportunity / max(self.decision_calls, 1),
+            'handover_by_business': {bt.name: data for bt, data in self.handover_by_business.items()},
+            'weighted_success_rate': self._compute_weighted_success_rate(),
         }
+
+    def _compute_weighted_success_rate(self) -> float:
+        """
+        计算按业务类型优先级加权的切换成功率。
+
+        关键业务（如控制信令）失败权重更高，
+        公式: Σ(priority_i × success_rate_i) / Σ(priority_i)
+        """
+        total_weighted = 0.0
+        total_weight = 0.0
+        for bt in BusinessType:
+            data = self.handover_by_business[bt]
+            if data['attempts'] > 0:
+                weight = QOS_PROFILES[bt].priority
+                rate = data['successes'] / data['attempts']
+                total_weighted += weight * rate
+                total_weight += weight
+        return total_weighted / total_weight if total_weight > 0 else 0.0
 
 
 # =============================================================================
@@ -227,6 +256,8 @@ class EnhancedHandoverAlgorithm:
         self.disconnect_timer = {}
         self.emergency_count = 0
         self.current_step_emergency = 0
+        # 按业务类型统计切换成功/失败
+        self.handover_by_business = {bt: {'attempts': 0, 'successes': 0} for bt in BusinessType}
 
     # ==================== 效用函数 ====================
 
@@ -445,6 +476,11 @@ class EnhancedHandoverAlgorithm:
         is_reconnect = (uav.connected_bs_id is None)
         self.handover_attempts += 1
 
+        # 按业务类型统计
+        biz_type = uav.business_type
+        if biz_type in self.handover_by_business:
+            self.handover_by_business[biz_type]['attempts'] += 1
+
         # 记录旧基站信息
         old_bs_id = uav.connected_bs_id
         old_bs = self.env.base_stations[old_bs_id] if old_bs_id is not None else None
@@ -497,6 +533,10 @@ class EnhancedHandoverAlgorithm:
         self.env.connection_matrix[uav_id, target_bs_id] = 1
         uav.handover_count += 1
         self.handover_successes += 1
+        # 按业务类型记录成功
+        biz_type = uav.business_type
+        if biz_type in self.handover_by_business:
+            self.handover_by_business[biz_type]['successes'] += 1
         if is_reconnect:
             self.reconnect_successes += 1
             self.reconnect_cooldown.pop(uav_id, None)
@@ -636,4 +676,24 @@ class EnhancedHandoverAlgorithm:
             'disconnected_count': self.get_disconnected_count(),
             'execution_filter_stats': dict(self.execution_filter_stats),
             'emergency_count': self.emergency_count,
+            'handover_by_business': {bt.name: data for bt, data in self.handover_by_business.items()},
+            'weighted_success_rate': self._compute_weighted_success_rate(),
         }
+
+    def _compute_weighted_success_rate(self) -> float:
+        """
+        计算按业务类型优先级加权的切换成功率。
+
+        关键业务（如控制信令）失败权重更高，
+        公式: Σ(priority_i × success_rate_i) / Σ(priority_i)
+        """
+        total_weighted = 0.0
+        total_weight = 0.0
+        for bt in BusinessType:
+            data = self.handover_by_business[bt]
+            if data['attempts'] > 0:
+                weight = QOS_PROFILES[bt].priority
+                rate = data['successes'] / data['attempts']
+                total_weighted += weight * rate
+                total_weight += weight
+        return total_weighted / total_weight if total_weight > 0 else 0.0

@@ -76,10 +76,14 @@ class NetworkEnvironmentWithRecognition:
             # 5G基站容量参考: 宏站100MHz带宽≈1Gbps, 微站≈500Mbps
             capacity_map = {
                 'urban': (400, 800), 'emergency': (700, 1000),
-                'agriculture': (300, 500), 'default': (500, 1000)
+                'agriculture': (300, 500), 'default': (500, 1000),
+                'smart_city': (500, 800), 'industrial_inspection': (600, 1000),
+                'emergency_rescue': (700, 1000), 'logistics_delivery': (400, 600),
             }
             low, high = capacity_map.get(scenario, capacity_map['default'])
-        pos_range_map = {'urban': 800, 'emergency': 1200, 'agriculture': 1500, 'default': 1000}
+        pos_range_map = {'urban': 800, 'emergency': 1200, 'agriculture': 1500, 'default': 1000,
+                         'smart_city': 800, 'industrial_inspection': 600, 'emergency_rescue': 1200,
+                         'logistics_delivery': 1500}
         pos_range = pos_range_map.get(scenario, 1000)
 
         for i in range(self.num_bs):
@@ -91,9 +95,21 @@ class NetworkEnvironmentWithRecognition:
 
     def _init_uavs(self, scenario: str):
         """根据场景初始化UAV，分配业务类型"""
-        ratios_map = {'emergency': [0.3, 0.5, 0.2], 'agriculture': [0.2, 0.3, 0.5], 'default': [0.4, 0.3, 0.3]}
+        # 业务比例: [控制信令, 视频回传, 环境监测]
+        # 与论文KPI表格对齐: 应急救援以控制为主(URlLC), 农田以监测为主(mMTC)
+        ratios_map = {
+            'emergency': [0.3, 0.5, 0.2],
+            'agriculture': [0.2, 0.3, 0.5],
+            'default': [0.4, 0.3, 0.3],
+            'smart_city': [0.3, 0.6, 0.1],          # 城市监控: 视频为主(eMBB)
+            'industrial_inspection': [0.2, 0.7, 0.1], # 工业巡检: 4K视频为主(eMBB)
+            'emergency_rescue': [0.6, 0.3, 0.1],     # 应急救援: 控制为主(URlLC)
+            'logistics_delivery': [0.4, 0.2, 0.4],    # 物流配送: 控制与监测并重
+        }
         ratios = ratios_map.get(scenario, ratios_map['default'])
-        vel_map = {'urban': 15, 'emergency': 30, 'default': 20}
+        vel_map = {'urban': 15, 'emergency': 30, 'default': 20,
+                   'smart_city': 10, 'industrial_inspection': 15,
+                   'emergency_rescue': 30, 'logistics_delivery': 25}
         vel = vel_map.get(scenario, 20)
 
         business_types = [BusinessType.CONTROL_SIGNAL, BusinessType.VIDEO_STREAMING, BusinessType.ENVIRONMENT_MONITORING]
@@ -226,7 +242,11 @@ class NetworkEnvironmentWithRecognition:
         true_sats, res_ratios = [], []
         for uav in self.uavs.values():
             true_qos = QOS_PROFILES[uav.true_business_type]
-            true_sats.append(true_qos.calculate_satisfaction(uav.current_allocated_rate))
+            true_sats.append(true_qos.calculate_satisfaction(
+                uav.current_allocated_rate,
+                estimated_delay=uav.current_latency,
+                loss_rate=uav.packet_loss_rate
+            ))
             ideal = true_qos.ideal_rate
             res_ratios.append(uav.current_allocated_rate / ideal if ideal > 0 else 0)
 
