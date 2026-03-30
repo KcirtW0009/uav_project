@@ -74,11 +74,14 @@ class NetworkEnvironmentWithRecognition:
             low, high = self.bs_capacity_range
         else:
             # 5G基站容量参考: 宏站100MHz带宽≈1Gbps, 微站≈500Mbps
+            # 应急救援高容量保障URLLC, 工业巡检保障4K视频带宽
             capacity_map = {
                 'urban': (400, 800), 'emergency': (700, 1000),
                 'agriculture': (300, 500), 'default': (500, 1000),
-                'smart_city': (500, 800), 'industrial_inspection': (600, 1000),
-                'emergency_rescue': (700, 1000), 'logistics_delivery': (400, 600),
+                'smart_city': (600, 900),           # 视频监控: 中高容量
+                'industrial_inspection': (700, 1100), # 4K视频: 高容量
+                'emergency_rescue': (900, 1200),     # URLLC: 最高容量保障
+                'logistics_delivery': (500, 700),    # 物流: 中等容量+广覆盖
             }
             low, high = capacity_map.get(scenario, capacity_map['default'])
         pos_range_map = {'urban': 800, 'emergency': 1200, 'agriculture': 1500, 'default': 1000,
@@ -96,15 +99,20 @@ class NetworkEnvironmentWithRecognition:
     def _init_uavs(self, scenario: str):
         """根据场景初始化UAV，分配业务类型"""
         # 业务比例: [控制信令, 视频回传, 环境监测]
-        # 与论文KPI表格对齐: 应急救援以控制为主(URlLC), 农田以监测为主(mMTC)
+        # 与论文KPI表格对齐:
+        #   - 应急救援: 85%控制(≤20ms,99.999%)+10%视频+5%监测 → 期望时延≈57ms, 带宽≈5.5Mbps (URLLC)
+        #   - 物流配送: 50%控制+40%视频+10%监测 → 期望时延≈118ms, 带宽≈20.4Mbps (eMBB为主)
+        #   - 城市监控: 30%控制+60%视频+10%监测 → 视频流为主(eMBB)
+        #   - 工业巡检: 15%控制+75%视频+10%监测 → 4K视频主导(eMBB)
+        #   - 农业监测: 15%控制+25%视频+60%监测 → 海量传感器(mMTC)
         ratios_map = {
             'emergency': [0.3, 0.5, 0.2],
-            'agriculture': [0.2, 0.3, 0.5],
+            'agriculture': [0.15, 0.25, 0.60],      # 农田: mMTC大幅量监测
             'default': [0.4, 0.3, 0.3],
-            'smart_city': [0.3, 0.6, 0.1],          # 城市监控: 视频为主(eMBB)
-            'industrial_inspection': [0.2, 0.7, 0.1], # 工业巡检: 4K视频为主(eMBB)
-            'emergency_rescue': [0.6, 0.3, 0.1],     # 应急救援: 控制为主(URlLC)
-            'logistics_delivery': [0.4, 0.2, 0.4],    # 物流配送: 控制与监测并重
+            'smart_city': [0.30, 0.60, 0.10],       # 城市监控: 视频为主(eMBB)
+            'industrial_inspection': [0.15, 0.75, 0.10], # 工业巡检: 4K视频为主(eMBB)
+            'emergency_rescue': [0.85, 0.10, 0.05],  # 应急救援: URLLC, 期望时延≈57ms
+            'logistics_delivery': [0.50, 0.40, 0.10], # 物流配送: 均衡型, 期望时延≈118ms
         }
         ratios = ratios_map.get(scenario, ratios_map['default'])
         vel_map = {'urban': 15, 'emergency': 30, 'default': 20,
@@ -303,7 +311,16 @@ class EnhancedNetworkEnvironment(NetworkEnvironmentWithRecognition):
 
     def __init__(self, *args, event_probability=0.05, **kwargs):
         super().__init__(*args, **kwargs)
-        self.event_probability = event_probability
+        # 场景事件概率: 应急场景高动态(0.08), 物流相对稳定(0.03), 农业低频(0.02)
+        scenario_event_probs = {
+            'emergency_rescue': 0.08,  # 灾害环境高动态
+            'smart_city': 0.05,         # 城市中等波动
+            'industrial_inspection': 0.05,
+            'logistics_delivery': 0.03, # 物流航线相对稳定
+            'agriculture': 0.02,        # 农田环境低频变化
+            'default': 0.05,
+        }
+        self.event_probability = scenario_event_probs.get(self.scenario, event_probability)
         self.event_history = []
         self.event_stats = {'bs_failure': 0, 'channel_burst': 0, 'uav_arrival': 0, 'bs_recovery': 0}
         self.recovery_events = []
@@ -318,8 +335,17 @@ class EnhancedNetworkEnvironment(NetworkEnvironmentWithRecognition):
         """以一定概率触发随机事件"""
         if np.random.rand() > self.event_probability:
             return None
-        prob_map = {'urban': [0.15, 0.6, 0.15, 0.1], 'emergency': [0.1, 0.5, 0.3, 0.1]}
-        event_probs = prob_map.get(self.scenario, [0.1, 0.7, 0.15, 0.05])
+        # 场景事件分布: [基站故障, 信道突发, UAV到达, 基站恢复]
+        event_dist_map = {
+            'emergency_rescue': [0.15, 0.35, 0.20, 0.30],  # 应急: 多恢复事件(快速抢修)
+            'logistics_delivery': [0.10, 0.55, 0.25, 0.10], # 物流: 多信道突发(长航线)
+            'agriculture': [0.10, 0.50, 0.30, 0.10],        # 农业: 多UAV到达(大批传感器)
+            'smart_city': [0.12, 0.53, 0.25, 0.10],
+            'industrial_inspection': [0.15, 0.50, 0.20, 0.15],
+            'urban': [0.15, 0.6, 0.15, 0.1],
+            'emergency': [0.1, 0.5, 0.3, 0.1],
+        }
+        event_probs = event_dist_map.get(self.scenario, [0.1, 0.7, 0.15, 0.05])
         event_type = np.random.choice(['bs_failure', 'channel_burst', 'uav_arrival', 'bs_recovery'], p=event_probs)
         return self._execute_event(event_type)
 

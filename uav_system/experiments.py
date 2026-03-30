@@ -33,7 +33,9 @@ def save_experiment_data(exp_name: str, data: dict, extra_formats: list = None):
 
     # 将 numpy 类型转换为 Python 原生类型以便 JSON 序列化
     def _convert(obj):
-        if isinstance(obj, (np.integer,)):
+        if isinstance(obj, (np.bool_,)):
+            return bool(obj)
+        elif isinstance(obj, (np.integer,)):
             return int(obj)
         elif isinstance(obj, (np.floating,)):
             return float(obj)

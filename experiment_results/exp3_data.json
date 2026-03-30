@@ -1,0 +1,167 @@
+{
+  "enhanced": {
+    "handover_success_rate": [
+      0.9807293333174483,
+      0.03201255724432222
+    ],
+    "avg_switching_latency_ms": [
+      0.0029254373842316503,
+      0.00022082001923452688
+    ],
+    "max_switching_latency_ms": [
+      0.24831295013427734,
+      0.08953912821620594
+    ],
+    "avg_decision_time_ms": [
+      0.1465368042296091,
+      0.0013559217288424774
+    ],
+    "missed_opportunity_rate": [
+      0.0,
+      0.0
+    ],
+    "avg_satisfaction": [
+      0.7385263566025683,
+      0.022818928766460557
+    ],
+    "critical_satisfaction": [
+      0.9600631631705191,
+      0.012872565767525601
+    ],
+    "weighted_satisfaction": [
+      0.4363720980560986,
+      0.030809761745825504
+    ],
+    "latency_satisfaction": [
+      0.6776812429720613,
+      0.03527414295826872
+    ],
+    "rate_satisfaction": [
+      0.6829367505313055,
+      0.030753521066621287
+    ],
+    "load_variance": [
+      0.004083996909572544,
+      0.003739337557767742
+    ],
+    "avg_sinr": [
+      28.75715531037134,
+      1.9209976209511348
+    ],
+    "recognition_accuracy": [
+      35.271628609870604,
+      3.3209183693018254
+    ],
+    "migration_success_rate": [
+      0.9302862762598967,
+      0.10012021705215557
+    ],
+    "connected_ratio": [
+      0.9468742565776477,
+      0.09427912284151461
+    ]
+  },
+  "traditional": {
+    "handover_success_rate": [
+      0.8440856621456309,
+      0.089665707320035
+    ],
+    "avg_switching_latency_ms": [
+      0.0015947472901791143,
+      0.00020395864157845994
+    ],
+    "max_switching_latency_ms": [
+      0.1547098159790039,
+      0.06590602414564366
+    ],
+    "avg_decision_time_ms": [
+      0.004860989944295383,
+      0.00024891991285907756
+    ],
+    "missed_opportunity_rate": [
+      0.199575265693343,
+      0.0214999561327638
+    ],
+    "avg_satisfaction": [
+      0.6736330266387196,
+      0.06107711357838827
+    ],
+    "critical_satisfaction": [
+      0.9439957973268239,
+      0.03469117543600169
+    ],
+    "weighted_satisfaction": [
+      0.39836655906585866,
+      0.062257783715859445
+    ],
+    "latency_satisfaction": [
+      0.675614270346184,
+      0.02841342484856569
+    ],
+    "rate_satisfaction": [
+      0.6009146090230815,
+      0.08163331696484599
+    ],
+    "total_throughput": [
+      0,
+      0
+    ],
+    "load_variance": [
+      0.0724920679632461,
+      0.020455026646555827
+    ],
+    "avg_sinr": [
+      31.36485334971588,
+      1.1814249011979208
+    ],
+    "recognition_accuracy": [
+      35.18547967808523,
+      2.72877105891901
+    ],
+    "migration_success_rate": [
+      0,
+      0
+    ],
+    "connected_ratio": [
+      0.8867894583781387,
+      0.10664789126162427
+    ]
+  },
+  "improvement": {
+    "handover_success_rate": 16.188365387521788,
+    "avg_switching_latency_ms": 83.44206647957867,
+    "max_switching_latency_ms": 60.50238865772847,
+    "avg_decision_time_ms": 2914.546541113039,
+    "missed_opportunity_rate": -100.0,
+    "avg_satisfaction": 9.633335569613042,
+    "critical_satisfaction": 1.7020590440332686,
+    "weighted_satisfaction": 9.54034371744462,
+    "latency_satisfaction": 0.3059397524001647,
+    "rate_satisfaction": 13.64955024834045,
+    "total_throughput": 0,
+    "load_variance": -94.36628444419166,
+    "avg_sinr": -8.314076939142339,
+    "recognition_accuracy": 0.2448422831621377,
+    "migration_success_rate": 0,
+    "connected_ratio": 6.775542676093474
+  },
+  "statistical_tests": {
+    "avg_satisfaction": {
+      "group1": {
+        "mean": 0.7385263566025683,
+        "std": 0.022818928766460557,
+        "count": 10,
+        "median": 0.7377257511384887
+      },
+      "group2": {
+        "mean": 0.6736330266387196,
+        "std": 0.06107711357838827,
+        "count": 10,
+        "median": 0.6846670380285004
+      },
+      "effect_size": 1.4075489696580494,
+      "test_method": "ttest",
+      "alpha": 0.05,
+      "statistic": 2.9858622638920345,
+      "p_value": 0.007925250105398985,
+      "significant": 

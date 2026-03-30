@@ -234,7 +234,9 @@ class Experiment5:
         import pickle, json
         from datetime import datetime
         def _convert(obj):
-            if isinstance(obj, (np.integer,)):
+            if isinstance(obj, (np.bool_,)):
+                return bool(obj)
+            elif isinstance(obj, (np.integer,)):
                 return int(obj)
             elif isinstance(obj, (np.floating,)):
                 return float(obj)
@@ -1649,7 +1651,9 @@ class Experiment5Unified:
         from datetime import datetime
 
         def _convert(obj):
-            if isinstance(obj, (np.integer,)):
+            if isinstance(obj, (np.bool_,)):
+                return bool(obj)
+            elif isinstance(obj, (np.integer,)):
                 return int(obj)
             elif isinstance(obj, (np.floating,)):
                 return float(obj)
