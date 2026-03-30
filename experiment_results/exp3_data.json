@@ -5,16 +5,16 @@
       0.03201255724432222
     ],
     "avg_switching_latency_ms": [
-      0.0029254373842316503,
-      0.00022082001923452688
+      0.0028983037800747033,
+      0.00021936380207110396
     ],
     "max_switching_latency_ms": [
-      0.24831295013427734,
-      0.08953912821620594
+      0.29392242431640625,
+      0.1631514137216084
     ],
     "avg_decision_time_ms": [
-      0.1465368042296091,
-      0.0013559217288424774
+      0.14652407994722744,
+      0.0014465316450840546
     ],
     "missed_opportunity_rate": [
       0.0,
@@ -67,16 +67,16 @@
       0.089665707320035
     ],
     "avg_switching_latency_ms": [
-      0.0015947472901791143,
-      0.00020395864157845994
+      0.0015959964769664647,
+      0.00020362617502505233
     ],
     "max_switching_latency_ms": [
-      0.1547098159790039,
-      0.06590602414564366
+      0.15685558319091797,
+      0.10831565968257116
     ],
     "avg_decision_time_ms": [
-      0.004860989944295383,
-      0.00024891991285907756
+      0.00485426565469766,
+      0.0002502894199885591
     ],
     "missed_opportunity_rate": [
       0.199575265693343,
@@ -129,9 +129,9 @@
   },
   "improvement": {
     "handover_success_rate": 16.188365387521788,
-    "avg_switching_latency_ms": 83.44206647957867,
-    "max_switching_latency_ms": 60.50238865772847,
-    "avg_decision_time_ms": 2914.546541113039,
+    "avg_switching_latency_ms": 81.59838207058917,
+    "max_switching_latency_ms": 87.38410092719259,
+    "avg_decision_time_ms": 2918.460265054313,
     "missed_opportunity_rate": -100.0,
     "avg_satisfaction": 9.633335569613042,
     "critical_satisfaction": 1.7020590440332686,
@@ -164,4 +164,139 @@
       "alpha": 0.05,
       "statistic": 2.9858622638920345,
       "p_value": 0.007925250105398985,
-      "significant": 
+      "significant": true,
+      "effect_size_interpretation": "大"
+    },
+    "handover_success_rate": {
+      "group1": {
+        "mean": 0.9807293333174483,
+        "std": 0.03201255724432222,
+        "count": 10,
+        "median": 0.9969648865953045
+      },
+      "group2": {
+        "mean": 0.8440856621456309,
+        "std": 0.089665707320035,
+        "count": 10,
+        "median": 0.8617841396842529
+      },
+      "effect_size": 0.7944449994448056,
+      "test_method": "mannwhitney",
+      "alpha": 0.05,
+      "statistic": 97.0,
+      "p_value": 0.00043963875262656454,
+      "significant": true,
+      "effect_size_interpretation": "大"
+    },
+    "critical_satisfaction": {
+      "group1": {
+        "mean": 0.9600631631705191,
+        "std": 0.012872565767525601,
+        "count": 10,
+        "median": 0.9588906202657663
+      },
+      "group2": {
+        "mean": 0.9439957973268239,
+        "std": 0.03469117543600169,
+        "count": 10,
+        "median": 0.9553745109610299
+      },
+      "effect_size": 0.21128856368212914,
+      "test_method": "mannwhitney",
+      "alpha": 0.05,
+      "statistic": 62.5,
+      "p_value": 0.36380450713550716,
+      "significant": false,
+      "effect_size_interpretation": "小"
+    },
+    "avg_switching_latency_ms": {
+      "group1": {
+        "mean": 0.0028983037800747033,
+        "std": 0.00021936380207110396,
+        "count": 10,
+        "median": 0.002800792618750536
+      },
+      "group2": {
+        "mean": 0.0015959964769664647,
+        "std": 0.00020362617502505233,
+        "count": 10,
+        "median": 0.0016407805078156113
+      },
+      "effect_size": 0.8451542547285166,
+      "test_method": "mannwhitney",
+      "alpha": 0.05,
+      "statistic": 100.0,
+      "p_value": 0.00018267179110955002,
+      "significant": true,
+      "effect_size_interpretation": "大"
+    },
+    "avg_decision_time_ms": {
+      "group1": {
+        "mean": 0.14652407994722744,
+        "std": 0.0014465316450840546,
+        "count": 10,
+        "median": 0.14628021125571247
+      },
+      "group2": {
+        "mean": 0.00485426565469766,
+        "std": 0.0002502894199885591,
+        "count": 10,
+        "median": 0.004938096039759459
+      },
+      "effect_size": 136.47677476892494,
+      "test_method": "ttest",
+      "alpha": 0.05,
+      "statistic": 289.5109587407278,
+      "p_value": 1.798705643298341e-34,
+      "significant": true,
+      "effect_size_interpretation": "大"
+    },
+    "total_load": {
+      "group1": {
+        "mean": 4412.34,
+        "std": 328.84585203404936,
+        "count": 10,
+        "median": 4475.5
+      },
+      "group2": {
+        "mean": 3729.85,
+        "std": 471.09962056872854,
+        "count": 10,
+        "median": 3723.0
+      },
+      "effect_size": 1.6799847447768679,
+      "test_method": "ttest",
+      "alpha": 0.05,
+      "statistic": 3.563785815965024,
+      "p_value": 0.0022188907699182674,
+      "significant": true,
+      "effect_size_interpretation": "大"
+    },
+    "load_variance": {
+      "group1": {
+        "mean": 0.004083996909572544,
+        "std": 0.003739337557767742,
+        "count": 10,
+        "median": 0.0025264766062183695
+      },
+      "group2": {
+        "mean": 0.0724920679632461,
+        "std": 0.020455026646555827,
+        "count": 10,
+        "median": 0.06767539849169524
+      },
+      "effect_size": -4.6524759815263925,
+      "test_method": "ttest",
+      "alpha": 0.05,
+      "statistic": -9.86939194753455,
+      "p_value": 1.0929442639452876e-08,
+      "significant": true,
+      "effect_size_interpretation": "大"
+    }
+  },
+  "_meta": {
+    "experiment": "exp3",
+    "saved_at": "2026-03-30 22:28:05",
+    "global_seed": 42
+  }
+}

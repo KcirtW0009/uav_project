@@ -22,7 +22,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from uav_system.config import set_global_seed, GLOBAL_SEED, RESULT_DIR
 from uav_system.recognition import train_or_load_recognition_model
 from uav_system.visualization import RecognitionModelVisualizer
-from uav_system.experiments import Experiment1, Experiment2, Experiment2b, Experiment3, Experiment4
+from uav_system.experiments import Experiment1, Experiment2, Experiment2b, Experiment2c, Experiment3, Experiment4
 
 
 def main(force_retrain=False, run_experiments=None,
@@ -69,6 +69,7 @@ def main(force_retrain=False, run_experiments=None,
         '1': lambda: Experiment1.run(recognition_model, scaler, num_steps=150, repeats=10),
         '2': lambda: Experiment2.run(recognition_model, scaler, num_steps=150, repeats=10),
         '2b': lambda: Experiment2b.run(recognition_model, scaler, num_steps=150, repeats=8),
+        '2c': lambda: Experiment2c.run(recognition_model, scaler, num_steps=200, repeats=6),
         '3': lambda: Experiment3.run(recognition_model, scaler),
         '4': lambda: Experiment4.run(recognition_model, scaler, num_steps=150, repeats=10),
         '5': lambda: _run_exp5_unified(load_models=rl_load,
@@ -140,7 +141,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.all:
-        run_experiments = [1, 2, '2b', 3, 4, 5]
+        run_experiments = [1, 2, '2b', '2c', 3, 4, 5]
     else:
         run_experiments = [int(e) if isinstance(e, str) and e.isdigit() else e for e in args.exp]
 

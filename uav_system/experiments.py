@@ -1906,3 +1906,318 @@ class Experiment4:
         plt.close(fig)
 
         save_experiment_data('exp4', summary)
+
+
+# -------------------- 实验2c：大规模场景下ε-greedy机制验证 --------------------
+class Experiment2c:
+    """
+    实验2c：大规模场景下ε-greedy探索机制验证
+
+    实验动机：
+    - 实验2b发现ε-greedy在300UAV/8基站规模下总体呈微弱负面作用
+    - 但ε-greedy的设计初衷是为大规模高动态环境提供探索能力
+    - 需要验证当规模扩大时，ε-greedy是否转为正面作用
+    """
+
+    CONFIGS = {
+        'core_no_epsilon': {
+            'name': '核心组合(无ε-greedy)',
+            'desc': '动态阈值+业务权重+负载均衡',
+            'has_dynamic_threshold': True,
+            'has_business_weights': True,
+            'has_epsilon_greedy': False,
+            'has_load_balance': True,
+            'has_adaptive_recognition': False,
+        },
+        'core_with_epsilon': {
+            'name': '核心组合(有ε-greedy)',
+            'desc': '动态阈值+业务权重+负载均衡+ε-greedy',
+            'has_dynamic_threshold': True,
+            'has_business_weights': True,
+            'has_epsilon_greedy': True,
+            'has_load_balance': True,
+            'has_adaptive_recognition': False,
+        },
+        'full_no_epsilon': {
+            'name': '完整算法(无ε-greedy)',
+            'desc': '所有机制，禁用ε-greedy',
+            'has_dynamic_threshold': True,
+            'has_business_weights': True,
+            'has_epsilon_greedy': False,
+            'has_load_balance': True,
+            'has_adaptive_recognition': True,
+        },
+        'full_with_epsilon': {
+            'name': '完整算法(有ε-greedy)',
+            'desc': '所有机制，启用ε-greedy',
+            'has_dynamic_threshold': True,
+            'has_business_weights': True,
+            'has_epsilon_greedy': True,
+            'has_load_balance': True,
+            'has_adaptive_recognition': True,
+        },
+    }
+
+    @staticmethod
+    def run(recognition_model, scaler, num_steps=200, repeats=6):
+        print("\n" + "="*80)
+        print("实验2c：大规模场景下ε-greedy机制验证")
+        print("="*80)
+        print("\n实验目的：验证ε-greedy在扩大规模后的作用是否转为正面")
+        print("\n规模配置：")
+        print(f"  - UAV数量: 600 (实验2的2倍)")
+        print(f"  - 基站数量: 16 (实验2的2倍)")
+        print(f"  - 场景范围: 4000m×4000m (实验2的2倍)")
+        print(f"  - 仿真时长: {num_steps}步")
+        print("\n对比配置：")
+        for key, cfg in Experiment2c.CONFIGS.items():
+            print(f"  - {cfg['name']}: {cfg['desc']}")
+        print("="*80)
+
+        results = {key: [] for key in Experiment2c.CONFIGS.keys()}
+
+        for rep in range(repeats):
+            print(f"\n--- 重复 {rep+1}/{repeats} ---")
+            set_global_seed(GLOBAL_SEED + rep)
+
+            for config_key, config in Experiment2c.CONFIGS.items():
+                env = EnhancedNetworkEnvironment(
+                    num_bs=16, num_uav=600,
+                    recognition_model=recognition_model, scaler=scaler,
+                    seed=GLOBAL_SEED + rep, event_probability=0.05,
+                    bs_capacity_range=(1500, 2500)  # 扩大容量以适配大规模场景，保持~77%负载率
+                )
+
+                algo = EnhancedHandoverAlgorithm(env)
+
+                if not config['has_dynamic_threshold']:
+                    algo.base_threshold = 0.005
+                    algo.calculate_dynamic_threshold = lambda uav: 0.005
+
+                if not config['has_business_weights']:
+                    for bt in BusinessType:
+                        algo.business_weights[bt] = {'sinr': 0.4, 'load': 0.3, 'rate': 0.3}
+
+                if not config['has_epsilon_greedy']:
+                    algo.epsilon = 0.0
+                else:
+                    algo.epsilon = 0.05
+
+                enable_lb = config['has_load_balance']
+
+                for step in range(num_steps):
+                    env.step()
+                    algo.run_step(enable_load_balancing=enable_lb)
+
+                stats = env.get_state_statistics()
+                stats.update(algo.get_detailed_stats())
+                results[config_key].append(stats)
+
+                print(f" {config['name']:20s}: 满足率={stats['avg_satisfaction']:.4f}, "
+                      f"切换成功率={stats.get('handover_success_rate',0)*100:.1f}%")
+
+        summary = Experiment2c._summarize(results)
+        Experiment2c._print_results_table(summary)
+        Experiment2c._plot(summary)
+        return summary
+
+    @staticmethod
+    def _summarize(results):
+        summary = {}
+        for config_key, data_list in results.items():
+            summary[config_key] = {}
+            for key in ['avg_satisfaction', 'handover_success_rate', 'critical_satisfaction',
+                        'weighted_satisfaction', 'total_load', 'load_variance']:
+                if key in data_list[0]:
+                    vals = [d[key] for d in data_list]
+                    summary[config_key][key] = (np.mean(vals), np.std(vals))
+        return summary
+
+    @staticmethod
+    def _print_results_table(summary):
+        print("\n" + "="*100)
+        print("【实验2c结果：大规模场景下ε-greedy机制验证】")
+        print("="*100)
+
+        headers = ["配置", "整体满足率", "切换成功率", "关键业务满足率", "负载方差", "vs无ε差异"]
+        rows = []
+
+        core_no_eps = summary.get('core_no_epsilon', {}).get('avg_satisfaction', (0, 0))[0]
+        full_no_eps = summary.get('full_no_epsilon', {}).get('avg_satisfaction', (0, 0))[0]
+
+        for config_key, config in Experiment2c.CONFIGS.items():
+            if config_key not in summary:
+                continue
+            data = summary[config_key]
+            sat_mean, sat_std = data['avg_satisfaction']
+            success_mean, success_std = data['handover_success_rate']
+            crit_mean, crit_std = data['critical_satisfaction']
+            load_var_mean, load_var_std = data['load_variance']
+
+            if 'core' in config_key:
+                base = core_no_eps
+            else:
+                base = full_no_eps
+            diff = sat_mean - base if base > 0 else 0
+
+            row = [
+                config['name'],
+                f"{sat_mean:.4f}±{sat_std:.4f}",
+                f"{success_mean*100:.1f}%",
+                f"{crit_mean:.4f}",
+                f"{load_var_mean:.4f}",
+                f"{diff:+.4f}" if 'with_epsilon' in config_key else "-"
+            ]
+            rows.append(row)
+
+        VisualizationHelper.print_data_table("实验2c结果汇总", headers, rows)
+
+        print("\n【关键结论】")
+        core_diff = summary.get('core_with_epsilon', {}).get('avg_satisfaction', (0, 0))[0] - \
+                    summary.get('core_no_epsilon', {}).get('avg_satisfaction', (0, 0))[0]
+        full_diff = summary.get('full_with_epsilon', {}).get('avg_satisfaction', (0, 0))[0] - \
+                    summary.get('full_no_epsilon', {}).get('avg_satisfaction', (0, 0))[0]
+
+        print(f"\nε-greedy在大规模场景下的作用:")
+        print(f"  核心组合(含ε) - 核心组合(无ε) = {core_diff:+.4f}")
+        print(f"  完整算法(含ε) - 完整算法(无ε) = {full_diff:+.4f}")
+
+        if core_diff > 0.005 or full_diff > 0.005:
+            print(f"\n  [结论] ε-greedy在大规模场景下转为正面作用")
+            print(f"         说明探索机制在扩大规模后显现价值")
+        elif core_diff < -0.005 or full_diff < -0.005:
+            print(f"\n  [结论] ε-greedy在大规模场景下仍为负面作用")
+            print(f"         建议在实际部署中移除或大幅降低ε值")
+        else:
+            print(f"\n  [结论] ε-greedy在大规模场景下作用不显著")
+            print(f"         在当前规模范围内无明确增益")
+
+        print(f"\n【与实验2b对比】")
+        print(f"  实验2b(300UAV): ε-greedy总体呈微弱负面作用")
+        print(f"  实验2c(600UAV): {'转为正面' if core_diff > 0.005 else '仍为负面' if core_diff < -0.005 else '作用不显著'}")
+        print("="*100)
+
+    @staticmethod
+    def _plot(summary):
+        fig = plt.figure(figsize=(16, 10))
+        fig.suptitle('实验2c：大规模场景下ε-greedy机制验证 (600UAV/16BS)', fontsize=14, fontweight='bold')
+        gs = fig.add_gridspec(2, 3, hspace=0.35, wspace=0.3)
+
+        configs = list(Experiment2c.CONFIGS.keys())
+        names = [Experiment2c.CONFIGS[c]['name'] for c in configs]
+
+        # 1. 满足率对比
+        ax = fig.add_subplot(gs[0, 0])
+        sats = [summary[c]['avg_satisfaction'][0] if c in summary else 0 for c in configs]
+        colors = [COLORS['primary'] if 'no_epsilon' in c else COLORS['neutral'] for c in configs]
+        bars = ax.bar(names, sats, color=colors, alpha=0.8, edgecolor='white', linewidth=1.5)
+        ax.set_ylabel('整体满足率')
+        ax.set_title('整体满足率对比', fontweight='bold')
+        ax.set_xticklabels(names, rotation=15, ha='right', fontsize=9)
+        for bar, val in zip(bars, sats):
+            ax.text(bar.get_x() + bar.get_width()/2, val, f'{val:.4f}',
+                   ha='center', va='bottom', fontsize=9)
+        ax.grid(True, alpha=0.3, axis='y')
+
+        # 2. ε-greedy作用对比（分组柱状图）
+        ax = fig.add_subplot(gs[0, 1])
+        categories = ['核心组合', '完整算法']
+        no_epsilon = [
+            summary.get('core_no_epsilon', {}).get('avg_satisfaction', (0, 0))[0],
+            summary.get('full_no_epsilon', {}).get('avg_satisfaction', (0, 0))[0]
+        ]
+        with_epsilon = [
+            summary.get('core_with_epsilon', {}).get('avg_satisfaction', (0, 0))[0],
+            summary.get('full_with_epsilon', {}).get('avg_satisfaction', (0, 0))[0]
+        ]
+        x = np.arange(len(categories))
+        width = 0.35
+        ax.bar(x - width/2, no_epsilon, width, label='无ε-greedy', color=COLORS['primary'], alpha=0.8)
+        ax.bar(x + width/2, with_epsilon, width, label='有ε-greedy', color=COLORS['neutral'], alpha=0.8)
+        ax.set_ylabel('整体满足率')
+        ax.set_title('ε-greedy作用对比（大规模）', fontweight='bold')
+        ax.set_xticks(x)
+        ax.set_xticklabels(categories)
+        ax.legend()
+        ax.grid(True, alpha=0.3, axis='y')
+        for i, (no_eps, with_eps) in enumerate(zip(no_epsilon, with_epsilon)):
+            diff = with_eps - no_eps
+            ax.annotate(f'{diff:+.4f}', xy=(i, max(no_eps, with_eps)),
+                       ha='center', va='bottom', fontsize=10, fontweight='bold',
+                       color=COLORS['success'] if diff > 0 else COLORS['danger'])
+
+        # 3. 切换成功率对比
+        ax = fig.add_subplot(gs[0, 2])
+        success_rates = [summary[c]['handover_success_rate'][0]*100 if c in summary else 0 for c in configs]
+        colors = [COLORS['primary'] if 'no_epsilon' in c else COLORS['neutral'] for c in configs]
+        bars = ax.bar(names, success_rates, color=colors, alpha=0.8, edgecolor='white', linewidth=1.5)
+        ax.set_ylabel('切换成功率(%)')
+        ax.set_title('切换成功率对比', fontweight='bold')
+        ax.set_xticklabels(names, rotation=15, ha='right', fontsize=9)
+        for bar, val in zip(bars, success_rates):
+            ax.text(bar.get_x() + bar.get_width()/2, val, f'{val:.1f}%',
+                   ha='center', va='bottom', fontsize=9)
+        ax.grid(True, alpha=0.3, axis='y')
+
+        # 4. 关键业务满足率
+        ax = fig.add_subplot(gs[1, 0])
+        crit_sats = [summary[c]['critical_satisfaction'][0] if c in summary else 0 for c in configs]
+        colors = [COLORS['primary'] if 'no_epsilon' in c else COLORS['neutral'] for c in configs]
+        bars = ax.bar(names, crit_sats, color=colors, alpha=0.8, edgecolor='white', linewidth=1.5)
+        ax.set_ylabel('关键业务满足率')
+        ax.set_title('关键业务满足率对比', fontweight='bold')
+        ax.set_xticklabels(names, rotation=15, ha='right', fontsize=9)
+        for bar, val in zip(bars, crit_sats):
+            ax.text(bar.get_x() + bar.get_width()/2, val, f'{val:.4f}',
+                   ha='center', va='bottom', fontsize=9)
+        ax.grid(True, alpha=0.3, axis='y')
+
+        # 5. 负载方差
+        ax = fig.add_subplot(gs[1, 1])
+        load_vars = [summary[c]['load_variance'][0] if c in summary else 0 for c in configs]
+        colors = [COLORS['primary'] if 'no_epsilon' in c else COLORS['neutral'] for c in configs]
+        bars = ax.bar(names, load_vars, color=colors, alpha=0.8, edgecolor='white', linewidth=1.5)
+        ax.set_ylabel('负载方差')
+        ax.set_title('负载均衡程度对比', fontweight='bold')
+        ax.set_xticklabels(names, rotation=15, ha='right', fontsize=9)
+        for bar, val in zip(bars, load_vars):
+            ax.text(bar.get_x() + bar.get_width()/2, val, f'{val:.4f}',
+                   ha='center', va='bottom', fontsize=9)
+        ax.grid(True, alpha=0.3, axis='y')
+
+        # 6. 文本摘要
+        ax = fig.add_subplot(gs[1, 2])
+        ax.axis('off')
+
+        core_no = summary.get('core_no_epsilon', {}).get('avg_satisfaction', (0, 0))[0]
+        core_with = summary.get('core_with_epsilon', {}).get('avg_satisfaction', (0, 0))[0]
+        full_no = summary.get('full_no_epsilon', {}).get('avg_satisfaction', (0, 0))[0]
+        full_with = summary.get('full_with_epsilon', {}).get('avg_satisfaction', (0, 0))[0]
+
+        text = "【实验2c关键发现】\n\n"
+        text += f"规模: 600UAV / 16BS / 4000m²\n\n"
+        text += f"核心组合:\n"
+        text += f"  无ε-greedy: {core_no:.4f}\n"
+        text += f"  有ε-greedy: {core_with:.4f}\n"
+        text += f"  差异: {core_with-core_no:+.4f}\n\n"
+        text += f"完整算法:\n"
+        text += f"  无ε-greedy: {full_no:.4f}\n"
+        text += f"  有ε-greedy: {full_with:.4f}\n"
+        text += f"  差异: {full_with-full_no:+.4f}\n\n"
+
+        if core_with - core_no > 0.005:
+            text += "[结论] ε-greedy在大规模下\n转为正面作用 ✓"
+        elif core_with - core_no < -0.005:
+            text += "[结论] ε-greedy在大规模下\n仍为负面作用 ✗"
+        else:
+            text += "[结论] ε-greedy作用不显著\n建议移除或调低ε值"
+
+        ax.text(0.05, 0.95, text, transform=ax.transAxes,
+               fontsize=11, verticalalignment='top',
+               bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+
+        plt.savefig(os.path.join(RESULT_DIR, 'exp2c_results.png'), dpi=200, bbox_inches='tight')
+        plt.close(fig)
+
+        save_experiment_data('exp2c', summary)
+        return summary

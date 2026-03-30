@@ -74,14 +74,16 @@ class NetworkEnvironmentWithRecognition:
             low, high = self.bs_capacity_range
         else:
             # 5G基站容量参考: 宏站100MHz带宽≈1Gbps, 微站≈500Mbps
-            # 应急救援高容量保障URLLC, 工业巡检保障4K视频带宽
+            # 载波聚合/高阶MIMO可达2Gbps+
+            # 容量按各场景UAV数量×业务比例×理想速率的 1/0.77 设计，保持~77%负载率
+            #   (与实验3默认场景一致，确保跨场景可比性)
             capacity_map = {
                 'urban': (400, 800), 'emergency': (700, 1000),
-                'agriculture': (300, 500), 'default': (500, 1000),
-                'smart_city': (600, 900),           # 视频监控: 中高容量
-                'industrial_inspection': (700, 1100), # 4K视频: 高容量
-                'emergency_rescue': (900, 1200),     # URLLC: 最高容量保障
-                'logistics_delivery': (500, 700),    # 物流: 中等容量+广覆盖
+                'agriculture': (600, 900), 'default': (500, 1000),
+                'smart_city': (1500, 2400),           # 400UAV×60%视频→12100Mbps需求→8×avg1950≈77%
+                'industrial_inspection': (1400, 2300), # 300UAV×75%视频→11303Mbps需求→8×avg1850≈77%
+                'emergency_rescue': (900, 1200),       # 300UAV×10%视频→1643Mbps需求→~20%负载(URLLC低负载场景)
+                'logistics_delivery': (1200, 2100),    # 500UAV×40%视频→10175Mbps需求→8×avg1650≈77%
             }
             low, high = capacity_map.get(scenario, capacity_map['default'])
         pos_range_map = {'urban': 800, 'emergency': 1200, 'agriculture': 1500, 'default': 1000,
