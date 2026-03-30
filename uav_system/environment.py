@@ -73,9 +73,10 @@ class NetworkEnvironmentWithRecognition:
         if self.bs_capacity_range is not None:
             low, high = self.bs_capacity_range
         else:
+            # 5G基站容量参考: 宏站100MHz带宽≈1Gbps, 微站≈500Mbps
             capacity_map = {
-                'urban': (1500, 2500), 'emergency': (2000, 3000),
-                'agriculture': (1200, 1800), 'default': (1500, 2500)
+                'urban': (400, 800), 'emergency': (700, 1000),
+                'agriculture': (300, 500), 'default': (500, 1000)
             }
             low, high = capacity_map.get(scenario, capacity_map['default'])
         pos_range_map = {'urban': 800, 'emergency': 1200, 'agriculture': 1500, 'default': 1000}

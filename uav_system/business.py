@@ -102,50 +102,55 @@ class QoSProfile:
 
 
 # ==================== 预定义QoS配置 ====================
+# 参数来源：华为白皮书、3GPP TS 22.125、论文KPI表格
+# - 控制信令(URlLC): ≈200kbps上行, ≤20ms时延, 99.999%可靠性
+# - 视频回传(eMBB): 25-100Mbps带宽, ≈20ms时延, 连续传输高可靠
+# - 环境监测(mMTC): ≤1Mbps带宽, <1000ms时延, 容忍一定丢包
 QOS_PROFILES = {
     BusinessType.CONTROL_SIGNAL: QoSProfile(
         business_type=BusinessType.CONTROL_SIGNAL,
-        min_rate=45, ideal_rate=50, max_delay=10, max_loss_rate=0.001,
-        priority=0.95, downgrade_tolerance=0.05,
+        min_rate=0.15, ideal_rate=0.5, max_delay=20, max_loss_rate=0.00001,
+        priority=0.99, downgrade_tolerance=0.05,
         criticality=1.0, latency_sensitivity=1.0
     ),
     BusinessType.VIDEO_STREAMING: QoSProfile(
         business_type=BusinessType.VIDEO_STREAMING,
-        min_rate=150, ideal_rate=200, max_delay=50, max_loss_rate=0.01,
-        priority=0.65, downgrade_tolerance=0.35,
-        criticality=0.7, latency_sensitivity=0.6
+        min_rate=25, ideal_rate=50, max_delay=20, max_loss_rate=0.001,
+        priority=0.75, downgrade_tolerance=0.35,
+        criticality=0.7, latency_sensitivity=0.8
     ),
     BusinessType.ENVIRONMENT_MONITORING: QoSProfile(
         business_type=BusinessType.ENVIRONMENT_MONITORING,
-        min_rate=30, ideal_rate=80, max_delay=200, max_loss_rate=0.05,
-        priority=0.35, downgrade_tolerance=0.75,
-        criticality=0.4, latency_sensitivity=0.3
+        min_rate=0.5, ideal_rate=1.0, max_delay=1000, max_loss_rate=0.05,
+        priority=0.30, downgrade_tolerance=0.75,
+        criticality=0.3, latency_sensitivity=0.2
     )
 }
 
 
 # ==================== 业务特征生成参数 ====================
 # 用于模拟各业务类型的网络流量特征（时延ms、带宽Mbps、丢包率、抖动ms）
+# 与QOS_PROFILES对齐：控制信令低带宽低时延、视频高带宽中时延、监测低带宽高时延容忍
 BUSINESS_FEATURE_PARAMS = {
     BusinessType.CONTROL_SIGNAL: {
-        'delay': (5, 2),                # (均值, 标准差)
-        'bandwidth': (50, 10),
-        'loss_beta': (1, 50),           # Beta分布参数
-        'loss_scale': 0.5,              # 丢包率缩放因子
+        'delay': (10, 3),                # 10±3ms (≤20ms要求)
+        'bandwidth': (0.5, 0.1),         # 500±100kbps
+        'loss_beta': (1, 1000),          # 极低丢包率(99.999%可靠性)
+        'loss_scale': 0.00001,
         'jitter': (1, 0.5)
     },
     BusinessType.VIDEO_STREAMING: {
-        'delay': (30, 10),
-        'bandwidth': (200, 50),
-        'loss_beta': (2, 10),
-        'loss_scale': 1.0,
-        'jitter': (5, 2)
+        'delay': (15, 5),                # 15±5ms (≈20ms要求)
+        'bandwidth': (50, 15),           # 50±15Mbps (25-100Mbps范围)
+        'loss_beta': (5, 100),           # 低丢包(连续传输)
+        'loss_scale': 0.001,
+        'jitter': (3, 1)
     },
     BusinessType.ENVIRONMENT_MONITORING: {
-        'delay': (10, 3),
-        'bandwidth': (100, 30),
+        'delay': (500, 200),             # 500±200ms (<1000ms)
+        'bandwidth': (1, 0.3),           # 1±0.3Mbps (≤1Mbps)
         'loss_beta': (2, 20),
-        'loss_scale': 0.5,
-        'jitter': (2, 1)
+        'loss_scale': 0.05,
+        'jitter': (50, 20)
     }
 }
