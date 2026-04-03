@@ -20,6 +20,7 @@ QMIX 多智能体环境
 
 import numpy as np
 from typing import Dict, Tuple, List, Optional
+from collections import deque
 
 from .environment import NetworkEnvironmentWithRecognition
 from .parametric_algorithm import (
@@ -83,6 +84,8 @@ class QMixHandoverEnv:
         self._last_satisfaction = {}  # UAV id -> 上一步满意度
         self._last_disconnected = {}  # UAV id -> 上一步是否断连
         self._last_handover_count = {}  # UAV id -> 上一步累计切换次数
+        self._last_actions = {}  # UAV id -> 上一步动作
+        self._sat_history = {}  # UAV id -> deque of recent satisfactions
 
     def _calc_obs_dim(self) -> int:
         """
@@ -95,9 +98,12 @@ class QMixHandoverEnv:
         - 当前满意度: 1
         - 连接状态: 1
         - 移动速度: 1
-        总计: 4 * num_bs + 6
+        - 上次动作 one-hot: action_dim
+        - 满意度变化趋势: 1
+        - 同类型 UAV 平均满意度: 1
+        总计: 4 * num_bs + 6 + action_dim + 2
         """
-        return 4 * self.num_bs + 6
+        return 4 * self.num_bs + 6 + self.action_dim + 2
 
     def _calc_state_dim(self) -> int:
         """
@@ -159,8 +165,32 @@ class QMixHandoverEnv:
         # 8. 移动速度 (归一化)
         velocity = np.array([min(np.linalg.norm(uav.velocity) / 30.0, 1.0)])
 
+        # 9. 上次动作 one-hot
+        last_action = np.zeros(self.action_dim)
+        if uav_id in self._last_actions:
+            last_action[self._last_actions[uav_id]] = 1.0
+
+        # 10. 满意度变化趋势 (最近5步的线性趋势)
+        if uav_id in self._sat_history and len(self._sat_history[uav_id]) >= 2:
+            recent = list(self._sat_history[uav_id])[-5:]
+            if len(recent) >= 2:
+                trend = (recent[-1] - recent[0]) / len(recent)
+            else:
+                trend = 0.0
+        else:
+            trend = 0.0
+        sat_trend = np.array([np.clip(trend * 10.0, -1.0, 1.0)])  # 缩放到 [-1, 1]
+
+        # 11. 同类型 UAV 平均满意度
+        peer_sats = []
+        for other_uid, other_uav in self.env.uavs.items():
+            if other_uid != uav_id and other_uav.true_business_type == uav.true_business_type:
+                peer_sats.append(other_uav.current_satisfaction)
+        peer_avg = np.array([np.mean(peer_sats) if peer_sats else 0.0])
+
         return np.concatenate([sinr_norm, loads, connected_onehot,
-                               cap_ratios, biz, satisfaction, connected, velocity])
+                               cap_ratios, biz, satisfaction, connected, velocity,
+                               last_action, sat_trend, peer_avg])
 
     def get_global_state(self) -> np.ndarray:
         """
@@ -226,11 +256,15 @@ class QMixHandoverEnv:
         self._last_satisfaction = {}
         self._last_disconnected = {}
         self._last_handover_count = {}
+        self._last_actions = {}
+        self._sat_history = {}
         for uid in range(self.num_agents):
             uav = self.env.uavs[uid]
             self._last_satisfaction[uid] = uav.current_satisfaction
             self._last_disconnected[uid] = (uav.connected_bs_id is None)
             self._last_handover_count[uid] = uav.handover_count
+            self._last_actions[uid] = 0
+            self._sat_history[uid] = deque([uav.current_satisfaction], maxlen=10)
 
         obs_dict = self.get_all_obs()
         global_state = self.get_global_state()
@@ -293,7 +327,12 @@ class QMixHandoverEnv:
 
         self._current_step += 1
 
-        # ====== 3. 计算奖励 ======
+        # ====== 3. 计算奖励（V3：绝对值主导 + 梯度辅助） ======
+        # 设计理念:
+        #   - 满意度绝对值线性奖励为主（每步 sat 本身就是独立计算的 property）
+        #   - delta_sat 辅助梯度信号（权重低，避免噪声放大）
+        #   - 低满意度微惩罚（防止"什么都不做"退化策略）
+        #   - 切换/断连惩罚适度
         rewards = {}
         team_reward = 0.0
 
@@ -302,29 +341,25 @@ class QMixHandoverEnv:
             new_sat = uav.current_satisfaction
             old_sat = old_sats.get(uid, 0.5)
 
-            # a. 满意度变化奖励（个体）
+            # a. 满意度绝对值线性奖励（核心信号，范围 [-0.2, +0.5]）
+            #    sat=0.0 → -0.2, sat=0.3 → 0.1, sat=0.5 → 0.3, sat=0.8 → 0.6, sat=1.0 → 0.8
+            r_individual = new_sat - 0.2
+
+            # b. 满意度变化辅助信号（弱梯度，权重 2.0）
             delta_sat = new_sat - old_sat
-            r_individual = 3.0 * delta_sat
+            r_individual += 2.0 * delta_sat
 
-            # b. 满意度绝对值奖励
-            if new_sat >= 0.3:
-                r_individual += new_sat * 0.5
-
-            # c. 切换惩罚
+            # c. 切换惩罚（适度）
             new_ho = uav.handover_count
             old_ho = self._last_handover_count.get(uid, 0)
             if new_ho > old_ho:
-                r_individual -= 0.8
+                r_individual -= 0.15
 
             # d. 断连惩罚
             is_connected = uav.connected_bs_id is not None
             was_connected = not self._last_disconnected.get(uid, False)
             if not is_connected and was_connected:
-                r_individual -= 3.0
-
-            # e. 保持连接奖励
-            if is_connected:
-                r_individual += 0.05
+                r_individual -= 1.5
 
             rewards[uid] = r_individual
             team_reward += r_individual
@@ -333,6 +368,8 @@ class QMixHandoverEnv:
             self._last_satisfaction[uid] = new_sat
             self._last_disconnected[uid] = not is_connected
             self._last_handover_count[uid] = new_ho
+            self._last_actions[uid] = actions.get(uid, 0)
+            self._sat_history[uid].append(new_sat)
 
         # ====== 4. 团队奖励归一化 ======
         team_reward /= max(self.num_agents, 1)
@@ -360,3 +397,28 @@ class QMixHandoverEnv:
         global_state = self.get_global_state()
 
         return obs_dict, global_state, rewards, team_reward, done, info
+
+    def advance_env_only(self):
+        """
+        仅推进底层环境（不执行任何切换决策），供基线算法评估使用。
+
+        基线算法（增强/传统）通过自己的 algo.run_step() 决策切换，
+        然后调用本方法推进环境仿真。
+        """
+        self.env.current_step += 1
+        for uav in self.env.uavs.values():
+            uav.move(time_step=1.0)
+        self.env._update_sinr_matrix()
+        for uav in self.env.uavs.values():
+            uav.record_satisfaction()
+        self.env._check_interruptions()
+        self.env._record_stats()
+        self._current_step += 1
+
+        # 更新历史记录（基线评估时也需要）
+        for uid in range(self.num_agents):
+            uav = self.env.uavs[uid]
+            self._last_satisfaction[uid] = uav.current_satisfaction
+            self._last_disconnected[uid] = (uav.connected_bs_id is None)
+            self._last_handover_count[uid] = uav.handover_count
+            self._sat_history[uid].append(uav.current_satisfaction)

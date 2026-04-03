@@ -126,7 +126,7 @@ def _run_exp_mappo(load_models=False, phase='both'):
         num_uav_list=(10, 20),
         num_bs=8,
         num_steps=100,
-        train_episodes=300,
+        train_episodes=1000,
         eval_episodes=10,
         bs_capacity_range=(400, 800),
         load_models=load_models,

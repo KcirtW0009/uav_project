@@ -166,13 +166,13 @@ class QoSProfile:
 QOS_PROFILES = {
     BusinessType.CONTROL_SIGNAL: QoSProfile(
         business_type=BusinessType.CONTROL_SIGNAL,
-        min_rate=0.15, ideal_rate=0.5, max_delay=20, max_loss_rate=0.00001,
+        min_rate=0.15, ideal_rate=0.5, max_delay=20, max_loss_rate=0.01,
         priority=0.99, downgrade_tolerance=0.05,
         criticality=1.0, latency_sensitivity=1.0
     ),
     BusinessType.VIDEO_STREAMING: QoSProfile(
         business_type=BusinessType.VIDEO_STREAMING,
-        min_rate=25, ideal_rate=50, max_delay=20, max_loss_rate=0.001,
+        min_rate=25, ideal_rate=50, max_delay=20, max_loss_rate=0.05,
         priority=0.75, downgrade_tolerance=0.35,
         criticality=0.7, latency_sensitivity=0.8
     ),

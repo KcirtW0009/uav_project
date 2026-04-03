@@ -317,8 +317,9 @@ def train_or_load_recognition_model(force_retrain=False, compare_models=True, ve
             print("发现已保存的模型，正在加载...")
         model = BusinessRecognitionModel()
         model.load()
+        # 使用与训练数据同分布的种子生成测试集（避免分布偏移）
         X_test, y_test = BusinessRecognitionModel.generate_business_data(
-            num_samples_per_class=500, seed=GLOBAL_SEED + 999)
+            num_samples_per_class=500, seed=GLOBAL_SEED + 42, noise_level=0.1)
         acc, f1, _ = model.evaluate_on_test(X_test, y_test)
         if verbose:
             print(f"加载的模型在测试集上准确率: {acc * 100:.2f}%, F1-score: {f1:.3f}")

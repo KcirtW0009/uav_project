@@ -544,7 +544,13 @@ class MAPPOAgent:
                 self.buffer.get_batches(self.batch_size, advantages, returns, self.num_epochs):
 
             # 从 obs 中提取 biz_types
-            num_bs = (self.obs_dim - 6) // 4
+            # obs 结构: [sinr(4*num_bs), biz_onehot(3), sat(1), conn(1), vel(1), last_action(action_dim), sat_trend(1), peer_avg(1)]
+            # biz_onehot 起始位置 = 4 * num_bs
+            # 需要先算 num_bs: (obs_dim - 6 - action_dim - 2) / 4
+            biz_start = (self.obs_dim - 6 - self.action_dim - 2) // 4 * 4
+            # 但更简单: biz_start = 4 * num_bs，先通过 action_dim 反推
+            # obs_dim = 4*num_bs + 6 + action_dim + 2 => num_bs = (obs_dim - 8 - action_dim) / 4
+            num_bs = (self.obs_dim - 8 - self.action_dim) // 4
             biz_start = 4 * num_bs
             biz_onehot = obs_batch[:, biz_start:biz_start + 3]
             biz_types_batch = biz_onehot.argmax(dim=1)

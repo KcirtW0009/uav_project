@@ -42,7 +42,6 @@ from .qmix_environment import QMixHandoverEnv
 from .mappo_agent import MAPPOAgent
 from .parametric_algorithm import ParametricEnhancedAlgorithm, STRATEGY_CONFIGS, NUM_STRATEGIES
 from .algorithms import EnhancedHandoverAlgorithm
-from .environment import EnhancedNetworkEnvironment
 from .business import BusinessType
 
 
@@ -195,7 +194,7 @@ class ExperimentBAMAPPO:
                 gamma=0.99,
                 gae_lambda=0.95,
                 clip_epsilon=0.2,
-                entropy_coef=0.01,
+                entropy_coef=0.02,
                 value_coef=0.5,
                 rollout_length=rollout_length,
                 num_epochs=5,
@@ -254,7 +253,7 @@ class ExperimentBAMAPPO:
                 episode_satisfactions.append(np.mean(episode_sat))
 
                 # PPO 更新 (每个 episode 结束后)
-                if ep > 0 and ep % 5 == 0:  # 每 5 个 episode 更新一次
+                if ep > 0:
                     train_stats = agent.train()
                     if train_stats:
                         episode_actor_losses.append(train_stats['actor_loss'])
@@ -359,65 +358,70 @@ class ExperimentBAMAPPO:
 
                 mappo_sats.append(np.mean(ep_sats))
 
-            # 评估各人工固定策略
+            # 评估各人工固定策略（使用统一环境 QMixHandoverEnv）
             strategy_results = {}
             for strat_name, strat_params in STRATEGY_CONFIGS.items():
                 rep_sats = []
                 for rep in range(eval_episodes):
                     seed = GLOBAL_SEED + num_uav * 300 + rep * 1000
                     set_global_seed(seed)
-                    eval_env = EnhancedNetworkEnvironment(
+                    eval_env = QMixHandoverEnv(
                         num_bs=num_bs, num_uav=num_uav,
-                        recognition_model=None, scaler=None,
-                        seed=seed, bs_capacity_range=bs_capacity_range,
+                        max_steps=num_steps, seed=seed,
+                        bs_capacity_range=bs_capacity_range,
                     )
-                    eval_env.recognition_updater = None
-                    algo = ParametricEnhancedAlgorithm.from_strategy_name(eval_env, strat_name)
+                    eval_env.reset()  # 初始化 episode 状态
+                    algo = ParametricEnhancedAlgorithm.from_strategy_name(eval_env.env, strat_name)
                     for step in range(num_steps):
-                        eval_env.step()
-                        algo.run_step(enable_load_balancing=True)
-                    stats = eval_env.get_state_statistics()
-                    rep_sats.append(stats['avg_satisfaction'])
+                        # 所有 UAV 使用同一固定策略
+                        actions = {uid: list(STRATEGY_CONFIGS.keys()).index(strat_name)
+                                   for uid in range(eval_env.num_agents)}
+                        eval_env.step(actions)
+                    avg_sat = np.mean([eval_env.env.uavs[uid].current_satisfaction
+                                       for uid in range(eval_env.num_agents)])
+                    rep_sats.append(avg_sat)
                 strategy_results[strat_name] = {
                     'satisfaction': (np.mean(rep_sats), np.std(rep_sats)),
                 }
 
-            # 增强算法基线
+            # 增强算法基线（使用统一环境 QMixHandoverEnv）
             enhanced_sats = []
             for rep in range(eval_episodes):
                 seed = GLOBAL_SEED + num_uav * 400 + rep * 1000
                 set_global_seed(seed)
-                eval_env = EnhancedNetworkEnvironment(
+                eval_env = QMixHandoverEnv(
                     num_bs=num_bs, num_uav=num_uav,
-                    recognition_model=None, scaler=None,
-                    seed=seed, bs_capacity_range=bs_capacity_range,
+                    max_steps=num_steps, seed=seed,
+                    bs_capacity_range=bs_capacity_range,
                 )
-                eval_env.recognition_updater = None
-                algo = EnhancedHandoverAlgorithm(eval_env)
+                eval_env.reset()
+                algo = EnhancedHandoverAlgorithm(eval_env.env)
                 for step in range(num_steps):
-                    eval_env.step()
                     algo.run_step(enable_load_balancing=True)
-                stats = eval_env.get_state_statistics()
-                enhanced_sats.append(stats['avg_satisfaction'])
+                    eval_env.advance_env_only()
+                avg_sat = np.mean([eval_env.env.uavs[uid].current_satisfaction
+                                   for uid in range(eval_env.num_agents)])
+                enhanced_sats.append(avg_sat)
 
-            # 传统算法基线
+            # 传统算法基线（使用统一环境 QMixHandoverEnv）
             traditional_sats = []
             from .algorithms import IntegratedHandoverAlgorithm
             for rep in range(eval_episodes):
                 seed = GLOBAL_SEED + num_uav * 500 + rep * 1000
                 set_global_seed(seed)
-                eval_env = EnhancedNetworkEnvironment(
+                eval_env = QMixHandoverEnv(
                     num_bs=num_bs, num_uav=num_uav,
-                    recognition_model=None, scaler=None,
-                    seed=seed, bs_capacity_range=bs_capacity_range,
+                    max_steps=num_steps, seed=seed,
+                    bs_capacity_range=bs_capacity_range,
                 )
-                eval_env.recognition_updater = None
-                algo = IntegratedHandoverAlgorithm(eval_env)
+                eval_env.reset()
+                algo = IntegratedHandoverAlgorithm(eval_env.env)
                 for step in range(num_steps):
-                    eval_env.step()
                     algo.run_step()
-                stats = eval_env.get_state_statistics()
-                traditional_sats.append(stats['avg_satisfaction'])
+                    eval_env.advance_env_only()
+                avg_sat = np.mean([eval_env.env.uavs[uid].current_satisfaction
+                                   for uid in range(eval_env.num_agents)])
+                traditional_sats.append(avg_sat)
 
             mappo_mean = np.mean(mappo_sats) if mappo_sats else 0
             mappo_std = np.std(mappo_sats) if mappo_sats else 0
@@ -534,55 +538,56 @@ class ExperimentBAMAPPO:
                 for rep in range(repeats):
                     seed = GLOBAL_SEED + hash(scenario_name) % 10000 + rep * 1000
                     set_global_seed(seed)
-                    eval_env = EnhancedNetworkEnvironment(
+                    eval_env = QMixHandoverEnv(
                         num_bs=num_bs, num_uav=s_uav,
-                        recognition_model=None, scaler=None,
-                        seed=seed, scenario=scenario_name,
+                        max_steps=num_steps, seed=seed,
                         bs_capacity_range=s_cap,
                     )
-                    eval_env.recognition_updater = None
-                    algo = ParametricEnhancedAlgorithm.from_strategy_name(eval_env, strat_name)
+                    eval_env.reset()
+                    algo = ParametricEnhancedAlgorithm.from_strategy_name(eval_env.env, strat_name)
                     for step in range(num_steps):
-                        eval_env.step()
-                        algo.run_step(enable_load_balancing=True)
-                    stats = eval_env.get_state_statistics()
-                    rep_sats.append(stats['avg_satisfaction'])
+                        actions = {uid: list(STRATEGY_CONFIGS.keys()).index(strat_name)
+                                   for uid in range(eval_env.num_agents)}
+                        eval_env.step(actions)
+                    avg_sat = np.mean([eval_env.env.uavs[uid].current_satisfaction
+                                       for uid in range(eval_env.num_agents)])
+                    rep_sats.append(avg_sat)
                 strategy_sats[strat_name] = (np.mean(rep_sats), np.std(rep_sats))
 
             for rep in range(repeats):
                 seed = GLOBAL_SEED + hash(scenario_name) % 10000 + rep * 1000
                 set_global_seed(seed)
-                eval_env = EnhancedNetworkEnvironment(
+                eval_env = QMixHandoverEnv(
                     num_bs=num_bs, num_uav=s_uav,
-                    recognition_model=None, scaler=None,
-                    seed=seed, scenario=scenario_name,
+                    max_steps=num_steps, seed=seed,
                     bs_capacity_range=s_cap,
                 )
-                eval_env.recognition_updater = None
-                algo = EnhancedHandoverAlgorithm(eval_env)
+                eval_env.reset()
+                algo = EnhancedHandoverAlgorithm(eval_env.env)
                 for step in range(num_steps):
-                    eval_env.step()
                     algo.run_step(enable_load_balancing=True)
-                stats = eval_env.get_state_statistics()
-                enhanced_sats.append(stats['avg_satisfaction'])
+                    eval_env.advance_env_only()
+                avg_sat = np.mean([eval_env.env.uavs[uid].current_satisfaction
+                                   for uid in range(eval_env.num_agents)])
+                enhanced_sats.append(avg_sat)
 
             from .algorithms import IntegratedHandoverAlgorithm
             for rep in range(repeats):
                 seed = GLOBAL_SEED + hash(scenario_name) % 10000 + rep * 1000
                 set_global_seed(seed)
-                eval_env = EnhancedNetworkEnvironment(
+                eval_env = QMixHandoverEnv(
                     num_bs=num_bs, num_uav=s_uav,
-                    recognition_model=None, scaler=None,
-                    seed=seed, scenario=scenario_name,
+                    max_steps=num_steps, seed=seed,
                     bs_capacity_range=s_cap,
                 )
-                eval_env.recognition_updater = None
-                algo = IntegratedHandoverAlgorithm(eval_env)
+                eval_env.reset()
+                algo = IntegratedHandoverAlgorithm(eval_env.env)
                 for step in range(num_steps):
-                    eval_env.step()
                     algo.run_step()
-                stats = eval_env.get_state_statistics()
-                traditional_sats.append(stats['avg_satisfaction'])
+                    eval_env.advance_env_only()
+                avg_sat = np.mean([eval_env.env.uavs[uid].current_satisfaction
+                                   for uid in range(eval_env.num_agents)])
+                traditional_sats.append(avg_sat)
 
             best_strat = max(strategy_sats, key=lambda k: strategy_sats[k][0])
 
