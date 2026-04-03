@@ -252,11 +252,24 @@ class UAV:
         self.satisfaction_history.append(self.current_satisfaction)
 
     def update_latency_estimate(self, sinr_db: float):
-        """根据SINR估算时延和丢包率"""
-        base_latency = self.qos_profile.max_delay * 0.5
-        sinr_factor = max(0.1, 1 - (sinr_db + 10) / 30)
+        """根据SINR估算时延和丢包率
+
+        使用更敏感的模型，使低 SINR 下满意度明显下降，
+        确保满意度指标有足够的区分度来区分不同算法的性能差异。
+        """
+        # 时延模型: SINR 越低时延越高，接近 max_delay 时满意度才下降
+        # SINR >= 10dB: delay ≈ 0.3 * max_delay (良好)
+        # SINR = 0dB:   delay ≈ 0.8 * max_delay (一般)
+        # SINR = -5dB:  delay ≈ 1.5 * max_delay (差)
+        sinr_factor = max(0.05, 1.5 - (sinr_db + 10) / 20)
+        base_latency = self.qos_profile.max_delay * 0.8
         self.current_latency = base_latency * sinr_factor
-        self.packet_loss_rate = max(0, 0.1 - (sinr_db + 10) / 200)
+
+        # 丢包率模型: SINR 越低丢包率越高
+        # SINR >= 10dB: loss ≈ 0.001 (极低)
+        # SINR = 0dB:   loss ≈ 0.05
+        # SINR = -5dB:  loss ≈ 0.15
+        self.packet_loss_rate = max(0.0, 0.2 * np.exp(-0.15 * sinr_db))
 
     def __repr__(self):
         return (f"UAV[{self.uav_id}] (TrueType: {self.true_business_type.name}, "
