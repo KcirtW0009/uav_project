@@ -56,6 +56,7 @@ class ExperimentBAMAPPO:
             num_bs=8, num_steps=150,
             train_episodes=1000, eval_episodes=5,
             bs_capacity_range=(400, 800),
+            pos_range=1000,
             load_models=False, phase='both',
             verbose=True,
             # BA-MAPPO 配置开关
@@ -97,6 +98,7 @@ class ExperimentBAMAPPO:
         print(f"  训练 episodes: {train_episodes}")
         print(f"  评估重复次数: {eval_episodes}")
         print(f"  容量范围: {bs_capacity_range}")
+        print(f"  地图范围: {pos_range}m")
         print(f"  BA Actor: {use_biz_heads}")
         print(f"  Attention Critic: {use_attention_critic}")
         print(f"  Rollout 长度: {rollout_length}")
@@ -119,7 +121,7 @@ class ExperimentBAMAPPO:
         if phase in ('both', 'phase1'):
             training_results = ExperimentBAMAPPO._phase1_training(
                 num_uav_list, num_bs, num_steps, train_episodes,
-                bs_capacity_range, load_models, verbose,
+                bs_capacity_range, pos_range, load_models, verbose,
                 use_biz_heads, use_attention_critic,
                 rollout_length, actor_lr, critic_lr,
                 hidden_dim, critic_hidden_dim,
@@ -129,7 +131,7 @@ class ExperimentBAMAPPO:
         if phase in ('both', 'phase2'):
             eval_results = ExperimentBAMAPPO._phase2_evaluation(
                 num_uav_list, num_bs, num_steps, eval_episodes,
-                bs_capacity_range, load_models, verbose,
+                bs_capacity_range, pos_range, load_models, verbose,
                 use_biz_heads, use_attention_critic,
                 hidden_dim, critic_hidden_dim,
             )
@@ -137,7 +139,7 @@ class ExperimentBAMAPPO:
 
             scenario_results = ExperimentBAMAPPO._phase3_scenarios(
                 num_bs=8, num_uav=20, num_steps=100, repeats=10,
-                bs_capacity_range=None, verbose=verbose,
+                bs_capacity_range=None, pos_range=None, verbose=verbose,
                 use_biz_heads=use_biz_heads,
                 use_attention_critic=use_attention_critic,
                 hidden_dim=hidden_dim, critic_hidden_dim=critic_hidden_dim,
@@ -158,7 +160,7 @@ class ExperimentBAMAPPO:
 
     @staticmethod
     def _phase1_training(num_uav_list, num_bs, num_steps, train_episodes,
-                         bs_capacity_range, load_models, verbose,
+                         bs_capacity_range, pos_range, load_models, verbose,
                          use_biz_heads, use_attention_critic,
                          rollout_length, actor_lr, critic_lr,
                          hidden_dim, critic_hidden_dim):
@@ -180,6 +182,7 @@ class ExperimentBAMAPPO:
                 num_bs=num_bs, num_uav=num_uav,
                 max_steps=num_steps, seed=GLOBAL_SEED + num_uav * 100,
                 bs_capacity_range=bs_capacity_range,
+                pos_range=pos_range,
             )
 
             agent = MAPPOAgent(
@@ -196,7 +199,7 @@ class ExperimentBAMAPPO:
                 clip_epsilon=0.2,
                 entropy_coef=0.02,
                 value_coef=0.5,
-                rollout_length=rollout_length,
+                rollout_length=max(rollout_length, num_steps),
                 num_epochs=5,
                 batch_size=32,
                 use_biz_heads=use_biz_heads,
@@ -216,6 +219,13 @@ class ExperimentBAMAPPO:
             episode_entropies = []
             best_reward = float('-inf')
             save_interval = 50
+            # ---- Early stopping 参数 ----
+            early_stop_patience = train_episodes // 5   # 连续无改善的容忍轮数
+            early_stop_min_delta = 0.01                  # 最小改善幅度
+            no_improve_count = 0
+            early_stopped = False
+            # 早期健康检查: 在 10% 训练进度时检查 reward 是否在正增长
+            health_check_ep = max(10, train_episodes // 10)
 
             for ep in range(train_episodes):
                 obs_dict, global_state = env.reset()
@@ -230,18 +240,19 @@ class ExperimentBAMAPPO:
                         uav = env.env.uavs[uid]
                         biz_types[uid] = uav.true_business_type.value
 
-                    # 选择动作 + 获取 log_probs 和 values (一次前向传播)
-                    actions, log_probs, values = agent.select_actions(
+                    # 选择动作 + 获取 log_probs, values, pre-step hidden
+                    actions, log_probs, values, pre_hidden = agent.select_actions(
                         obs_dict, global_state, biz_types, training=True
                     )
 
                     # 执行动作
                     next_obs, next_state, rewards, team_reward, done, info = env.step(actions)
 
-                    # 存储经验
+                    # 存储经验 (传入 biz_types + hidden state 供训练时使用)
                     agent.insert_experience(
                         step, obs_dict, global_state, actions,
-                        rewards, team_reward, done, log_probs, values
+                        rewards, team_reward, done, log_probs, values,
+                        biz_types, pre_hidden
                     )
 
                     obs_dict = next_obs
@@ -252,13 +263,24 @@ class ExperimentBAMAPPO:
                 episode_rewards.append(episode_reward)
                 episode_satisfactions.append(np.mean(episode_sat))
 
-                # PPO 更新 (每个 episode 结束后)
-                if ep > 0:
-                    train_stats = agent.train()
-                    if train_stats:
-                        episode_actor_losses.append(train_stats['actor_loss'])
-                        episode_critic_losses.append(train_stats['critic_loss'])
-                        episode_entropies.append(train_stats['entropy'])
+                # PPO 更新 (每个 episode 结束后，包括第一个 episode)
+                train_stats = agent.train()
+                if train_stats:
+                    episode_actor_losses.append(train_stats['actor_loss'])
+                    episode_critic_losses.append(train_stats['critic_loss'])
+                    episode_entropies.append(train_stats['entropy'])
+
+                # ---- 早期健康检查 ----
+                if ep == health_check_ep and verbose:
+                    recent_avg = np.mean(episode_rewards[-health_check_ep:])
+                    early_avg = np.mean(episode_rewards[:max(1, health_check_ep // 2)])
+                    if recent_avg <= early_avg and len(episode_rewards) > health_check_ep // 2:
+                        print(f"\n  ⚠ 健康检查 [Episode {ep+1}]: reward 无上升趋势 "
+                              f"(前期均值={early_avg:.2f}, 近期均值={recent_avg:.2f})")
+                        print(f"    建议检查: 奖励函数设计、学习率、网络结构、环境参数")
+                    else:
+                        print(f"  ✓ 健康检查 [Episode {ep+1}]: reward 趋势正常 "
+                              f"(前期={early_avg:.2f} → 近期={recent_avg:.2f})")
 
                 if verbose and (ep + 1) % 30 == 0:
                     avg_al = np.mean(episode_actor_losses[-20:]) if episode_actor_losses else 0
@@ -271,12 +293,23 @@ class ExperimentBAMAPPO:
                           f"critic_loss={avg_cl:.4f}, "
                           f"entropy={avg_ent:.4f}")
 
-                # 保存模型
-                is_best = episode_reward > best_reward
+                # ---- Early stopping 判断 ----
+                is_best = episode_reward > best_reward + early_stop_min_delta
                 if is_best:
                     best_reward = episode_reward
+                    no_improve_count = 0
+                else:
+                    no_improve_count += 1
+
                 if (ep + 1) % save_interval == 0 or is_best:
                     agent.save(model_path)
+
+                if no_improve_count >= early_stop_patience and ep >= health_check_ep * 2:
+                    if verbose:
+                        print(f"\n  ⏹ Early stopping [Episode {ep+1}]: "
+                              f"连续 {early_stop_patience} 轮无改善 (best_reward={best_reward:.3f})")
+                    early_stopped = True
+                    break
 
                 training_results[num_uav] = {
                     'rewards': episode_rewards,
@@ -285,6 +318,7 @@ class ExperimentBAMAPPO:
                     'critic_losses': episode_critic_losses,
                     'entropies': episode_entropies,
                     'final_avg_sat': np.mean(episode_satisfactions[-50:]),
+                    'early_stopped': early_stopped,
                 }
 
         return training_results
@@ -293,7 +327,7 @@ class ExperimentBAMAPPO:
 
     @staticmethod
     def _phase2_evaluation(num_uav_list, num_bs, num_steps, eval_episodes,
-                           bs_capacity_range, load_models, verbose,
+                           bs_capacity_range, pos_range, load_models, verbose,
                            use_biz_heads, use_attention_critic,
                            hidden_dim, critic_hidden_dim):
         """Phase 2: BA-MAPPO vs 人工固定参数对比"""
@@ -314,6 +348,7 @@ class ExperimentBAMAPPO:
                 num_bs=num_bs, num_uav=num_uav,
                 max_steps=num_steps, seed=GLOBAL_SEED + num_uav * 200,
                 bs_capacity_range=bs_capacity_range,
+                pos_range=pos_range,
             )
 
             agent = MAPPOAgent(
@@ -335,7 +370,9 @@ class ExperimentBAMAPPO:
 
             # 评估 BA-MAPPO
             mappo_sats = []
-            strategy_counts = {name: 0 for name in STRATEGY_CONFIGS.keys()}
+            # 初始化 action 分布计数 (stay, BS0, BS1, ..., BS{n-1})
+            action_labels = ['stay'] + [f'BS{i}' for i in range(num_bs)]
+            strategy_counts = {name: 0 for name in action_labels}
 
             for rep in range(eval_episodes):
                 obs_dict, global_state = env.reset()
@@ -347,45 +384,66 @@ class ExperimentBAMAPPO:
                         uav = env.env.uavs[uid]
                         biz_types[uid] = uav.true_business_type.value
 
-                    actions, _, _ = agent.select_actions(obs_dict, global_state, biz_types, training=False)
+                    actions, _, _, _ = agent.select_actions(obs_dict, global_state, biz_types, training=False)
                     next_obs, next_state, rewards, team_reward, done, info = env.step(actions)
                     obs_dict = next_obs
                     global_state = next_state
 
                     ep_sats.append(info['avg_satisfaction'])
                     for sname, count in info['strategy_distribution'].items():
-                        strategy_counts[sname] += count
+                        strategy_counts[sname] = strategy_counts.get(sname, 0) + count
 
                 mappo_sats.append(np.mean(ep_sats))
 
-            # 评估各人工固定策略（使用统一环境 QMixHandoverEnv）
+            # 评估固定动作基线（使用统一环境 QMixHandoverEnv）
             strategy_results = {}
-            for strat_name, strat_params in STRATEGY_CONFIGS.items():
-                rep_sats = []
-                for rep in range(eval_episodes):
-                    seed = GLOBAL_SEED + num_uav * 300 + rep * 1000
-                    set_global_seed(seed)
-                    eval_env = QMixHandoverEnv(
-                        num_bs=num_bs, num_uav=num_uav,
-                        max_steps=num_steps, seed=seed,
-                        bs_capacity_range=bs_capacity_range,
-                    )
-                    eval_env.reset()  # 初始化 episode 状态
-                    algo = ParametricEnhancedAlgorithm.from_strategy_name(eval_env.env, strat_name)
-                    for step in range(num_steps):
-                        # 所有 UAV 使用同一固定策略
-                        actions = {uid: list(STRATEGY_CONFIGS.keys()).index(strat_name)
-                                   for uid in range(eval_env.num_agents)}
-                        eval_env.step(actions)
-                    avg_sat = np.mean([eval_env.env.uavs[uid].current_satisfaction
-                                       for uid in range(eval_env.num_agents)])
-                    rep_sats.append(avg_sat)
-                strategy_results[strat_name] = {
-                    'satisfaction': (np.mean(rep_sats), np.std(rep_sats)),
-                }
-
-            # 增强算法基线（使用统一环境 QMixHandoverEnv）
-            enhanced_sats = []
+            # Baseline 1: stay (不切换)
+            rep_sats = []
+            for rep in range(eval_episodes):
+                seed = GLOBAL_SEED + num_uav * 300 + rep * 1000
+                set_global_seed(seed)
+                eval_env = QMixHandoverEnv(
+                    num_bs=num_bs, num_uav=num_uav,
+                    max_steps=num_steps, seed=seed,
+                    bs_capacity_range=bs_capacity_range,
+                    pos_range=pos_range,
+                )
+                eval_env.reset()
+                for step in range(num_steps):
+                    actions = {uid: 0 for uid in range(eval_env.num_agents)}
+                    eval_env.step(actions)
+                avg_sat = np.mean([eval_env.env.uavs[uid].current_satisfaction
+                                   for uid in range(eval_env.num_agents)])
+                rep_sats.append(avg_sat)
+            strategy_results['stay'] = {
+                'satisfaction': (np.mean(rep_sats), np.std(rep_sats)),
+            }
+            # Baseline 2: best-SINR (每步选择 SINR 最高的 BS)
+            rep_sats = []
+            for rep in range(eval_episodes):
+                seed = GLOBAL_SEED + num_uav * 350 + rep * 1000
+                set_global_seed(seed)
+                eval_env = QMixHandoverEnv(
+                    num_bs=num_bs, num_uav=num_uav,
+                    max_steps=num_steps, seed=seed,
+                    bs_capacity_range=bs_capacity_range,
+                    pos_range=pos_range,
+                )
+                eval_env.reset()
+                for step in range(num_steps):
+                    actions = {}
+                    for uid in range(eval_env.num_agents):
+                        best_bs = int(np.argmax(eval_env.env.sinr_matrix[uid]))
+                        actions[uid] = best_bs + 1  # action=1~num_bs
+                    eval_env.step(actions)
+                avg_sat = np.mean([eval_env.env.uavs[uid].current_satisfaction
+                                   for uid in range(eval_env.num_agents)])
+                rep_sats.append(avg_sat)
+            strategy_results['best_sinr'] = {
+                'satisfaction': (np.mean(rep_sats), np.std(rep_sats)),
+            }
+            # Baseline 3: random BS
+            rep_sats = []
             for rep in range(eval_episodes):
                 seed = GLOBAL_SEED + num_uav * 400 + rep * 1000
                 set_global_seed(seed)
@@ -393,6 +451,30 @@ class ExperimentBAMAPPO:
                     num_bs=num_bs, num_uav=num_uav,
                     max_steps=num_steps, seed=seed,
                     bs_capacity_range=bs_capacity_range,
+                    pos_range=pos_range,
+                )
+                eval_env.reset()
+                for step in range(num_steps):
+                    actions = {uid: np.random.randint(0, eval_env.action_dim)
+                               for uid in range(eval_env.num_agents)}
+                    eval_env.step(actions)
+                avg_sat = np.mean([eval_env.env.uavs[uid].current_satisfaction
+                                   for uid in range(eval_env.num_agents)])
+                rep_sats.append(avg_sat)
+            strategy_results['random_bs'] = {
+                'satisfaction': (np.mean(rep_sats), np.std(rep_sats)),
+            }
+
+            # 增强算法基线（使用统一环境 QMixHandoverEnv）
+            enhanced_sats = []
+            for rep in range(eval_episodes):
+                seed = GLOBAL_SEED + num_uav * 500 + rep * 1000
+                set_global_seed(seed)
+                eval_env = QMixHandoverEnv(
+                    num_bs=num_bs, num_uav=num_uav,
+                    max_steps=num_steps, seed=seed,
+                    bs_capacity_range=bs_capacity_range,
+                    pos_range=pos_range,
                 )
                 eval_env.reset()
                 algo = EnhancedHandoverAlgorithm(eval_env.env)
@@ -407,12 +489,13 @@ class ExperimentBAMAPPO:
             traditional_sats = []
             from .algorithms import IntegratedHandoverAlgorithm
             for rep in range(eval_episodes):
-                seed = GLOBAL_SEED + num_uav * 500 + rep * 1000
+                seed = GLOBAL_SEED + num_uav * 600 + rep * 1000
                 set_global_seed(seed)
                 eval_env = QMixHandoverEnv(
                     num_bs=num_bs, num_uav=num_uav,
                     max_steps=num_steps, seed=seed,
                     bs_capacity_range=bs_capacity_range,
+                    pos_range=pos_range,
                 )
                 eval_env.reset()
                 algo = IntegratedHandoverAlgorithm(eval_env.env)
@@ -440,7 +523,7 @@ class ExperimentBAMAPPO:
                 print(f"    增强算法:   {np.mean(enhanced_sats):.4f} +/- {np.std(enhanced_sats):.4f}")
                 print(f"    传统算法:   {np.mean(traditional_sats):.4f} +/- {np.std(traditional_sats):.4f}")
                 for sn, sr in strategy_results.items():
-                    print(f"    策略-{sn}:  {sr['satisfaction'][0]:.4f} +/- {sr['satisfaction'][1]:.4f}")
+                    print(f"    基线-{sn}:  {sr['satisfaction'][0]:.4f} +/- {sr['satisfaction'][1]:.4f}")
 
         return eval_results
 
@@ -448,7 +531,7 @@ class ExperimentBAMAPPO:
 
     @staticmethod
     def _phase3_scenarios(num_bs, num_uav, num_steps, repeats,
-                          bs_capacity_range, verbose,
+                          bs_capacity_range, pos_range, verbose,
                           use_biz_heads, use_attention_critic,
                           hidden_dim, critic_hidden_dim):
         """Phase 3: 多场景泛化验证"""
@@ -525,7 +608,7 @@ class ExperimentBAMAPPO:
                         for uid in range(mappo_env_default.num_agents):
                             uav = mappo_env_default.env.uavs[uid]
                             biz_types[uid] = uav.true_business_type.value
-                        actions, _, _ = mappo_agent_default.select_actions(
+                        actions, _, _, _ = mappo_agent_default.select_actions(
                             obs_dict, global_state, biz_types, training=False)
                         next_obs, next_state, rewards, team_reward, done, info = mappo_env_default.step(actions)
                         obs_dict = next_obs
@@ -533,10 +616,12 @@ class ExperimentBAMAPPO:
                         ep_sats.append(info['avg_satisfaction'])
                     mappo_sats.append(np.mean(ep_sats))
 
-            for strat_name in STRATEGY_CONFIGS.keys():
+            # 固定动作基线
+            for baseline_name, baseline_fn in [('stay', lambda env, uid, step: 0),
+                                                ('best_sinr', lambda env, uid, step: int(np.argmax(env.env.sinr_matrix[uid])) + 1)]:
                 rep_sats = []
                 for rep in range(repeats):
-                    seed = GLOBAL_SEED + hash(scenario_name) % 10000 + rep * 1000
+                    seed = GLOBAL_SEED + hash(scenario_name) % 10000 + rep * 1000 + hash(baseline_name) % 100
                     set_global_seed(seed)
                     eval_env = QMixHandoverEnv(
                         num_bs=num_bs, num_uav=s_uav,
@@ -544,15 +629,14 @@ class ExperimentBAMAPPO:
                         bs_capacity_range=s_cap,
                     )
                     eval_env.reset()
-                    algo = ParametricEnhancedAlgorithm.from_strategy_name(eval_env.env, strat_name)
                     for step in range(num_steps):
-                        actions = {uid: list(STRATEGY_CONFIGS.keys()).index(strat_name)
+                        actions = {uid: baseline_fn(eval_env, uid, step)
                                    for uid in range(eval_env.num_agents)}
                         eval_env.step(actions)
                     avg_sat = np.mean([eval_env.env.uavs[uid].current_satisfaction
                                        for uid in range(eval_env.num_agents)])
                     rep_sats.append(avg_sat)
-                strategy_sats[strat_name] = (np.mean(rep_sats), np.std(rep_sats))
+                strategy_sats[baseline_name] = (np.mean(rep_sats), np.std(rep_sats))
 
             for rep in range(repeats):
                 seed = GLOBAL_SEED + hash(scenario_name) % 10000 + rep * 1000
@@ -678,9 +762,12 @@ class ExperimentBAMAPPO:
         # 图4: 策略分布热力图
         ax = axes[1, 0]
         if 'evaluation' in all_results:
-            strat_names = list(STRATEGY_CONFIGS.keys())
+            # 使用实际的 action 标签 (stay, BS0, ..., BS{n-1}) 而非策略配置名
             uav_to_show = [u for u in num_uav_list if u in all_results.get('evaluation', {})]
             if uav_to_show:
+                # 从第一个 UAV 的 strategy_distribution 中提取实际使用的 action 标签
+                sample_dist = all_results['evaluation'][uav_to_show[0]].get('strategy_distribution', {})
+                strat_names = list(sample_dist.keys()) if sample_dist else ['stay']
                 matrix = np.zeros((len(uav_to_show), len(strat_names)))
                 for i, u in enumerate(uav_to_show):
                     total = sum(all_results['evaluation'][u].get('strategy_distribution', {}).values()) or 1
@@ -691,7 +778,7 @@ class ExperimentBAMAPPO:
                 ax.set_xticklabels(strat_names, rotation=30, ha='right', fontsize=8)
                 ax.set_yticks(range(len(uav_to_show)))
                 ax.set_yticklabels([f'UAV={u}' for u in uav_to_show])
-                ax.set_title(f'(d) {mode_name} 策略选择分布')
+                ax.set_title(f'(d) {mode_name} 动作分布')
                 plt.colorbar(im, ax=ax)
                 for i in range(matrix.shape[0]):
                     for j in range(matrix.shape[1]):

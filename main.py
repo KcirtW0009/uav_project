@@ -26,7 +26,7 @@ from uav_system.experiments import Experiment1, Experiment2, Experiment2b, Exper
 
 
 def main(force_retrain=False, run_experiments=None,
-         rl_load=False, rl_phase='both'):
+         rl_load=False, rl_phase='both', small_scale=False):
     """
     主函数：初始化模型并运行实验
 
@@ -85,7 +85,8 @@ def main(force_retrain=False, run_experiments=None,
         # 'qmix': lambda: _run_exp_qmix(load_models=rl_load,
         #                                 phase=rl_phase),
         'mappo': lambda: _run_exp_mappo(load_models=rl_load,
-                                          phase=rl_phase),
+                                          phase=rl_phase,
+                                          small_scale=small_scale),
     }
 
     for exp_id_str in run_experiments_str:
@@ -119,16 +120,28 @@ def main(force_retrain=False, run_experiments=None,
 #     return ExperimentQMIX.run(...)
 
 
-def _run_exp_mappo(load_models=False, phase='both'):
+def _run_exp_mappo(load_models=False, phase='both', small_scale=False):
     """运行 BA-MAPPO 多智能体强化学习实验"""
     from uav_system.experiments_mappo import ExperimentBAMAPPO
+    if small_scale:
+        return ExperimentBAMAPPO.run(
+            num_uav_list=(10,),
+            num_bs=4,
+            num_steps=50,
+            train_episodes=100,
+            eval_episodes=3,
+            bs_capacity_range=(50, 100),
+            load_models=load_models,
+            phase=phase,
+            verbose=True,
+        )
     return ExperimentBAMAPPO.run(
-        num_uav_list=(10, 20),
+        num_uav_list=(30, 50),
         num_bs=8,
         num_steps=100,
         train_episodes=1000,
         eval_episodes=10,
-        bs_capacity_range=(400, 800),
+        bs_capacity_range=(80, 180),
         load_models=load_models,
         phase=phase,
         verbose=True,
@@ -148,6 +161,8 @@ if __name__ == "__main__":
                         help='RL 实验: 加载已有模型跳过训练（仅评估）')
     parser.add_argument('--rl-phase', choices=['both', 'phase1', 'phase2'], default='both',
                         help='RL 实验: 运行阶段 (both=全部, phase1=训练, phase2=评估)')
+    parser.add_argument('--small', action='store_true',
+                        help='小规模测试: 大幅缩减训练/评估规模，用于快速调试')
     args = parser.parse_args()
 
     if args.all:
@@ -157,7 +172,7 @@ if __name__ == "__main__":
 
     set_global_seed(GLOBAL_SEED)
     main(force_retrain=args.retrain, run_experiments=run_experiments,
-         rl_load=args.rl_load, rl_phase=args.rl_phase)
+         rl_load=args.rl_load, rl_phase=args.rl_phase, small_scale=args.small)
 
 
 # python main.py                    只运行实验3

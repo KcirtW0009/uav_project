@@ -53,7 +53,8 @@ class RolloutBuffer:
 
     def __init__(self, num_agents: int, obs_dim: int, state_dim: int,
                  action_dim: int, rollout_length: int, gamma: float = 0.99,
-                 gae_lambda: float = 0.95, device: torch.device = None):
+                 gae_lambda: float = 0.95, hidden_dim: int = 64,
+                 device: torch.device = None):
         self.num_agents = num_agents
         self.obs_dim = obs_dim
         self.state_dim = state_dim
@@ -61,6 +62,7 @@ class RolloutBuffer:
         self.rollout_length = rollout_length
         self.gamma = gamma
         self.gae_lambda = gae_lambda
+        self.hidden_dim = hidden_dim
         self.device = device or torch.device('cpu')
 
         # 数据存储 (预分配张量以提高效率)
@@ -72,19 +74,25 @@ class RolloutBuffer:
         self.dones = torch.zeros(rollout_length, dtype=torch.bool, device=self.device)
         self.log_probs = torch.zeros(rollout_length, num_agents, device=self.device)
         self.values = torch.zeros(rollout_length, num_agents, device=self.device)
+        self.biz_types = torch.zeros(rollout_length, num_agents, dtype=torch.long, device=self.device)
+        # 存储 Actor RNN 的 hidden state，保证训练时采样分布与收集时一致
+        self.hiddens = torch.zeros(rollout_length, num_agents, hidden_dim, device=self.device)
 
         self.ptr = 0  # 当前写入指针
 
     def insert(self, step: int, obs: np.ndarray, state: np.ndarray,
                actions: Dict[int, int], rewards: Dict[int, float],
                team_reward: float, done: bool, log_probs: Dict[int, float],
-               values: Dict[int, float]):
+               values: Dict[int, float], biz_types: Dict[int, int] = None,
+               hiddens: np.ndarray = None):
         """
         插入一条经验
 
         Args:
             log_probs: {agent_id: float} — 对应采样动作的 log probability
             values: {agent_id: float} — Critic 对该 agent 的价值估计
+            biz_types: {agent_id: int} — 业务类型索引 (0/1/2)
+            hiddens: (num_agents, hidden_dim) — Actor RNN 隐藏状态 (采样时的 pre-step hidden)
         """
         self.obs[step] = torch.FloatTensor(obs)
         self.states[step] = torch.FloatTensor(state)
@@ -95,6 +103,10 @@ class RolloutBuffer:
             self.rewards[step, uid] = float(rewards[uid])
             self.log_probs[step, uid] = float(log_probs[uid])
             self.values[step, uid] = float(values[uid])
+            if biz_types is not None:
+                self.biz_types[step, uid] = int(biz_types[uid])
+        if hiddens is not None:
+            self.hiddens[step] = torch.FloatTensor(hiddens)
         self.ptr = max(self.ptr, step + 1)
 
     def compute_gae(self, next_values: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -130,32 +142,41 @@ class RolloutBuffer:
         return advantages, returns
 
     def get_batches(self, batch_size: int, advantages: np.ndarray,
-                    returns: np.ndarray, num_epochs: int = 5):
+                    returns: np.ndarray, num_epochs: int = 5,
+                    burn_in: int = 0):
         """
         生成 mini-batch 数据（带随机打乱）
 
+        Args:
+            burn_in: 跳过前 burn_in 步（这些步的 hidden 是"冷启动"，不用于 PPO 更新）
+
         Yields:
             (obs_batch, obs_all_batch, state_batch, actions_batch,
-             old_log_probs_batch, advantages_batch, returns_batch) 的元组
-
-        其中 obs_all_batch: (batch/num_agents, num_agents, obs_dim)
-        用于 Critic 的 attention 聚合。
+             old_log_probs_batch, advantages_batch, returns_batch,
+             biz_types_batch, hidden_batch)
         """
         ptr = self.ptr
+        # burn-in: 跳过轨迹开头"冷"步骤
+        start_idx = min(burn_in, ptr)
         N = self.num_agents
         # obs/actions/log_probs: (ptr, N, ...) -> (ptr*N, ...)
-        obs_flat = self.obs[:ptr].reshape(-1, self.obs_dim)
-        actions_flat = self.actions[:ptr].reshape(-1)
-        log_probs_flat = self.log_probs[:ptr].reshape(-1)
+        obs_flat = self.obs[start_idx:ptr].reshape(-1, self.obs_dim)
+        actions_flat = self.actions[start_idx:ptr].reshape(-1)
+        log_probs_flat = self.log_probs[start_idx:ptr].reshape(-1)
         # states: (ptr, state_dim) -> 重复到 (ptr*N, state_dim)
-        state_repeated = self.states[:ptr].unsqueeze(1).expand(ptr, N, self.state_dim)
+        actual_len = ptr - start_idx
+        state_repeated = self.states[start_idx:ptr].unsqueeze(1).expand(actual_len, N, self.state_dim)
         states_flat = state_repeated.reshape(-1, self.state_dim)
         # obs_all: (ptr, N, obs_dim) -> 每个 step 重复 N 次 -> (ptr*N, N, obs_dim)
-        obs_all_repeated = self.obs[:ptr].unsqueeze(2).expand(ptr, N, N, self.obs_dim)
+        obs_all_repeated = self.obs[start_idx:ptr].unsqueeze(2).expand(actual_len, N, N, self.obs_dim)
         obs_all_flat = obs_all_repeated.reshape(-1, N, self.obs_dim)
+        # biz_types: (ptr, N) -> (ptr*N,)
+        biz_flat = self.biz_types[start_idx:ptr].reshape(-1)
+        # hiddens: (ptr, N, hidden_dim) -> (ptr*N, hidden_dim)
+        hidden_flat = self.hiddens[start_idx:ptr].reshape(-1, self.hidden_dim)
 
-        adv_flat = torch.FloatTensor(advantages.reshape(-1), device=self.device)
-        ret_flat = torch.FloatTensor(returns.reshape(-1), device=self.device)
+        adv_flat = torch.FloatTensor(advantages[start_idx:].reshape(-1), device=self.device)
+        ret_flat = torch.FloatTensor(returns[start_idx:].reshape(-1), device=self.device)
 
         # 归一化优势
         if adv_flat.std() > 1e-8:
@@ -170,7 +191,8 @@ class RolloutBuffer:
                 idx = indices[start:end]
                 yield (obs_flat[idx], obs_all_flat[idx], states_flat[idx],
                        actions_flat[idx], log_probs_flat[idx],
-                       adv_flat[idx], ret_flat[idx])
+                       adv_flat[idx], ret_flat[idx], biz_flat[idx],
+                       hidden_flat[idx])
 
     def clear(self):
         """清空缓冲区"""
@@ -262,6 +284,8 @@ class ActorNetwork(nn.Module):
             hidden = torch.zeros(x.shape[0], x.shape[1], device=x.device)
         h = self.rnn(x, hidden)
         logits = self._get_logits(h, biz_types)
+        # logits clipping 防止 NaN (极端 logits 会导致 log_prob = inf/nan)
+        logits = torch.clamp(logits, -10.0, 10.0)
 
         dist = Categorical(logits=logits)
         log_probs = dist.log_prob(actions)
@@ -388,7 +412,7 @@ class MAPPOAgent:
                  actor_lr: float = 3e-4, critic_lr: float = 5e-4,
                  gamma: float = 0.99, gae_lambda: float = 0.95,
                  clip_epsilon: float = 0.2, entropy_coef: float = 0.01,
-                 value_coef: float = 0.5, max_grad_norm: float = 10.0,
+                 value_coef: float = 0.5, max_grad_norm: float = 2.0,
                  rollout_length: int = 100, num_epochs: int = 5,
                  batch_size: int = 32,
                  use_biz_heads: bool = True,
@@ -407,6 +431,7 @@ class MAPPOAgent:
         self.rollout_length = rollout_length
         self.num_epochs = num_epochs
         self.batch_size = batch_size
+        self.hidden_dim = hidden_dim
         self.use_biz_heads = use_biz_heads
         self.use_attention_critic = use_attention_critic
 
@@ -431,10 +456,10 @@ class MAPPOAgent:
         self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=actor_lr)
         self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=critic_lr)
 
-        # Rollout Buffer
+        # Rollout Buffer (传入 hidden_dim 用于存储 RNN hidden state)
         self.buffer = RolloutBuffer(
             num_agents, obs_dim, state_dim, action_dim,
-            rollout_length, gamma, gae_lambda, self.device
+            rollout_length, gamma, gae_lambda, hidden_dim=hidden_dim, device=self.device
         )
 
         # RNN 隐藏状态
@@ -466,12 +491,16 @@ class MAPPOAgent:
             actions: {agent_id: int}
             log_probs_dict: {agent_id: float}
             values_dict: {agent_id: float}
+            pre_hidden: (num_agents, hidden_dim) — 本次 GRU 输入的 hidden state (numpy)
         """
         actions = {}
         log_probs_dict = {}
         values_dict = {}
 
         with torch.no_grad():
+            # 保存 pre-step hidden (传给 GRU 的 hidden，即上一步的输出)
+            pre_hidden = self.actor_hidden
+
             obs_batch = np.array([obs_dict[i] for i in range(self.num_agents)])
             obs_t = torch.FloatTensor(obs_batch).to(self.device)  # (N, obs_dim)
             state_t = torch.FloatTensor(global_state).unsqueeze(0).to(self.device)  # (1, state_dim)
@@ -488,8 +517,11 @@ class MAPPOAgent:
             logits, new_hidden = self.actor(obs_t, self.actor_hidden, biz_batch)
             self.actor_hidden = new_hidden.detach()
 
-            # Critic: centralized value V(s), broadcast to all agents
-            team_value = self.critic(state_t, obs_all_t).cpu().item()  # scalar
+            # Critic: per-agent value — 将 obs_all 中每个 agent 的信息独立传入
+            # 通过扩展 global_state 为 (N, state_dim) 实现差异化估值
+            state_expanded = state_t.expand(self.num_agents, -1)  # (N, state_dim)
+            obs_all_expanded = obs_t.unsqueeze(1).expand(self.num_agents, self.num_agents, self.obs_dim)  # (N, N, obs_dim)
+            per_agent_values = self.critic(state_expanded, obs_all_expanded)  # (N,)
 
             # 采样动作 + 计算 log_prob
             for uid in range(self.num_agents):
@@ -501,9 +533,10 @@ class MAPPOAgent:
                     action = logits[uid].argmax()
                     log_probs_dict[uid] = 0.0
                 actions[uid] = action.item()
-                values_dict[uid] = team_value
+                values_dict[uid] = per_agent_values[uid].item()
 
-        return actions, log_probs_dict, values_dict
+        pre_hidden_np = pre_hidden.cpu().numpy() if pre_hidden is not None else np.zeros((self.num_agents, self.hidden_dim))
+        return actions, log_probs_dict, values_dict, pre_hidden_np
 
     def reset_hidden(self):
         """重置 RNN 隐藏状态"""
@@ -513,15 +546,24 @@ class MAPPOAgent:
                           global_state: np.ndarray, actions: Dict[int, int],
                           rewards: Dict[int, float], team_reward: float,
                           done: bool, log_probs: Dict[int, float],
-                          values: Dict[int, float]):
-        """插入一条经验到 buffer"""
+                          values: Dict[int, float],
+                          biz_types: Dict[int, int] = None,
+                          pre_hidden: np.ndarray = None):
+        """插入一条经验到 buffer
+
+        Args:
+            pre_hidden: (num_agents, hidden_dim) — 采样时 GRU 的输入 hidden state
+        """
         obs_batch = np.array([obs_dict[i] for i in range(self.num_agents)])
         self.buffer.insert(step, obs_batch, global_state, actions, rewards,
-                           team_reward, done, log_probs, values)
+                           team_reward, done, log_probs, values, biz_types,
+                           hiddens=pre_hidden)
 
     def train(self) -> Dict[str, float]:
         """
         执行一轮 PPO 更新
+
+        使用存储的 hidden state 保证训练时 log_prob 与采样时一致 (burn-in 方案)。
 
         Returns:
             训练统计信息
@@ -540,25 +582,16 @@ class MAPPOAgent:
         total_entropy = 0.0
         num_updates = 0
 
-        for obs_batch, obs_all_batch, states_batch, actions_batch, old_log_probs_batch, adv_batch, ret_batch in \
-                self.buffer.get_batches(self.batch_size, advantages, returns, self.num_epochs):
+        # burn-in: 跳过前几步 (hidden 是零向量冷启动，信息不可靠)
+        burn_in = min(5, self.buffer.ptr // 3)
 
-            # 从 obs 中提取 biz_types
-            # obs 结构: [sinr(4*num_bs), biz_onehot(3), sat(1), conn(1), vel(1), last_action(action_dim), sat_trend(1), peer_avg(1)]
-            # biz_onehot 起始位置 = 4 * num_bs
-            # 需要先算 num_bs: (obs_dim - 6 - action_dim - 2) / 4
-            biz_start = (self.obs_dim - 6 - self.action_dim - 2) // 4 * 4
-            # 但更简单: biz_start = 4 * num_bs，先通过 action_dim 反推
-            # obs_dim = 4*num_bs + 6 + action_dim + 2 => num_bs = (obs_dim - 8 - action_dim) / 4
-            num_bs = (self.obs_dim - 8 - self.action_dim) // 4
-            biz_start = 4 * num_bs
-            biz_onehot = obs_batch[:, biz_start:biz_start + 3]
-            biz_types_batch = biz_onehot.argmax(dim=1)
+        for obs_batch, obs_all_batch, states_batch, actions_batch, old_log_probs_batch, adv_batch, ret_batch, biz_types_batch, hidden_batch in \
+                self.buffer.get_batches(self.batch_size, advantages, returns, self.num_epochs, burn_in=burn_in):
 
-            # Actor 更新
+            # Actor 更新 — 传入采样时的 hidden state，保证 log_prob 分布一致
             old_log_probs = old_log_probs_batch.detach()
             new_log_probs, entropy = self.actor.evaluate_actions(
-                obs_batch, actions_batch, biz_types=biz_types_batch
+                obs_batch, actions_batch, hidden=hidden_batch, biz_types=biz_types_batch
             )
             ratio = torch.exp(new_log_probs - old_log_probs)
 

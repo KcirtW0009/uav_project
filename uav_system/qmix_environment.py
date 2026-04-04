@@ -46,7 +46,8 @@ class QMixHandoverEnv:
 
     def __init__(self, num_bs: int = 8, num_uav: int = 20,
                  max_steps: int = 150, seed: int = 42,
-                 bs_capacity_range: Optional[Tuple[float, float]] = None):
+                 bs_capacity_range: Optional[Tuple[float, float]] = None,
+                 pos_range: float = 1000):
         """
         Args:
             num_bs: 基站数量
@@ -54,12 +55,14 @@ class QMixHandoverEnv:
             max_steps: 每个 episode 最大步数
             seed: 随机种子
             bs_capacity_range: 基站容量范围 (min, max)
+            pos_range: 地图空间范围 (米)，默认 1000
         """
         self.num_bs = num_bs
         self.num_uav = num_uav
         self.max_steps = max_steps
         self.seed = seed
         self.bs_capacity_range = bs_capacity_range
+        self.pos_range = pos_range
 
         # 创建底层网络环境（无识别模型，QMIX 使用真实业务类型）
         self.env = NetworkEnvironmentWithRecognition(
@@ -72,8 +75,19 @@ class QMixHandoverEnv:
         # 禁用自适应识别更新器（QMIX 不需要）
         self.env.recognition_updater = None
 
+        # 如果 pos_range != 默认值(1000)，缩放所有位置
+        if pos_range != 1000:
+            scale = pos_range / 1000.0
+            for bs in self.env.base_stations.values():
+                bs.position *= scale
+            for uav in self.env.uavs.values():
+                uav.position *= scale
+            self.env._update_sinr_matrix()
+            self.env._initialize_connections()
+
         self.num_agents = num_uav
-        self.action_dim = NUM_STRATEGIES
+        # action 0 = stay (不切换), action 1~num_bs = 切换到对应 BS
+        self.action_dim = num_bs + 1
 
         # 维度计算
         self.obs_dim = self._calc_obs_dim()
@@ -250,6 +264,17 @@ class QMixHandoverEnv:
             global_state: shape=(state_dim,)
         """
         self.env.reset()
+
+        # 如果 pos_range != 默认值，重新缩放位置
+        if self.pos_range != 1000:
+            scale = self.pos_range / 1000.0
+            for bs in self.env.base_stations.values():
+                bs.position *= scale
+            for uav in self.env.uavs.values():
+                uav.position *= scale
+            self.env._update_sinr_matrix()
+            self.env._initialize_connections()
+
         self._current_step = 0
 
         # 记录初始状态
@@ -291,29 +316,39 @@ class QMixHandoverEnv:
         old_sats = {uid: self.env.uavs[uid].current_satisfaction
                      for uid in range(self.num_agents)}
 
-        # ====== 1. 根据 actions 创建参数化算法并执行切换 ======
-        # 将 UAV 按选择的策略分组，同一策略组共享一个算法实例
-        strategy_groups: Dict[str, List[int]] = {}
+        # ====== 1. 根据 actions 执行切换 ======
+        # action=0: stay (不切换), action=1~num_bs: 切换到对应 BS
         for uid, action in actions.items():
-            strat_name = STRATEGY_CONFIGS.get(
-                list(STRATEGY_CONFIGS.keys())[action],
-                list(STRATEGY_CONFIGS.keys())[1]
-            ) if action < len(STRATEGY_CONFIGS) else list(STRATEGY_CONFIGS.keys())[1]
-            # 直接通过索引获取策略名
-            strat_idx = min(action, len(STRATEGY_CONFIGS) - 1)
-            strat_name = list(STRATEGY_CONFIGS.keys())[strat_idx]
-            if strat_name not in strategy_groups:
-                strategy_groups[strat_name] = []
-            strategy_groups[strat_name].append(uid)
+            if action == 0:
+                continue  # stay
+            target_bs_id = action - 1  # 转为 0-based BS 索引
+            if target_bs_id < 0 or target_bs_id >= self.num_bs:
+                continue
+            uav = self.env.uavs[uid]
+            if uav.connected_bs_id == target_bs_id:
+                continue  # 已连接，无需切换
 
-        # 为每个策略组创建算法实例并执行
-        for strat_name, uav_ids in strategy_groups.items():
-            algo = ParametricEnhancedAlgorithm.from_strategy_name(self.env, strat_name)
-            # 执行该组 UAV 的切换
-            for uid in uav_ids:
-                decision = algo.make_intelligent_decision(uid)
-                if decision is not None:
-                    algo.execute_handover(uid, decision[0], decision[1])
+            # 释放当前 BS 资源
+            old_bs_id = uav.connected_bs_id
+            if old_bs_id is not None:
+                old_bs = self.env.base_stations[old_bs_id]
+                old_bs.connected_uavs.pop(uid, None)
+                old_bs.current_load -= uav.current_allocated_rate
+
+            # 尝试切换到目标 BS（逐步降级）
+            target_bs = self.env.base_stations[target_bs_id]
+            allocated = False
+            for ratio in [1.0, 0.8, 0.6, 0.4, 0.2]:
+                if target_bs.allocate(uid, uav.required_rate * ratio):
+                    uav.connected_bs_id = target_bs_id
+                    uav.current_allocated_rate = uav.required_rate * ratio
+                    uav.handover_count += 1
+                    allocated = True
+                    break
+            if not allocated:
+                # 切换失败，断连
+                uav.connected_bs_id = None
+                uav.current_allocated_rate = 0.0
 
         # ====== 2. 推进环境 ======
         self.env.current_step += 1
@@ -386,12 +421,15 @@ class QMixHandoverEnv:
                                   if self.env.uavs[uid].connected_bs_id is not None) / max(self.num_agents, 1),
             'strategy_distribution': {},
         }
-        # 统计策略分布
+        # 统计 action 分布
         for uid, action in actions.items():
-            strat_idx = min(action, len(STRATEGY_CONFIGS) - 1)
-            strat_name = list(STRATEGY_CONFIGS.keys())[strat_idx]
-            info['strategy_distribution'][strat_name] = \
-                info['strategy_distribution'].get(strat_name, 0) + 1
+            if action == 0:
+                info['strategy_distribution']['stay'] = \
+                    info['strategy_distribution'].get('stay', 0) + 1
+            else:
+                bs_name = f'BS{action - 1}'
+                info['strategy_distribution'][bs_name] = \
+                    info['strategy_distribution'].get(bs_name, 0) + 1
 
         obs_dict = self.get_all_obs()
         global_state = self.get_global_state()
