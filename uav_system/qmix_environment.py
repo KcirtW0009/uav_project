@@ -12,8 +12,8 @@ QMIX 多智能体环境
 - reset() -> (obs_dict, global_state)
 - step(actions_dict) -> (obs_dict, global_state, rewards_dict, team_reward, done, info)
 
-与 QMIX 的对接:
-- N 个 agent，每个 agent 动作空间 = NUM_STRATEGIES (5)
+与 MAPPO 的对接:
+- N 个 agent，每个 agent 动作空间 = 3 (stay / best_sinr / best_capacity)
 - 局部观测维度 = obs_dim（每 UAV 独立）
 - 全局状态维度 = state_dim（全局信息聚合）
 """
@@ -23,9 +23,10 @@ from typing import Dict, Tuple, List, Optional
 from collections import deque
 
 from .environment import NetworkEnvironmentWithRecognition
-from .parametric_algorithm import (
-    ParametricEnhancedAlgorithm, NUM_STRATEGIES, STRATEGY_CONFIGS
-)
+# [已弃用] 以下导入原为 QMIX 元控制器设计，MAPPO 未使用（action_dim 已简化为 3）
+# from .parametric_algorithm import (
+#     ParametricEnhancedAlgorithm, NUM_STRATEGIES, STRATEGY_CONFIGS
+# )
 from .business import BusinessType
 
 
@@ -65,7 +66,7 @@ class QMixHandoverEnv:
     Attributes:
         num_agents: agent 数量（等于 UAV 数量）
         num_bs: 基站数量
-        action_dim: 每个 agent 的动作空间大小 (= NUM_STRATEGIES = 5)
+        action_dim: 每个 agent 的动作空间大小 (= 3: stay/best_sinr/best_capacity)
         obs_dim: 每个 agent 的局部观测维度
         state_dim: 全局状态维度
     """
@@ -334,7 +335,7 @@ class QMixHandoverEnv:
         执行一个环境步
 
         Args:
-            actions: {agent_id: action}，action 为策略索引 (0 ~ NUM_STRATEGIES-1)
+            actions: {agent_id: action}，action 取值: 0=stay, 1=best_sinr, 2=best_capacity
 
         Returns:
             obs_dict: {agent_id: obs}
