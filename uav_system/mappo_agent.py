@@ -111,7 +111,7 @@ class RolloutBuffer:
 
     def compute_gae(self, next_values: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
-        计算广义优势估计 (GAE)
+        计算广义优势估计 (GAE)，含 reward 标准化
 
         Args:
             next_values: (num_agents,) 下一步的价值估计
@@ -139,6 +139,18 @@ class RolloutBuffer:
             advantages[t] = last_gae
 
         returns = advantages + self.values[:self.ptr].cpu().numpy()
+
+        # ---- Reward/Advantage 标准化 (降低方差，帮助 PPO 收敛) ----
+        # 对 advantages 按每个 agent 独立标准化
+        adv_mean = advantages.mean(axis=0, keepdims=True)
+        adv_std = advantages.std(axis=0, keepdims=True) + 1e-8
+        advantages = (advantages - adv_mean) / adv_std
+
+        # 对 returns 也做标准化
+        ret_mean = returns.mean(axis=0, keepdims=True)
+        ret_std = returns.std(axis=0, keepdims=True) + 1e-8
+        returns = (returns - ret_mean) / ret_std
+
         return advantages, returns
 
     def get_batches(self, batch_size: int, advantages: np.ndarray,
@@ -177,10 +189,6 @@ class RolloutBuffer:
 
         adv_flat = torch.FloatTensor(advantages[start_idx:].reshape(-1), device=self.device)
         ret_flat = torch.FloatTensor(returns[start_idx:].reshape(-1), device=self.device)
-
-        # 归一化优势
-        if adv_flat.std() > 1e-8:
-            adv_flat = (adv_flat - adv_flat.mean()) / (adv_flat.std() + 1e-8)
 
         dataset_size = obs_flat.shape[0]
 

@@ -197,11 +197,11 @@ class ExperimentBAMAPPO:
                 gamma=0.99,
                 gae_lambda=0.95,
                 clip_epsilon=0.2,
-                entropy_coef=0.02,
+                entropy_coef=0.05,
                 value_coef=0.5,
                 rollout_length=max(rollout_length, num_steps),
-                num_epochs=5,
-                batch_size=32,
+                num_epochs=3,
+                batch_size=64,
                 use_biz_heads=use_biz_heads,
                 use_attention_critic=use_attention_critic,
             )
@@ -232,6 +232,11 @@ class ExperimentBAMAPPO:
                 agent.reset_hidden()
                 episode_reward = 0.0
                 episode_sat = []
+                # ---- 诊断: reward 组分分解 ----
+                ep_action_counts = {'stay': 0, 'switch': 0}
+                ep_switch_success = 0
+                ep_switch_fail = 0
+                ep_disconnected_steps = 0
 
                 for step in range(num_steps):
                     # 获取 biz_types
@@ -245,8 +250,19 @@ class ExperimentBAMAPPO:
                         obs_dict, global_state, biz_types, training=True
                     )
 
+                    # 诊断: 统计 action 分布
+                    for a in actions.values():
+                        if a == 0:
+                            ep_action_counts['stay'] += 1
+                        else:
+                            ep_action_counts['switch'] += 1
+
                     # 执行动作
                     next_obs, next_state, rewards, team_reward, done, info = env.step(actions)
+
+                    # 诊断: 断连率
+                    if info['connected_rate'] < 1.0:
+                        ep_disconnected_steps += 1
 
                     # 存储经验 (传入 biz_types + hidden state 供训练时使用)
                     agent.insert_experience(
@@ -274,24 +290,38 @@ class ExperimentBAMAPPO:
                 if ep == health_check_ep and verbose:
                     recent_avg = np.mean(episode_rewards[-health_check_ep:])
                     early_avg = np.mean(episode_rewards[:max(1, health_check_ep // 2)])
+                    # 诊断: action 分布和 reward 方差
+                    stay_pct = ep_action_counts['stay'] / max(sum(ep_action_counts.values()), 1) * 100
+                    reward_std = np.std(episode_rewards[-health_check_ep:])
+                    print(f"\n  {'='*60}")
+                    print(f"  诊断报告 [Episode {ep+1}]")
+                    print(f"  {'='*60}")
+                    print(f"  Reward: 均值={np.mean(episode_rewards):.2f}, "
+                          f"标准差={reward_std:.2f}, "
+                          f"变异系数={reward_std/max(abs(np.mean(episode_rewards)),0.01)*100:.1f}%")
+                    print(f"  Satisfaction: {np.mean(episode_satisfactions):.3f}")
+                    print(f"  Action: stay={stay_pct:.1f}%, switch={100-stay_pct:.1f}%")
                     if recent_avg <= early_avg and len(episode_rewards) > health_check_ep // 2:
-                        print(f"\n  ⚠ 健康检查 [Episode {ep+1}]: reward 无上升趋势 "
-                              f"(前期均值={early_avg:.2f}, 近期均值={recent_avg:.2f})")
-                        print(f"    建议检查: 奖励函数设计、学习率、网络结构、环境参数")
+                        print(f"  ⚠ Reward 无上升趋势 (前期={early_avg:.2f} → 近期={recent_avg:.2f})")
                     else:
-                        print(f"  ✓ 健康检查 [Episode {ep+1}]: reward 趋势正常 "
-                              f"(前期={early_avg:.2f} → 近期={recent_avg:.2f})")
+                        print(f"  ✓ Reward 趋势正常 (前期={early_avg:.2f} → 近期={recent_avg:.2f})")
+                    if reward_std / max(abs(np.mean(episode_rewards)), 0.01) > 0.3:
+                        print(f"  ⚠ Reward 变异系数 > 30%，PPO 难以收敛 — 考虑 reward 归一化")
+                    print(f"  {'='*60}\n")
 
                 if verbose and (ep + 1) % 30 == 0:
                     avg_al = np.mean(episode_actor_losses[-20:]) if episode_actor_losses else 0
                     avg_cl = np.mean(episode_critic_losses[-20:]) if episode_critic_losses else 0
                     avg_ent = np.mean(episode_entropies[-20:]) if episode_entropies else 0
+                    # 诊断: 最近 30 episode 的 reward 统计
+                    recent_rews = episode_rewards[-30:]
+                    stay_pct = ep_action_counts['stay'] / max(sum(ep_action_counts.values()), 1) * 100
                     print(f"  Episode {ep+1}/{train_episodes}: "
-                          f"reward={episode_reward:.3f}, "
+                          f"reward={episode_reward:.1f}(μ={np.mean(recent_rews):.1f},σ={np.std(recent_rews):.1f}), "
                           f"sat={np.mean(episode_sat):.3f}, "
-                          f"actor_loss={avg_al:.4f}, "
-                          f"critic_loss={avg_cl:.4f}, "
-                          f"entropy={avg_ent:.4f}")
+                          f"stay={stay_pct:.0f}%, "
+                          f"a_loss={avg_al:.4f}, c_loss={avg_cl:.2f}, "
+                          f"H={avg_ent:.3f}")
 
                 # ---- Early stopping 判断 ----
                 is_best = episode_reward > best_reward + early_stop_min_delta
