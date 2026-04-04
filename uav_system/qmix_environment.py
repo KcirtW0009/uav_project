@@ -29,6 +29,32 @@ from .parametric_algorithm import (
 from .business import BusinessType
 
 
+class RunningNormalizer:
+    """指数移动平均归一化器，用于降低 reward 的 CV"""
+
+    def __init__(self, num_agents: int, decay: float = 0.999):
+        self.mean = np.zeros(num_agents, dtype=np.float64)
+        self.var = np.ones(num_agents, dtype=np.float64)
+        self.decay = decay
+        self.count = 0
+
+    def normalize(self, rewards_dict: Dict[int, float]) -> Dict[int, float]:
+        vec = np.array([rewards_dict[i] for i in range(len(rewards_dict))], dtype=np.float64)
+        self.count += 1
+        batch_mean = vec.mean()
+        batch_var = vec.var() if len(vec) > 1 else 1.0
+        self.mean = self.decay * self.mean + (1 - self.decay) * batch_mean
+        self.var = self.decay * self.var + (1 - self.decay) * batch_var
+        std = np.sqrt(np.maximum(self.var, 1e-8))
+        normed = (vec - self.mean) / std
+        return {i: float(normed[i]) for i in range(len(rewards_dict))}
+
+    def reset(self):
+        self.count = 0
+        self.mean[:] = 0.0
+        self.var[:] = 1.0
+
+
 class QMixHandoverEnv:
     """
     UAV 切换的 QMIX 多智能体环境
@@ -86,8 +112,11 @@ class QMixHandoverEnv:
             self.env._initialize_connections()
 
         self.num_agents = num_uav
-        # action 0 = stay (不切换), action 1~num_bs = 切换到对应 BS
-        self.action_dim = num_bs + 1
+        # 动作空间简化为 3 (高层决策，而非低级 BS 选择):
+        #   action 0 = stay (不切换)
+        #   action 1 = best_sinr (切换到 SINR 最高的 BS)
+        #   action 2 = best_capacity (切换到可用容量/需求比最高的 BS)
+        self.action_dim = 3
 
         # 维度计算
         self.obs_dim = self._calc_obs_dim()
@@ -100,6 +129,7 @@ class QMixHandoverEnv:
         self._last_handover_count = {}  # UAV id -> 上一步累计切换次数
         self._last_actions = {}  # UAV id -> 上一步动作
         self._sat_history = {}  # UAV id -> deque of recent satisfactions
+        self._reward_normalizer = RunningNormalizer(num_uav)
 
     def _calc_obs_dim(self) -> int:
         """
@@ -112,7 +142,7 @@ class QMixHandoverEnv:
         - 当前满意度: 1
         - 连接状态: 1
         - 移动速度: 1
-        - 上次动作 one-hot: action_dim
+        - 上次动作 one-hot: action_dim (3)
         - 满意度变化趋势: 1
         - 同类型 UAV 平均满意度: 1
         总计: 4 * num_bs + 6 + action_dim + 2
@@ -290,6 +320,8 @@ class QMixHandoverEnv:
             self._last_handover_count[uid] = uav.handover_count
             self._last_actions[uid] = 0
             self._sat_history[uid] = deque([uav.current_satisfaction], maxlen=10)
+        # 不在此处 reset normalizer — EMA 需要跨 episode 持续积累
+        # 调用者可通过 reset_normalizer() 手动重置
 
         obs_dict = self.get_all_obs()
         global_state = self.get_global_state()
@@ -317,16 +349,49 @@ class QMixHandoverEnv:
                      for uid in range(self.num_agents)}
 
         # ====== 1. 根据 actions 执行切换 ======
-        # action=0: stay (不切换), action=1~num_bs: 切换到对应 BS
+        # action 0: stay (不切换)
+        # action 1: best_sinr (切换到 SINR 最高的 BS)
+        # action 2: best_capacity (切换到可用容量/需求比最高的 BS)
+        # ---- 切换诊断 ----
+        ep_switch_attempts = 0   # 尝试切换的 UAV 数
+        ep_switch_success = 0    # 成功切换
+        ep_switch_rollback = 0   # 切换失败但回滚成功
+        ep_switch_disconnect = 0 # 切换失败且回滚也失败
+
         for uid, action in actions.items():
             if action == 0:
                 continue  # stay
-            target_bs_id = action - 1  # 转为 0-based BS 索引
-            if target_bs_id < 0 or target_bs_id >= self.num_bs:
-                continue
+            if action == 1:
+                # best_sinr: 选择当前 SINR 最高的 BS
+                sinr_row = self.env.sinr_matrix[uid]
+                # 排除当前已连接的 BS（已连接则无需切换）
+                candidates = [(bs_id, sinr_row[bs_id]) for bs_id in range(self.num_bs)
+                              if bs_id != self.env.uavs[uid].connected_bs_id]
+                if not candidates:
+                    continue
+                target_bs_id = max(candidates, key=lambda x: x[1])[0]
+            elif action == 2:
+                # best_capacity: 选择可用容量/需求比最高的 BS
+                uav = self.env.uavs[uid]
+                candidates = []
+                for bs_id in range(self.num_bs):
+                    if bs_id == uav.connected_bs_id:
+                        continue
+                    bs = self.env.base_stations[bs_id]
+                    if uav.required_rate > 0:
+                        ratio = bs.available_capacity / uav.required_rate
+                    else:
+                        ratio = float('inf')
+                    candidates.append((bs_id, ratio))
+                if not candidates:
+                    continue
+                target_bs_id = max(candidates, key=lambda x: x[1])[0]
+            else:
+                continue  # 无效动作，忽略
+
             uav = self.env.uavs[uid]
-            if uav.connected_bs_id == target_bs_id:
-                continue  # 已连接，无需切换
+            target_bs = self.env.base_stations[target_bs_id]
+            ep_switch_attempts += 1
 
             # 释放当前 BS 资源
             old_bs_id = uav.connected_bs_id
@@ -335,20 +400,32 @@ class QMixHandoverEnv:
                 old_bs.connected_uavs.pop(uid, None)
                 old_bs.current_load -= uav.current_allocated_rate
 
-            # 尝试切换到目标 BS（逐步降级）
-            target_bs = self.env.base_stations[target_bs_id]
+            # 尝试切换到目标 BS（按业务类型降级，与增强算法一致）
             allocated = False
-            for ratio in [1.0, 0.8, 0.6, 0.4, 0.2]:
+            for ratio in uav.qos_profile.get_feasible_downgrade_ratios():
                 if target_bs.allocate(uid, uav.required_rate * ratio):
                     uav.connected_bs_id = target_bs_id
                     uav.current_allocated_rate = uav.required_rate * ratio
                     uav.handover_count += 1
                     allocated = True
+                    ep_switch_success += 1
                     break
             if not allocated:
-                # 切换失败，断连
-                uav.connected_bs_id = None
-                uav.current_allocated_rate = 0.0
+                # 切换失败，尝试回滚到旧 BS（也用降级比率）
+                if old_bs_id is not None:
+                    old_bs = self.env.base_stations[old_bs_id]
+                    for ratio in uav.qos_profile.get_feasible_downgrade_ratios():
+                        if old_bs.allocate(uid, uav.required_rate * ratio):
+                            uav.connected_bs_id = old_bs_id
+                            uav.current_allocated_rate = uav.required_rate * ratio
+                            allocated = True  # 回滚成功
+                            ep_switch_rollback += 1
+                            break
+                if not allocated:
+                    # 回滚也失败，断连
+                    uav.connected_bs_id = None
+                    uav.current_allocated_rate = 0.0
+                    ep_switch_disconnect += 1
 
         # ====== 2. 推进环境 ======
         self.env.current_step += 1
@@ -362,51 +439,92 @@ class QMixHandoverEnv:
 
         self._current_step += 1
 
-        # ====== 3. 计算奖励（V3：绝对值主导 + 梯度辅助） ======
-        # 设计理念:
-        #   - 满意度绝对值线性奖励为主（每步 sat 本身就是独立计算的 property）
-        #   - delta_sat 辅助梯度信号（权重低，避免噪声放大）
-        #   - 低满意度微惩罚（防止"什么都不做"退化策略）
-        #   - 切换/断连惩罚适度
-        rewards = {}
+        # ====== 3. 计算奖励 (V6: 基于切换诊断 V5 的改进) ======
+        # V5 问题诊断:
+        #   - 训练中零实际切换 (good=0, bad=0)
+        #   - stay_bonus=0.2 过高，agent 学到纯 stay 策略
+        #   - switch_cost=-0.3 抑制了探索，即使切换可能有益
+        #   - random_bs (33% stay) 打败 MAPPO (75% stay)
+        # V6 设计:
+        #   - stay_bonus 降至 0.05 (仅保持微弱正向信号)
+        #   - switch_cost 降至 0.1 (降低切换门槛)
+        #   - 成功切换(alloc成功): +0.3 奖励 (不依赖 delta_sat 的噪声)
+        #   - 回滚: -0.05 轻微惩罚 (尝试了但没成功)
+        #   - 断连: -1.0 (保持强惩罚)
+        #   - delta_sat 权重保持 2.0
+        rewards_raw = {}
         team_reward = 0.0
+        # 诊断用组分统计
+        ep_delta_sum = 0.0
+        ep_stay_bonus_sum = 0.0
+        ep_switch_cost_sum = 0.0
+        ep_disconnect_sum = 0.0
+        ep_good_switch = 0
+        ep_bad_switch = 0
 
         for uid in range(self.num_agents):
             uav = self.env.uavs[uid]
             new_sat = uav.current_satisfaction
             old_sat = old_sats.get(uid, 0.5)
 
-            # a. 满意度绝对值线性奖励（核心信号，范围 [-0.2, +0.5]）
-            #    sat=0.0 → -0.2, sat=0.3 → 0.1, sat=0.5 → 0.3, sat=0.8 → 0.6, sat=1.0 → 0.8
-            r_individual = new_sat - 0.2
-
-            # b. 满意度变化辅助信号（弱梯度，权重 2.0）
             delta_sat = new_sat - old_sat
-            r_individual += 2.0 * delta_sat
+            action = actions.get(uid, 0)
 
-            # c. 切换惩罚（适度）
+            # a. 满意度变化 (核心信号)
+            r_delta = 2.0 * delta_sat
+            ep_delta_sum += r_delta
+
+            # b. 判断是否发生切换 (通过 handover_count)
             new_ho = uav.handover_count
             old_ho = self._last_handover_count.get(uid, 0)
-            if new_ho > old_ho:
-                r_individual -= 0.15
+            switched = (new_ho > old_ho)
 
-            # d. 断连惩罚
+            if switched:
+                # ---- 切换成功 ----
+                r_switch = -0.1   # 基础切换成本 (降低)
+                ep_switch_cost_sum += 0.1
+                if delta_sat > 0.05:
+                    r_switch += 0.5   # 好的切换: net = +0.4
+                    ep_good_switch += 1
+                elif delta_sat < -0.05:
+                    r_switch -= 0.3   # 坏的切换: net = -0.4
+                    ep_bad_switch += 1
+                else:
+                    r_switch += 0.2   # 中性切换: net = +0.1 (鼓励探索)
+                r_individual = r_delta + r_switch
+            elif action != 0:
+                # ---- 尝试切换但未成功 (allocation 失败) ----
+                # 轻微惩罚 (浪费了一次切换机会)
+                r_individual = r_delta - 0.05
+            else:
+                # ---- 留守 ----
+                r_stay = 0.0
+                if new_sat > 0.8:
+                    r_stay = 0.05   # 维持高满意度: 微弱正向信号
+                ep_stay_bonus_sum += r_stay
+                r_individual = r_delta + r_stay
+
+            # c. 断连惩罚 (适中，避免极端负值干扰学习)
             is_connected = uav.connected_bs_id is not None
             was_connected = not self._last_disconnected.get(uid, False)
             if not is_connected and was_connected:
                 r_individual -= 1.5
+                ep_disconnect_sum += 1.5
 
-            rewards[uid] = r_individual
+            rewards_raw[uid] = r_individual
             team_reward += r_individual
 
             # 更新历史
             self._last_satisfaction[uid] = new_sat
             self._last_disconnected[uid] = not is_connected
             self._last_handover_count[uid] = new_ho
-            self._last_actions[uid] = actions.get(uid, 0)
+            self._last_actions[uid] = action
             self._sat_history[uid].append(new_sat)
 
-        # ====== 4. 团队奖励归一化 ======
+        # ====== 4. Reward 归一化 (EMA) ======
+        rewards = self._reward_normalizer.normalize(rewards_raw)
+
+        # ====== 5. 团队奖励归一化 ======
         team_reward /= max(self.num_agents, 1)
 
         # ====== 5. 判断是否结束 ======
@@ -420,21 +538,36 @@ class QMixHandoverEnv:
             'connected_rate': sum(1 for uid in range(self.num_agents)
                                   if self.env.uavs[uid].connected_bs_id is not None) / max(self.num_agents, 1),
             'strategy_distribution': {},
+            'reward_diag': {
+                'delta_sum': ep_delta_sum / max(self.num_agents, 1),
+                'stay_bonus': ep_stay_bonus_sum / max(self.num_agents, 1),
+                'switch_cost': ep_switch_cost_sum / max(self.num_agents, 1),
+                'disconnect_pen': ep_disconnect_sum / max(self.num_agents, 1),
+                'good_switch': ep_good_switch,
+                'bad_switch': ep_bad_switch,
+                'raw_mean': np.mean(list(rewards_raw.values())),
+                'norm_mean': np.mean(list(rewards.values())),
+                'switch_attempts': ep_switch_attempts,
+                'switch_success': ep_switch_success,
+                'switch_rollback': ep_switch_rollback,
+                'switch_disconnect': ep_switch_disconnect,
+            },
         }
         # 统计 action 分布
+        action_names = {0: 'stay', 1: 'best_sinr', 2: 'best_capacity'}
         for uid, action in actions.items():
-            if action == 0:
-                info['strategy_distribution']['stay'] = \
-                    info['strategy_distribution'].get('stay', 0) + 1
-            else:
-                bs_name = f'BS{action - 1}'
-                info['strategy_distribution'][bs_name] = \
-                    info['strategy_distribution'].get(bs_name, 0) + 1
+            name = action_names.get(action, f'action{action}')
+            info['strategy_distribution'][name] = \
+                info['strategy_distribution'].get(name, 0) + 1
 
         obs_dict = self.get_all_obs()
         global_state = self.get_global_state()
 
         return obs_dict, global_state, rewards, team_reward, done, info
+
+    def reset_normalizer(self):
+        """手动重置 reward normalizer（仅在训练重启时调用）"""
+        self._reward_normalizer.reset()
 
     def advance_env_only(self):
         """

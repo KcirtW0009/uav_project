@@ -40,6 +40,44 @@ from typing import Dict, Tuple, Optional
 
 
 # ==============================================================================
+# Observation Normalizer (Running mean/std)
+# ==============================================================================
+
+class ObsNormalizer:
+    """对观测值做 running z-score 归一化，加速 PPO 收敛"""
+
+    def __init__(self, obs_dim: int, decay: float = 0.999, clip_val: float = 5.0):
+        self.obs_dim = obs_dim
+        self.decay = decay
+        self.clip_val = clip_val
+        self.mean = np.zeros(obs_dim, dtype=np.float64)
+        self.var = np.ones(obs_dim, dtype=np.float64)
+        self.count = 0
+
+    def update(self, obs: np.ndarray):
+        """更新 running stats (仅训练时调用)"""
+        self.count += 1
+        batch_mean = obs.mean(axis=0)
+        batch_var = obs.var(axis=0) if len(obs) > 1 else np.ones(self.obs_dim)
+        self.mean = self.decay * self.mean + (1 - self.decay) * batch_mean
+        self.var = self.decay * self.var + (1 - self.decay) * batch_var
+
+    def normalize(self, obs: np.ndarray) -> np.ndarray:
+        """归一化 obs 到 ~N(0,1)，clip 到 [-clip_val, clip_val]"""
+        std = np.sqrt(np.maximum(self.var, 1e-8))
+        normed = (obs - self.mean) / std
+        return np.clip(normed, -self.clip_val, self.clip_val)
+
+    def state_dict(self):
+        return {'mean': self.mean.copy(), 'var': self.var.copy(), 'count': self.count}
+
+    def load_state_dict(self, state):
+        self.mean = state['mean']
+        self.var = state['var']
+        self.count = state['count']
+
+
+# ==============================================================================
 # Rollout Buffer (On-policy 经验缓冲区 + GAE)
 # ==============================================================================
 
@@ -111,7 +149,7 @@ class RolloutBuffer:
 
     def compute_gae(self, next_values: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
-        计算广义优势估计 (GAE)，含 reward 标准化
+        计算广义优势估计 (GAE)
 
         Args:
             next_values: (num_agents,) 下一步的价值估计
@@ -130,27 +168,15 @@ class RolloutBuffer:
                 next_val = self.values[t + 1].cpu().numpy()
             next_non_terminal = 1.0 - float(self.dones[t])
 
-            # 团队奖励均分 + 个体奖励
-            mixed_reward = (self.rewards[t].cpu().numpy()
-                            + self.team_rewards[t].item() / max(self.num_agents, 1))
+            # 仅使用归一化后的个体 reward (team_reward 已在个体 reward 中体现)
+            # 旧版 mixed_reward 存在尺度不一致: 个体 reward 已归一化但 team_reward 未归一化
+            reward = self.rewards[t].cpu().numpy()
 
-            delta = mixed_reward + self.gamma * next_val * next_non_terminal - self.values[t].cpu().numpy()
+            delta = reward + self.gamma * next_val * next_non_terminal - self.values[t].cpu().numpy()
             last_gae = delta + self.gamma * self.gae_lambda * next_non_terminal * last_gae
             advantages[t] = last_gae
 
         returns = advantages + self.values[:self.ptr].cpu().numpy()
-
-        # ---- Reward/Advantage 标准化 (降低方差，帮助 PPO 收敛) ----
-        # 对 advantages 按每个 agent 独立标准化
-        adv_mean = advantages.mean(axis=0, keepdims=True)
-        adv_std = advantages.std(axis=0, keepdims=True) + 1e-8
-        advantages = (advantages - adv_mean) / adv_std
-
-        # 对 returns 也做标准化
-        ret_mean = returns.mean(axis=0, keepdims=True)
-        ret_std = returns.std(axis=0, keepdims=True) + 1e-8
-        returns = (returns - ret_mean) / ret_std
-
         return advantages, returns
 
     def get_batches(self, batch_size: int, advantages: np.ndarray,
@@ -165,7 +191,7 @@ class RolloutBuffer:
         Yields:
             (obs_batch, obs_all_batch, state_batch, actions_batch,
              old_log_probs_batch, advantages_batch, returns_batch,
-             biz_types_batch, hidden_batch)
+             old_values_batch, biz_types_batch, hidden_batch)
         """
         ptr = self.ptr
         # burn-in: 跳过轨迹开头"冷"步骤
@@ -186,9 +212,15 @@ class RolloutBuffer:
         biz_flat = self.biz_types[start_idx:ptr].reshape(-1)
         # hiddens: (ptr, N, hidden_dim) -> (ptr*N, hidden_dim)
         hidden_flat = self.hiddens[start_idx:ptr].reshape(-1, self.hidden_dim)
+        # old values: (ptr, N) -> (ptr*N,) — 用于 value clipping
+        values_flat = self.values[start_idx:ptr].reshape(-1)
 
         adv_flat = torch.FloatTensor(advantages[start_idx:].reshape(-1), device=self.device)
         ret_flat = torch.FloatTensor(returns[start_idx:].reshape(-1), device=self.device)
+
+        # 归一化优势 (标准 PPO 实践，降低方差)
+        if adv_flat.std() > 1e-8:
+            adv_flat = (adv_flat - adv_flat.mean()) / (adv_flat.std() + 1e-8)
 
         dataset_size = obs_flat.shape[0]
 
@@ -199,8 +231,8 @@ class RolloutBuffer:
                 idx = indices[start:end]
                 yield (obs_flat[idx], obs_all_flat[idx], states_flat[idx],
                        actions_flat[idx], log_probs_flat[idx],
-                       adv_flat[idx], ret_flat[idx], biz_flat[idx],
-                       hidden_flat[idx])
+                       adv_flat[idx], ret_flat[idx], values_flat[idx],
+                       biz_flat[idx], hidden_flat[idx])
 
     def clear(self):
         """清空缓冲区"""
@@ -229,7 +261,7 @@ class ActorNetwork(nn.Module):
         self.use_biz_heads = use_biz_heads
         self.action_dim = action_dim
 
-        # 共享特征提取
+        # 共享特征提取 — 正交初始化
         self.fc = nn.Linear(obs_dim, hidden_dim)
         self.rnn = nn.GRUCell(hidden_dim, hidden_dim)
 
@@ -241,6 +273,26 @@ class ActorNetwork(nn.Module):
         else:
             # 标准 MAPPO: 共享输出头
             self.output_head = nn.Linear(hidden_dim, action_dim)
+
+        # 正交初始化 (标准 PPO 实践，保证初始策略接近均匀)
+        self._init_weights()
+
+    def _init_weights(self):
+        """正交初始化 + stay-biased 输出头"""
+        for module in [self.fc, self.rnn]:
+            for name, param in module.named_parameters():
+                if 'weight' in name:
+                    nn.init.orthogonal_(param, gain=np.sqrt(2))
+                elif 'bias' in name:
+                    nn.init.zeros_(param)
+
+        # 输出头: 使用较小 gain，并给 action 0 (stay) 一个微小的正向 bias
+        # 这模拟了"弱模仿学习"——基线 stay 策略是最好的默认行为
+        heads = self.biz_heads if self.use_biz_heads else [self.output_head]
+        for head in heads:
+            nn.init.orthogonal_(head.weight, gain=0.01)
+            nn.init.zeros_(head.bias)
+            head.bias.data[0] = 0.5  # stay (action 0) 初始偏高，鼓励少切换
 
     def _get_logits(self, h: torch.Tensor,
                     biz_types: torch.Tensor = None) -> torch.Tensor:
@@ -375,6 +427,20 @@ class CriticNetwork(nn.Module):
             nn.Linear(hidden_dim, 1),
         )
 
+        # 正交初始化
+        self._init_weights()
+
+    def _init_weights(self):
+        for module in self.net:
+            if isinstance(module, nn.Linear):
+                gain = nn.init.calculate_gain('relu')
+                nn.init.orthogonal_(module.weight, gain=gain)
+                nn.init.zeros_(module.bias)
+        # 最终输出层用更小的 gain (value 初始接近 0)
+        last = self.net[-1]
+        nn.init.orthogonal_(last.weight, gain=1.0)
+        nn.init.zeros_(last.bias)
+
     def forward(self, global_state: torch.Tensor,
                 obs_all: torch.Tensor = None) -> torch.Tensor:
         """
@@ -464,6 +530,13 @@ class MAPPOAgent:
         self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=actor_lr)
         self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=critic_lr)
 
+        # LR scheduler: warmup + cosine decay (标准 PPO 实践，稳定训练)
+        self.actor_lr_init = actor_lr
+        self.critic_lr_init = critic_lr
+        self._total_train_steps = 0  # 由 experiments_mappo 设置
+        self._current_train_step = 0
+        self._warmup_steps = 50  # 前 50 个 PPO update 做 linear warmup
+
         # Rollout Buffer (传入 hidden_dim 用于存储 RNN hidden state)
         self.buffer = RolloutBuffer(
             num_agents, obs_dim, state_dim, action_dim,
@@ -472,6 +545,9 @@ class MAPPOAgent:
 
         # RNN 隐藏状态
         self.actor_hidden = None
+
+        # Observation Normalizer (running mean/std)
+        self.obs_normalizer = ObsNormalizer(obs_dim, decay=0.999, clip_val=5.0)
 
         # 训练统计
         self.train_step_count = 0
@@ -510,7 +586,12 @@ class MAPPOAgent:
             pre_hidden = self.actor_hidden
 
             obs_batch = np.array([obs_dict[i] for i in range(self.num_agents)])
-            obs_t = torch.FloatTensor(obs_batch).to(self.device)  # (N, obs_dim)
+            # 训练时更新 running stats；eval 时仅使用
+            if training:
+                self.obs_normalizer.update(obs_batch)
+            obs_batch_norm = self.obs_normalizer.normalize(obs_batch)
+
+            obs_t = torch.FloatTensor(obs_batch_norm).to(self.device)  # (N, obs_dim)
             state_t = torch.FloatTensor(global_state).unsqueeze(0).to(self.device)  # (1, state_dim)
             obs_all_t = obs_t.unsqueeze(0)  # (1, N, obs_dim)
 
@@ -550,6 +631,27 @@ class MAPPOAgent:
         """重置 RNN 隐藏状态"""
         self.actor_hidden = self.actor.init_hidden(batch_size=self.num_agents).to(self.device)
 
+    def _update_lr(self):
+        """根据当前训练进度更新学习率: linear warmup + cosine decay"""
+        if self._total_train_steps <= 0:
+            return
+        step = self._current_train_step
+        total = self._total_train_steps
+        warmup = self._warmup_steps
+
+        if step < warmup:
+            # Linear warmup
+            frac = (step + 1) / warmup
+        else:
+            # Cosine decay
+            progress = (step - warmup) / max(total - warmup, 1)
+            frac = 0.5 * (1.0 + np.cos(np.pi * progress))
+
+        for opt, lr_init in [(self.actor_optimizer, self.actor_lr_init),
+                              (self.critic_optimizer, self.critic_lr_init)]:
+            for pg in opt.param_groups:
+                pg['lr'] = lr_init * frac
+
     def insert_experience(self, step: int, obs_dict: Dict[int, np.ndarray],
                           global_state: np.ndarray, actions: Dict[int, int],
                           rewards: Dict[int, float], team_reward: float,
@@ -563,6 +665,8 @@ class MAPPOAgent:
             pre_hidden: (num_agents, hidden_dim) — 采样时 GRU 的输入 hidden state
         """
         obs_batch = np.array([obs_dict[i] for i in range(self.num_agents)])
+        # 在存储时归一化 obs，确保与 select_actions 中计算 value 时使用相同的归一化参数
+        obs_batch = self.obs_normalizer.normalize(obs_batch)
         self.buffer.insert(step, obs_batch, global_state, actions, rewards,
                            team_reward, done, log_probs, values, biz_types,
                            hiddens=pre_hidden)
@@ -579,6 +683,10 @@ class MAPPOAgent:
         if self.buffer.ptr == 0:
             return {}
 
+        # LR schedule
+        self._update_lr()
+        self._current_train_step += 1
+
         # 获取 next_values (episode 结束时为 0)
         next_values = np.zeros(self.num_agents, dtype=np.float32)
 
@@ -589,12 +697,15 @@ class MAPPOAgent:
         total_critic_loss = 0.0
         total_entropy = 0.0
         num_updates = 0
+        approx_kl = 0.0  # KL 近似值，用于 early stop
 
         # burn-in: 跳过前几步 (hidden 是零向量冷启动，信息不可靠)
         burn_in = min(5, self.buffer.ptr // 3)
 
-        for obs_batch, obs_all_batch, states_batch, actions_batch, old_log_probs_batch, adv_batch, ret_batch, biz_types_batch, hidden_batch in \
+        for obs_batch, obs_all_batch, states_batch, actions_batch, old_log_probs_batch, adv_batch, ret_batch, old_values_batch, biz_types_batch, hidden_batch in \
                 self.buffer.get_batches(self.batch_size, advantages, returns, self.num_epochs, burn_in=burn_in):
+
+            # obs 已在 insert_experience 中归一化，无需重复归一化
 
             # Actor 更新 — 传入采样时的 hidden state，保证 log_prob 分布一致
             old_log_probs = old_log_probs_batch.detach()
@@ -602,6 +713,12 @@ class MAPPOAgent:
                 obs_batch, actions_batch, hidden=hidden_batch, biz_types=biz_types_batch
             )
             ratio = torch.exp(new_log_probs - old_log_probs)
+
+            # KL Divergence Early Stop (标准 PPO 实践)
+            with torch.no_grad():
+                approx_kl = ((ratio - 1.0) - (new_log_probs - old_log_probs)).mean().item()
+            if approx_kl > 0.015:
+                break  # 策略偏移过大，停止当前 epoch
 
             surr1 = ratio * adv_batch
             surr2 = torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * adv_batch
@@ -615,9 +732,14 @@ class MAPPOAgent:
             torch.nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
             self.actor_optimizer.step()
 
-            # Critic 更新: global_state + obs_all (attention)
+            # Critic 更新: value clipping (标准 PPO 实践，防止 critic 震荡)
             value_pred = self.critic(states_batch, obs_all_batch)  # (batch,)
-            critic_loss = nn.MSELoss()(value_pred, ret_batch)
+            value_pred_clipped = old_values_batch + torch.clamp(
+                value_pred - old_values_batch, -self.clip_epsilon, self.clip_epsilon
+            )
+            critic_loss_unclipped = (value_pred - ret_batch).pow(2).mean()
+            critic_loss_clipped = (value_pred_clipped - ret_batch).pow(2).mean()
+            critic_loss = torch.max(critic_loss_unclipped, critic_loss_clipped)
 
             self.critic_optimizer.zero_grad()
             critic_loss.backward()
@@ -634,6 +756,7 @@ class MAPPOAgent:
             'critic_loss': total_critic_loss / max(num_updates, 1),
             'entropy': total_entropy / max(num_updates, 1),
             'total_loss': (total_actor_loss + self.value_coef * total_critic_loss) / max(num_updates, 1),
+            'approx_kl': approx_kl,
         }
 
         self.actor_loss_history.append(avg_stats['actor_loss'])
@@ -656,6 +779,7 @@ class MAPPOAgent:
             'actor_optimizer': self.actor_optimizer.state_dict(),
             'critic_optimizer': self.critic_optimizer.state_dict(),
             'train_step_count': self.train_step_count,
+            'obs_normalizer': self.obs_normalizer.state_dict(),
             'config': {
                 'use_biz_heads': self.use_biz_heads,
                 'use_attention_critic': self.use_attention_critic,
@@ -670,12 +794,14 @@ class MAPPOAgent:
 
     def load(self, path: str):
         """加载模型"""
-        state = torch.load(path, map_location=self.device, weights_only=True)
+        state = torch.load(path, map_location=self.device, weights_only=False)
         self.actor.load_state_dict(state['actor'])
         self.critic.load_state_dict(state['critic'])
         self.actor_optimizer.load_state_dict(state['actor_optimizer'])
         self.critic_optimizer.load_state_dict(state['critic_optimizer'])
         self.train_step_count = state['train_step_count']
+        if 'obs_normalizer' in state:
+            self.obs_normalizer.load_state_dict(state['obs_normalizer'])
         print(f"  BA-MAPPO 模型已加载: {path}")
 
     def get_stats(self) -> dict:
