@@ -19,9 +19,9 @@ TEST_CONFIG = {
     'num_uav': 30,
     'num_bs': 4,  # 保持基站数量
     'num_steps': 100,  # 增加每轮步数，增加切换需求
-    'train_episodes': 150,  # 增加训练轮次，确保充分学习
+    'train_episodes': 200,  # 进一步增加训练轮次，确保充分学习
     'eval_episodes': 3,  # 减少评估次数，加快测试
-    'bs_capacity_range': (40, 80),  # 减少容量范围，增加网络负载
+    'bs_capacity_range': (60, 120),  # 增加容量范围，提高切换成功率
     'pos_range': 800.0,  # 增加地图范围，增加移动距离
     'hidden_dim': 64,  # 增加隐藏层维度，提高模型表达能力
     'critic_hidden_dim': 128,  # 增加隐藏层维度，提高模型表达能力

@@ -605,19 +605,19 @@ class QMixHandoverEnv:
 
             if switched:
                 if delta_sat > 0.05:
-                    r_action = 2.0   # 进一步增加成功切换奖励
+                    r_action = 3.0   # 进一步增加成功切换奖励
                     ep_good_switch += 1
                 elif delta_sat < -0.05:
-                    r_action = -0.5   # 保持失败切换惩罚
+                    r_action = -0.3   # 减少失败切换惩罚
                     ep_bad_switch += 1
                 else:
-                    r_action = 0.5   # 增加中性切换奖励
+                    r_action = 0.8   # 进一步增加中性切换奖励
             elif action != 0:
                 # 尝试切换但未成功 (allocation 失败)
-                r_action = -0.2   # 增加尝试切换但失败的惩罚
+                r_action = -0.1   # 减少尝试切换但失败的惩罚
             else:
                 # 留守
-                r_action = 0.0 if new_sat > 0.7 else -0.1  # 进一步减少留守奖励
+                r_action = -0.05 if new_sat > 0.7 else -0.15  # 进一步减少留守奖励
             ep_action_reward_sum += r_action
 
             # e. 连接状态奖励
