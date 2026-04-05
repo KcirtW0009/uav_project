@@ -71,11 +71,12 @@ class QMixHandoverEnv:
         state_dim: 全局状态维度
     """
 
-    def __init__(self, num_bs: int = 8, num_uav: int = 20,
-                 max_steps: int = 150, seed: int = 42,
-                 bs_capacity_range: Optional[Tuple[float, float]] = None,
-                 pos_range: float = 1000):
+    def __init__(self, num_bs: int, num_uav: int, max_steps: int = 1000, seed: int = None,
+                 bs_capacity_range: tuple = (500, 1000), pos_range: int = 1000,
+                 use_state_smoothing: bool = True, use_env_simplification: bool = False):
         """
+        初始化 QMIX 切换环境 (无识别噪声)
+
         Args:
             num_bs: 基站数量
             num_uav: UAV 数量
@@ -83,6 +84,8 @@ class QMixHandoverEnv:
             seed: 随机种子
             bs_capacity_range: 基站容量范围 (min, max)
             pos_range: 地图空间范围 (米)，默认 1000
+            use_state_smoothing: 是否使用状态平滑机制
+            use_env_simplification: 是否使用环境简化机制
         """
         self.num_bs = num_bs
         self.num_uav = num_uav
@@ -90,6 +93,8 @@ class QMixHandoverEnv:
         self.seed = seed
         self.bs_capacity_range = bs_capacity_range
         self.pos_range = pos_range
+        self.use_state_smoothing = use_state_smoothing
+        self.use_env_simplification = use_env_simplification
 
         # 创建底层网络环境（无识别模型，QMIX 使用真实业务类型）
         self.env = NetworkEnvironmentWithRecognition(
@@ -102,6 +107,18 @@ class QMixHandoverEnv:
         # 禁用自适应识别更新器（QMIX 不需要）
         self.env.recognition_updater = None
 
+        # 环境简化：减少环境的随机性
+        if self.use_env_simplification:
+            # 固定基站位置
+            for i, bs in enumerate(self.env.base_stations.values()):
+                angle = 2 * np.pi * i / num_bs
+                radius = pos_range / 3
+                bs.position = np.array([radius * np.cos(angle), radius * np.sin(angle)])
+            
+            # 降低 UAV 移动速度
+            for uav in self.env.uavs.values():
+                uav.velocity *= 0.5
+
         # 如果 pos_range != 默认值(1000)，缩放所有位置
         if pos_range != 1000:
             scale = pos_range / 1000.0
@@ -113,11 +130,14 @@ class QMixHandoverEnv:
             self.env._initialize_connections()
 
         self.num_agents = num_uav
-        # 动作空间简化为 3 (高层决策，而非低级 BS 选择):
+        # 动作空间扩展为 6 (分级决策):
         #   action 0 = stay (不切换)
         #   action 1 = best_sinr (切换到 SINR 最高的 BS)
         #   action 2 = best_capacity (切换到可用容量/需求比最高的 BS)
-        self.action_dim = 3
+        #   action 3 = sinr_capacity (SINR和容量的加权组合)
+        #   action 4 = predictive (基于预测的切换)
+        #   action 5 = business_specific (基于业务类型的特定切换策略)
+        self.action_dim = 6
 
         # 维度计算
         self.obs_dim = self._calc_obs_dim()
@@ -131,6 +151,12 @@ class QMixHandoverEnv:
         self._last_actions = {}  # UAV id -> 上一步动作
         self._sat_history = {}  # UAV id -> deque of recent satisfactions
         self._reward_normalizer = RunningNormalizer(num_uav)
+        
+        # 状态平滑相关
+        if self.use_state_smoothing:
+            self._state_history = {}  # UAV id -> 历史状态
+            for uid in range(num_uav):
+                self._state_history[uid] = []
 
     def _calc_obs_dim(self) -> int:
         """
@@ -146,9 +172,10 @@ class QMixHandoverEnv:
         - 上次动作 one-hot: action_dim (3)
         - 满意度变化趋势: 1
         - 同类型 UAV 平均满意度: 1
-        总计: 4 * num_bs + 6 + action_dim + 2
+        - 历史满意度 (最近3步): 3
+        总计: 4 * num_bs + 9 + action_dim + 2
         """
-        return 4 * self.num_bs + 6 + self.action_dim + 2
+        return 4 * self.num_bs + 9 + self.action_dim + 2
 
     def _calc_state_dim(self) -> int:
         """
@@ -233,9 +260,33 @@ class QMixHandoverEnv:
                 peer_sats.append(other_uav.current_satisfaction)
         peer_avg = np.array([np.mean(peer_sats) if peer_sats else 0.0])
 
-        return np.concatenate([sinr_norm, loads, connected_onehot,
+        # 12. 历史满意度 (最近3步)
+        hist_sat = np.zeros(3)
+        if uav_id in self._sat_history and len(self._sat_history[uav_id]) >= 3:
+            recent = list(self._sat_history[uav_id])[-4:-1]  # 最近3步（不包括当前步）
+            hist_sat[:len(recent)] = recent
+        elif uav_id in self._sat_history:
+            recent = list(self._sat_history[uav_id])[:-1]  # 所有历史（不包括当前步）
+            hist_sat[:len(recent)] = recent
+
+        # 构建原始观测
+        raw_obs = np.concatenate([sinr_norm, loads, connected_onehot,
                                cap_ratios, biz, satisfaction, connected, velocity,
-                               last_action, sat_trend, peer_avg])
+                               last_action, sat_trend, peer_avg, hist_sat])
+        
+        # 状态平滑：使用历史状态的移动平均
+        if self.use_state_smoothing:
+            # 存储当前状态
+            self._state_history[uav_id].append(raw_obs)
+            # 只保留最近5个状态
+            if len(self._state_history[uav_id]) > 5:
+                self._state_history[uav_id] = self._state_history[uav_id][-5:]
+            # 计算移动平均
+            if len(self._state_history[uav_id]) > 1:
+                smoothed_obs = np.mean(self._state_history[uav_id], axis=0)
+                return smoothed_obs
+        
+        return raw_obs
 
     def get_global_state(self) -> np.ndarray:
         """
@@ -362,7 +413,7 @@ class QMixHandoverEnv:
         for uid, action in actions.items():
             if action == 0:
                 continue  # stay
-            if action == 1:
+            elif action == 1:
                 # best_sinr: 选择当前 SINR 最高的 BS
                 sinr_row = self.env.sinr_matrix[uid]
                 # 排除当前已连接的 BS（已连接则无需切换）
@@ -384,6 +435,64 @@ class QMixHandoverEnv:
                     else:
                         ratio = float('inf')
                     candidates.append((bs_id, ratio))
+                if not candidates:
+                    continue
+                target_bs_id = max(candidates, key=lambda x: x[1])[0]
+            elif action == 3:
+                # sinr_capacity: SINR和容量的加权组合
+                uav = self.env.uavs[uid]
+                sinr_row = self.env.sinr_matrix[uid]
+                candidates = []
+                for bs_id in range(self.num_bs):
+                    if bs_id == uav.connected_bs_id:
+                        continue
+                    bs = self.env.base_stations[bs_id]
+                    sinr = sinr_row[bs_id]
+                    if uav.required_rate > 0:
+                        cap_ratio = bs.available_capacity / uav.required_rate
+                    else:
+                        cap_ratio = 1.0
+                    # 加权组合：SINR占60%，容量占40%
+                    score = 0.6 * sinr + 0.4 * cap_ratio
+                    candidates.append((bs_id, score))
+                if not candidates:
+                    continue
+                target_bs_id = max(candidates, key=lambda x: x[1])[0]
+            elif action == 4:
+                # predictive: 基于预测的切换（简化版，使用当前趋势）
+                uav = self.env.uavs[uid]
+                sinr_row = self.env.sinr_matrix[uid]
+                candidates = []
+                for bs_id in range(self.num_bs):
+                    if bs_id == uav.connected_bs_id:
+                        continue
+                    # 简化处理：使用当前SINR作为预测值
+                    candidates.append((bs_id, sinr_row[bs_id]))
+                if not candidates:
+                    continue
+                target_bs_id = max(candidates, key=lambda x: x[1])[0]
+            elif action == 5:
+                # business_specific: 基于业务类型的特定切换策略
+                uav = self.env.uavs[uid]
+                biz_type = uav.true_business_type.value
+                candidates = []
+                for bs_id in range(self.num_bs):
+                    if bs_id == uav.connected_bs_id:
+                        continue
+                    bs = self.env.base_stations[bs_id]
+                    sinr = self.env.sinr_matrix[uid][bs_id]
+                    if uav.required_rate > 0:
+                        cap_ratio = bs.available_capacity / uav.required_rate
+                    else:
+                        cap_ratio = 1.0
+                    # 根据业务类型调整权重
+                    if biz_type == 0:  # 延迟敏感型，更重视SINR
+                        score = 0.8 * sinr + 0.2 * cap_ratio
+                    elif biz_type == 1:  # 吞吐量敏感型，更重视容量
+                        score = 0.3 * sinr + 0.7 * cap_ratio
+                    else:  # 可靠性敏感型，平衡考虑
+                        score = 0.5 * sinr + 0.5 * cap_ratio
+                    candidates.append((bs_id, score))
                 if not candidates:
                     continue
                 target_bs_id = max(candidates, key=lambda x: x[1])[0]
@@ -440,26 +549,22 @@ class QMixHandoverEnv:
 
         self._current_step += 1
 
-        # ====== 3. 计算奖励 (V6: 基于切换诊断 V5 的改进) ======
-        # V5 问题诊断:
-        #   - 训练中零实际切换 (good=0, bad=0)
-        #   - stay_bonus=0.2 过高，agent 学到纯 stay 策略
-        #   - switch_cost=-0.3 抑制了探索，即使切换可能有益
-        #   - random_bs (33% stay) 打败 MAPPO (75% stay)
-        # V6 设计:
-        #   - stay_bonus 降至 0.05 (仅保持微弱正向信号)
-        #   - switch_cost 降至 0.1 (降低切换门槛)
-        #   - 成功切换(alloc成功): +0.3 奖励 (不依赖 delta_sat 的噪声)
-        #   - 回滚: -0.05 轻微惩罚 (尝试了但没成功)
-        #   - 断连: -1.0 (保持强惩罚)
-        #   - delta_sat 权重保持 2.0
+        # ====== 3. 计算奖励 (V8: 基于价值的奖励机制) ======
+        # V8 设计:
+        #   - 基础奖励：满意度变化 (权重调整为 3.0)
+        #   - 价值奖励：基于预测的未来满意度
+        #   - 业务类型特定奖励：为不同业务类型设计差异化奖励
+        #   - 动作奖励：鼓励有益的切换，惩罚有害的切换
+        #   - 连接状态奖励：强鼓励保持连接
+        #   - 平滑奖励信号：减少奖励波动
         rewards_raw = {}
         team_reward = 0.0
         # 诊断用组分统计
         ep_delta_sum = 0.0
-        ep_stay_bonus_sum = 0.0
-        ep_switch_cost_sum = 0.0
-        ep_disconnect_sum = 0.0
+        ep_value_reward_sum = 0.0
+        ep_biz_reward_sum = 0.0
+        ep_action_reward_sum = 0.0
+        ep_connect_reward_sum = 0.0
         ep_good_switch = 0
         ep_bad_switch = 0
 
@@ -470,47 +575,64 @@ class QMixHandoverEnv:
 
             delta_sat = new_sat - old_sat
             action = actions.get(uid, 0)
+            biz_type = uav.true_business_type.value
 
-            # a. 满意度变化 (核心信号)
-            r_delta = 2.0 * delta_sat
+            # a. 满意度变化 (核心信号) - 增加权重
+            r_delta = 5.0 * delta_sat
             ep_delta_sum += r_delta
 
-            # b. 判断是否发生切换 (通过 handover_count)
+            # b. 价值奖励：基于预测的未来满意度
+            predicted_sat = self.predict_future_satisfaction(uid)
+            r_value = 2.0 * (predicted_sat - 0.5)  # 目标满意度为0.5
+            ep_value_reward_sum += r_value
+
+            # c. 业务类型特定奖励
+            r_biz = 0.0
+            if biz_type == 0:  # 延迟敏感型
+                r_biz = 0.5 if new_sat > 0.8 else -0.2
+            elif biz_type == 1:  # 吞吐量敏感型
+                r_biz = 0.3 if new_sat > 0.7 else -0.1
+            elif biz_type == 2:  # 可靠性敏感型
+                r_biz = 0.4 if new_sat > 0.75 else -0.15
+            ep_biz_reward_sum += r_biz
+
+            # d. 动作奖励
+            r_action = 0.0
+            # 判断是否发生切换 (通过 handover_count)
             new_ho = uav.handover_count
             old_ho = self._last_handover_count.get(uid, 0)
             switched = (new_ho > old_ho)
 
             if switched:
-                # ---- 切换成功 ----
-                r_switch = -0.1   # 基础切换成本 (降低)
-                ep_switch_cost_sum += 0.1
                 if delta_sat > 0.05:
-                    r_switch += 0.5   # 好的切换: net = +0.4
+                    r_action = 2.0   # 进一步增加成功切换奖励
                     ep_good_switch += 1
                 elif delta_sat < -0.05:
-                    r_switch -= 0.3   # 坏的切换: net = -0.4
+                    r_action = -0.5   # 保持失败切换惩罚
                     ep_bad_switch += 1
                 else:
-                    r_switch += 0.2   # 中性切换: net = +0.1 (鼓励探索)
-                r_individual = r_delta + r_switch
+                    r_action = 0.5   # 增加中性切换奖励
             elif action != 0:
-                # ---- 尝试切换但未成功 (allocation 失败) ----
-                # 轻微惩罚 (浪费了一次切换机会)
-                r_individual = r_delta - 0.05
+                # 尝试切换但未成功 (allocation 失败)
+                r_action = -0.2   # 增加尝试切换但失败的惩罚
             else:
-                # ---- 留守 ----
-                r_stay = 0.0
-                if new_sat > 0.8:
-                    r_stay = 0.05   # 维持高满意度: 微弱正向信号
-                ep_stay_bonus_sum += r_stay
-                r_individual = r_delta + r_stay
+                # 留守
+                r_action = 0.0 if new_sat > 0.7 else -0.1  # 进一步减少留守奖励
+            ep_action_reward_sum += r_action
 
-            # c. 断连惩罚 (适中，避免极端负值干扰学习)
+            # e. 连接状态奖励
             is_connected = uav.connected_bs_id is not None
             was_connected = not self._last_disconnected.get(uid, False)
+            r_connect = 1.0 if is_connected else -2.0
             if not is_connected and was_connected:
-                r_individual -= 1.5
-                ep_disconnect_sum += 1.5
+                r_connect -= 1.0  # 额外惩罚断连
+            ep_connect_reward_sum += r_connect
+
+            # 综合奖励
+            r_individual = r_delta + r_value + r_biz + r_action + r_connect
+
+            # 奖励平滑：限制奖励范围，减少极端值
+            r_individual = np.clip(r_individual, -5.0, 5.0)
 
             rewards_raw[uid] = r_individual
             team_reward += r_individual
@@ -541,9 +663,10 @@ class QMixHandoverEnv:
             'strategy_distribution': {},
             'reward_diag': {
                 'delta_sum': ep_delta_sum / max(self.num_agents, 1),
-                'stay_bonus': ep_stay_bonus_sum / max(self.num_agents, 1),
-                'switch_cost': ep_switch_cost_sum / max(self.num_agents, 1),
-                'disconnect_pen': ep_disconnect_sum / max(self.num_agents, 1),
+                'value_reward': ep_value_reward_sum / max(self.num_agents, 1),
+                'biz_reward': ep_biz_reward_sum / max(self.num_agents, 1),
+                'action_reward': ep_action_reward_sum / max(self.num_agents, 1),
+                'connect_reward': ep_connect_reward_sum / max(self.num_agents, 1),
                 'good_switch': ep_good_switch,
                 'bad_switch': ep_bad_switch,
                 'raw_mean': np.mean(list(rewards_raw.values())),
@@ -594,3 +717,35 @@ class QMixHandoverEnv:
             self._last_disconnected[uid] = (uav.connected_bs_id is None)
             self._last_handover_count[uid] = uav.handover_count
             self._sat_history[uid].append(uav.current_satisfaction)
+
+    def predict_future_satisfaction(self, uid, steps=5):
+        """
+        预测未来几步的满意度
+
+        Args:
+            uid: UAV的ID
+            steps: 预测的步数
+
+        Returns:
+            predicted_sat: 预测的未来满意度
+        """
+        # 基于历史满意度的简单预测
+        if len(self._sat_history[uid]) < 2:
+            return self._last_satisfaction.get(uid, 0.5)
+        
+        # 使用历史满意度的趋势进行预测
+        recent_sats = list(self._sat_history[uid])[-5:]
+        if len(recent_sats) < 2:
+            return self._last_satisfaction.get(uid, 0.5)
+        
+        # 计算趋势
+        trend = (recent_sats[-1] - recent_sats[0]) / len(recent_sats)
+        
+        # 预测未来满意度
+        current_sat = self._last_satisfaction.get(uid, 0.5)
+        predicted_sat = current_sat + trend * steps
+        
+        # 限制在合理范围内
+        predicted_sat = max(0.0, min(1.0, predicted_sat))
+        
+        return predicted_sat
