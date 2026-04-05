@@ -180,17 +180,8 @@ class ExperimentBAMAPPO:
             model_path = os.path.join(ExperimentBAMAPPO.MODEL_DIR,
                                       f'mappo_{num_bs}bs_{num_uav}uav.pt')
 
-            # Curriculum Learning: 从简单到复杂
-            # 第一阶段：简单环境
-            simple_env = QMixHandoverEnv(
-                num_bs=num_bs, num_uav=num_uav,
-                max_steps=num_steps, seed=GLOBAL_SEED + num_uav * 100,
-                bs_capacity_range=(bs_capacity_range[0] * 2, bs_capacity_range[1] * 2),  # 更大的容量
-                pos_range=pos_range,
-            )
-            simple_env.reset_normalizer()  # 训练前重置 normalizer
-            
-            # 第二阶段：标准环境
+            # 直接在标准环境中训练，确保模型能够适应真实场景
+            # 移除简单环境，避免环境变化过于剧烈导致模型不适应
             env = QMixHandoverEnv(
                 num_bs=num_bs, num_uav=num_uav,
                 max_steps=num_steps, seed=GLOBAL_SEED + num_uav * 100,
@@ -198,6 +189,9 @@ class ExperimentBAMAPPO:
                 pos_range=pos_range,
             )
             env.reset_normalizer()  # 训练前重置 normalizer
+            
+            # 为了保持代码兼容性，将 env 赋值给 simple_env
+            simple_env = env
 
             # 初始化智能体
             agent = MAPPOAgent(
@@ -216,7 +210,7 @@ class ExperimentBAMAPPO:
                 value_coef=0.5,
                 rollout_length=max(rollout_length, num_steps),
                 num_epochs=3,
-                batch_size=64,
+                batch_size=32,
                 use_biz_heads=use_biz_heads,
                 use_attention_critic=use_attention_critic,
                 use_enhanced_algorithm=True,
@@ -267,10 +261,9 @@ class ExperimentBAMAPPO:
             agent._total_train_steps = train_episodes
             agent._current_train_step = 0
 
-            # Curriculum Learning: 分阶段训练
-            # 第一阶段：简单环境训练
-            print("\n  开始第一阶段训练：简单环境")
-            simple_episodes = train_episodes // 3  # 1/3 时间在简单环境训练
+            # 直接在标准环境中训练，确保模型能够适应真实场景
+            print("\n  开始训练：标准环境 + Domain Randomization")
+            simple_episodes = 0  # 移除简单环境训练
             for ep in range(simple_episodes):
                 obs_dict, global_state = simple_env.reset()
                 agent.reset_hidden()
@@ -389,9 +382,8 @@ class ExperimentBAMAPPO:
                           f"a_loss={avg_al:.4f}, c_loss={avg_cl:.2f}, "
                           f"H={avg_ent:.3f} | {rd_str}")
 
-            # 第二阶段：标准环境训练 + Domain Randomization
-            print("\n  开始第二阶段训练：标准环境 + Domain Randomization")
-            for ep in range(simple_episodes, train_episodes):
+            # 直接在标准环境中训练 + Domain Randomization
+            for ep in range(train_episodes):
                 # Domain Randomization: 随机化环境参数
                 random_capacity_range = (
                     int(bs_capacity_range[0] * (0.8 + 0.4 * np.random.rand())),
@@ -904,6 +896,7 @@ class ExperimentBAMAPPO:
                         critic_hidden_dim=critic_hidden_dim,
                         use_biz_heads=use_biz_heads,
                         use_attention_critic=use_attention_critic,
+                        use_hierarchical=True,  # 与训练时的网络架构保持一致
                     )
                     mappo_agent.load(model_path)
 
