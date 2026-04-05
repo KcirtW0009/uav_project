@@ -141,7 +141,7 @@ def _run_exp_mappo(load_models=False, phase='both', small_scale=False):
         num_steps=100,
         train_episodes=1000,
         eval_episodes=10,
-        bs_capacity_range=(80, 180),
+        bs_capacity_range=(60, 120),
         load_models=load_models,
         phase=phase,
         verbose=True,

@@ -58,18 +58,30 @@ class RunningNormalizer:
 
 class QMixHandoverEnv:
     """
-    UAV 切换的 QMIX 多智能体环境
+    多智能体 UAV 切换环境（CTDE 架构）
 
-    每个 UAV 作为一个独立 agent，每个 step 选择一种策略配置来指导切换行为。
-    环境负责：执行所有 agent 的切换决策、推进仿真、计算奖励。
+    通用多智能体强化学习环境，支持 MAPPO / QMIX / IPPO 等算法。
+    每个 UAV 作为一个独立 agent，每个 step 选择一种切换策略。
+
+    动作空间 (6维):
+      0 = stay (不切换)
+      1 = best_sinr (切换到 SINR 最高的 BS)
+      2 = best_capacity (切换到可用容量/需求比最高的 BS)
+      3 = sinr_capacity (SINR 和容量加权组合)
+      4 = predictive (基于预测的切换)
+      5 = business_specific (基于业务类型的差异化切换)
 
     Attributes:
         num_agents: agent 数量（等于 UAV 数量）
         num_bs: 基站数量
-        action_dim: 每个 agent 的动作空间大小 (= 3: stay/best_sinr/best_capacity)
+        action_dim: 每个 agent 的动作空间大小 (= 6)
         obs_dim: 每个 agent 的局部观测维度
         state_dim: 全局状态维度
     """
+
+    # 类别名：提高可读性，MAPPO 实验使用此名称
+    # 用法: from .qmix_environment import MultiAgentHandoverEnv as MAPPOHandoverEnv
+
 
     def __init__(self, num_bs: int, num_uav: int, max_steps: int = 1000, seed: int = None,
                  bs_capacity_range: tuple = (500, 1000), pos_range: int = 1000,
@@ -583,17 +595,17 @@ class QMixHandoverEnv:
 
             # b. 价值奖励：基于预测的未来满意度
             predicted_sat = self.predict_future_satisfaction(uid)
-            r_value = 2.0 * (predicted_sat - 0.5)  # 目标满意度为0.5
+            r_value = 0.5 * (predicted_sat - 0.5)  # 目标满意度为0.5
             ep_value_reward_sum += r_value
 
-            # c. 业务类型特定奖励
+            # c. 业务类型特定奖励 (连续化)
             r_biz = 0.0
-            if biz_type == 0:  # 延迟敏感型
-                r_biz = 0.5 if new_sat > 0.8 else -0.2
-            elif biz_type == 1:  # 吞吐量敏感型
-                r_biz = 0.3 if new_sat > 0.7 else -0.1
-            elif biz_type == 2:  # 可靠性敏感型
-                r_biz = 0.4 if new_sat > 0.75 else -0.15
+            if biz_type == 0:  # 延迟敏感型，阈值0.8
+                r_biz = 2.0 * (new_sat - 0.8)
+            elif biz_type == 1:  # 吞吐量敏感型，阈值0.7
+                r_biz = 2.0 * (new_sat - 0.7)
+            elif biz_type == 2:  # 可靠性敏感型，阈值0.75
+                r_biz = 2.0 * (new_sat - 0.75)
             ep_biz_reward_sum += r_biz
 
             # d. 动作奖励
@@ -632,7 +644,7 @@ class QMixHandoverEnv:
             r_individual = r_delta + r_value + r_biz + r_action + r_connect
 
             # 奖励平滑：限制奖励范围，减少极端值
-            r_individual = np.clip(r_individual, -5.0, 5.0)
+            r_individual = np.clip(r_individual, -10.0, 10.0)
 
             rewards_raw[uid] = r_individual
             team_reward += r_individual
@@ -749,3 +761,9 @@ class QMixHandoverEnv:
         predicted_sat = max(0.0, min(1.0, predicted_sat))
         
         return predicted_sat
+
+
+# ==================== 类别名 ====================
+# QMixHandoverEnv 是通用多智能体环境，QMIX 和 MAPPO 共用。
+# 提供别名以增强代码可读性。
+MultiAgentHandoverEnv = QMixHandoverEnv

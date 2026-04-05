@@ -1051,20 +1051,44 @@ class MAPPOAgent:
             use_enhanced = False
 
         if use_enhanced and env:
-            # 使用增强算法选择动作
+            # 使用增强算法选择动作，但仍通过 Actor 计算有效的 log_prob（保证 PPO 一致性）
             self.enhanced_algorithm.run_step(enable_load_balancing=True)
-            # 将增强算法的决策转换为动作索引
+
+            with torch.no_grad():
+                pre_hidden = self.actor_hidden
+                obs_batch = np.array([obs_dict[i] for i in range(self.num_agents)])
+                if training:
+                    self.obs_normalizer.update(obs_batch)
+                obs_batch_norm = self.obs_normalizer.normalize(obs_batch)
+                obs_t = torch.FloatTensor(obs_batch_norm).to(self.device)
+                state_t = torch.FloatTensor(global_state).unsqueeze(0).to(self.device)
+                obs_all_t = obs_t.unsqueeze(0)
+
+                if biz_types is not None:
+                    biz_batch = torch.LongTensor(
+                        [biz_types[i] for i in range(self.num_agents)]
+                    ).to(self.device)
+                else:
+                    biz_batch = None
+
+                if self.use_hierarchical:
+                    high_level_logits, low_level_logits, new_hidden = self.actor(obs_t, self.actor_hidden, biz_batch)
+                    self.actor_hidden = new_hidden.detach()
+                else:
+                    logits, new_hidden = self.actor(obs_t, self.actor_hidden, biz_batch)
+                    self.actor_hidden = new_hidden.detach()
+
+                state_expanded = state_t.expand(self.num_agents, -1)
+                obs_all_expanded = obs_t.unsqueeze(1).expand(self.num_agents, self.num_agents, self.obs_dim)
+                per_agent_values = self.critic(state_expanded, obs_all_expanded)
+
+            # 将增强算法的决策转换为动作索引，同时计算 Actor 的 log_prob
             for uid in range(self.num_agents):
                 uav = env.env.uavs[uid]
-                current_bs = uav.connected_bs_id
-                # 分析增强算法的决策，映射到对应的动作
-                # 1. 收集所有基站的SINR和容量信息
                 sinr_row = env.env.sinr_matrix[uid]
                 capacities = []
-                # 获取基站数量
                 num_base_stations = len(env.env.base_stations)
                 for bs_id in range(num_base_stations):
-                    # 检查base_stations是字典还是列表
                     if isinstance(env.env.base_stations, dict):
                         bs = env.env.base_stations[bs_id]
                     else:
@@ -1073,23 +1097,39 @@ class MAPPOAgent:
                         capacities.append(bs.available_capacity)
                     else:
                         capacities.append(0)
-                
-                # 2. 计算最佳SINR和最佳容量的基站
+
                 best_sinr_bs = np.argmax(sinr_row)
                 best_cap_bs = np.argmax(capacities)
-                
-                # 3. 根据增强算法的决策映射动作
+
+                # 增强算法的动作映射
                 if uav.connected_bs_id == best_sinr_bs:
-                    actions[uid] = 1  # best_sinr
+                    action = 1
                 elif uav.connected_bs_id == best_cap_bs:
-                    actions[uid] = 2  # best_capacity
+                    action = 2
                 else:
-                    # 混合策略
-                    actions[uid] = 3  # sinr_capacity
-                
-                log_probs_dict[uid] = 0.0
-                values_dict[uid] = 0.0
-            pre_hidden_np = np.zeros((self.num_agents, self.hidden_dim))
+                    action = 3
+                actions[uid] = action
+
+                # 用 Actor 网络计算该动作的有效 log_prob（关键修复！）
+                if self.use_hierarchical:
+                    high_dist = Categorical(logits=high_level_logits[uid].unsqueeze(0))
+                    action_tensor = torch.tensor([action], device=self.device, dtype=torch.long)
+                    if action == 0:
+                        log_probs_dict[uid] = high_dist.log_prob(action_tensor)[0].item()
+                    else:
+                        low_dist = Categorical(logits=low_level_logits[uid].unsqueeze(0))
+                        low_action_tensor = torch.tensor([action - 1], device=self.device, dtype=torch.long)
+                        high_act_t = torch.tensor([1], device=self.device, dtype=torch.long)
+                        log_probs_dict[uid] = (high_dist.log_prob(high_act_t)[0].item() +
+                                                low_dist.log_prob(low_action_tensor)[0].item())
+                else:
+                    dist = Categorical(logits=logits[uid])
+                    action_tensor = torch.tensor([action], device=self.device, dtype=torch.long)
+                    log_probs_dict[uid] = dist.log_prob(action_tensor).item()
+
+                values_dict[uid] = per_agent_values[uid].item()
+
+            pre_hidden_np = pre_hidden.cpu().numpy() if pre_hidden is not None else np.zeros((self.num_agents, self.hidden_dim))
         else:
             with torch.no_grad():
                 # 保存 pre-step hidden (传给 GRU 的 hidden，即上一步的输出)
@@ -1131,73 +1171,41 @@ class MAPPOAgent:
                 obs_all_expanded = obs_t.unsqueeze(1).expand(self.num_agents, self.num_agents, self.obs_dim)  # (N, N, obs_dim)
                 per_agent_values = self.critic(state_expanded, obs_all_expanded)  # (N,)
 
-                # 采样动作 + 计算 log_prob
-                # 探索率：随训练进度递减
-                if training:
-                    # 计算当前训练进度
-                    if self._total_train_steps > 0:
-                        progress = min(1.0, self._current_train_step / self._total_train_steps)
-                    else:
-                        progress = 0.0
-                    # 探索率从0.8递减到0.1
-                    epsilon = 0.8 * (1 - progress) + 0.1
-                else:
-                    epsilon = 0.0
-
                 for uid in range(self.num_agents):
                     if self.use_hierarchical:
-                        # 高层策略：是否切换
                         high_dist = Categorical(logits=high_level_logits[uid].unsqueeze(0))
                         if training:
-                            # 增加探索机制
-                            if np.random.random() < epsilon:
-                                # 随机选择动作，倾向于切换
-                                high_action = 1 if np.random.random() < 0.7 else 0
-                                high_action_tensor = torch.tensor([high_action], device=self.device)
-                            else:
-                                high_action_tensor = high_dist.sample()
-                                high_action = high_action_tensor.item()
+                            high_action_tensor = high_dist.sample()
+                            high_action = high_action_tensor.item()
                         else:
                             high_action = high_level_logits[uid].argmax().item()
+                            high_action_tensor = torch.tensor([high_action], device=self.device)
                         
-                        if high_action == 0:  # stay
+                        if high_action == 0:
                             action = 0
                             if training:
                                 log_probs_dict[uid] = high_dist.log_prob(high_action_tensor)[0].item()
                             else:
                                 log_probs_dict[uid] = 0.0
-                        else:  # switch
-                            # 底层策略：选择目标基站
+                        else:
                             low_dist = Categorical(logits=low_level_logits[uid].unsqueeze(0))
                             if training:
-                                if np.random.random() < epsilon:
-                                    # 随机选择目标基站
-                                    low_action = np.random.randint(0, low_level_logits[uid].shape[0])
-                                    low_action_tensor = torch.tensor([low_action], device=self.device)
-                                else:
-                                    low_action_tensor = low_dist.sample()
-                                    low_action = low_action_tensor.item()
+                                low_action_tensor = low_dist.sample()
+                                low_action = low_action_tensor.item()
                                 log_probs_dict[uid] = high_dist.log_prob(high_action_tensor)[0].item() + low_dist.log_prob(low_action_tensor)[0].item()
                             else:
                                 low_action = low_level_logits[uid].argmax().item()
                                 log_probs_dict[uid] = 0.0
-                            action = low_action + 1  # 映射到底层动作
+                            action = low_action + 1
                     else:
                         dist = Categorical(logits=logits[uid])
                         if training:
-                            if np.random.random() < epsilon:
-                                # 随机选择动作，倾向于切换
-                                action = np.random.randint(0, self.action_dim)
-                                action_tensor = torch.tensor(action, device=self.device)
-                                log_probs_dict[uid] = dist.log_prob(action_tensor).item()
-                            else:
-                                action = dist.sample()
-                                log_probs_dict[uid] = dist.log_prob(action).item()
-                                action = action.item()
+                            action_tensor = dist.sample()
+                            log_probs_dict[uid] = dist.log_prob(action_tensor).item()
+                            action = action_tensor.item()
                         else:
-                            action = logits[uid].argmax()
+                            action = logits[uid].argmax().item()
                             log_probs_dict[uid] = 0.0
-                            action = action.item()
                     actions[uid] = action
                     values_dict[uid] = per_agent_values[uid].item()
 
@@ -1323,7 +1331,7 @@ class MAPPOAgent:
         total_critic_loss = 0.0
         total_entropy = 0.0
         num_updates = 0
-        approx_kl = 0.0  # KL 近似值，用于 early stop
+        approx_kl = 0.0
 
         # burn-in: 跳过前几步 (hidden 是零向量冷启动，信息不可靠)
         burn_in = min(5, self.buffer.ptr // 3)
@@ -1344,7 +1352,7 @@ class MAPPOAgent:
             with torch.no_grad():
                 approx_kl = ((ratio - 1.0) - (new_log_probs - old_log_probs)).mean().item()
             if approx_kl > 0.015:
-                break  # 策略偏移过大，停止当前 epoch
+                break
 
             surr1 = ratio * adv_batch
             surr2 = torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * adv_batch

@@ -4,28 +4,31 @@ BA-MAPPO 多智能体强化学习实验
 基于 MAPPO (Multi-Agent PPO, Yu et al. 2022 NeurIPS) 的 UAV 切换决策实验，
 并引入 Business-Aware Actor 和 Attention-Enhanced Critic 两项改进。
 
+研究脉络:
+  实验1: 识别准确率对系统性能的影响
+  实验2/2b/2c: 切换算法设计（传统 3GPP A3 → 增强算法）
+  实验3: 识别与切换联动系统
+  实验4 (本实验): BA-MAPPO 多智能体协同决策
+    → 目标: 通过多智能体协同超越增强算法的单步贪心策略
+
+基线设计逻辑:
+  - 传统算法 (3GPP A3): 论文核心对比对象，代表工业界基线
+  - 增强算法: 本文前序工作，BA-MAPPO 的直接改进对象
+  - stay/best_sinr: 仅作参考，不作为核心对比对象
+  - 容量设计: 控制负载率在 65%~85%，确保资源竞争真实存在
+
+改进:
+  1. Business-Aware Actor: 业务类型特定的独立输出头，差异化策略
+  2. Attention-Enhanced Critic: 多头注意力聚合全局信息
+  3. 分层策略网络: 高层(是否切换) + 底层(目标基站)
+  4. 模仿学习预训练: 从增强算法示范中冷启动
+  5. Domain Randomization: 训练时随机化环境参数提升泛化
+
 实验内容:
 1. Phase 1 — 训练收敛分析
-   - 在不同 UAV 数量 (10, 20) 下训练 BA-MAPPO
-   - 绘制训练曲线 (reward, actor_loss, critic_loss, entropy)
-
-2. Phase 2 — 对比评估
-   - BA-MAPPO-优化参数 vs 人工固定参数 (5种策略) vs 增强算法 vs 传统算法
-   - 多维度对比: 满意率、切换成功率、资源利用率、关键业务满足率
-
-3. Phase 3 — 多场景泛化
-   - 训练场景 vs 5个测试场景
-
-4. 可视化
-   - 训练收敛曲线
-   - 策略选择热力图
-   - 场景泛化雷达图
-
-与 QMIX 的主要区别:
-- On-policy (rollout + PPO update) 替代 Off-policy (replay buffer + TD)
-- 策略梯度替代值分解
-- BA Actor 支持业务类型异构
-- Attention Critic 替代简单 Mixing Network
+2. Phase 2 — 算法对比评估 (传统 → 增强 → BA-MAPPO，分业务类型统计)
+3. Phase 3 — 多场景泛化验证
+4. 可视化 — 训练曲线 / 算法对比 / 动作分布 / 场景泛化
 """
 
 import numpy as np
@@ -40,10 +43,67 @@ from typing import Dict, List, Any, Tuple, Optional
 from .config import GLOBAL_SEED, set_global_seed, RESULT_DIR, COLORS
 from .qmix_environment import QMixHandoverEnv
 from .mappo_agent import MAPPOAgent
-# from .parametric_algorithm import ParametricEnhancedAlgorithm, STRATEGY_CONFIGS, NUM_STRATEGIES
-# [已弃用] ParametricEnhancedAlgorithm 原为 QMIX 元控制器设计，MAPPO 未使用
-from .algorithms import EnhancedHandoverAlgorithm
+from .algorithms import EnhancedHandoverAlgorithm, IntegratedHandoverAlgorithm
 from .business import BusinessType
+
+# 业务类型中文名称（用于统计输出）
+BIZ_TYPE_NAMES = {
+    0: '控制信令', 1: '视频回传', 2: '环境监测'
+}
+BIZ_TYPE_KEYS = [BusinessType.CONTROL_SIGNAL, BusinessType.VIDEO_STREAMING, BusinessType.ENVIRONMENT_MONITORING]
+
+
+def _collect_biz_satisfaction(env_or_env_wrapper):
+    """
+    按业务类型统计满意度（统一接口）。
+
+    Args:
+        env_or_env_wrapper: QMixHandoverEnv 实例（env.env 为底层网络环境）
+
+    Returns:
+        dict: {
+            'avg': float,  # 全局平均满意度
+            'per_biz': {0: (mean, std), 1: (mean, std), 2: (mean, std)},
+            'critical_sat': float,  # 关键业务(控制信令+视频)平均满意度
+        }
+    """
+    inner_env = env_or_env_wrapper.env if hasattr(env_or_env_wrapper, 'env') else env_or_env_wrapper
+    biz_sats = {}
+    for bt_val in [0, 1, 2]:
+        sats = [uav.current_satisfaction for uav in inner_env.uavs.values()
+                if uav.true_business_type.value == bt_val]
+        biz_sats[bt_val] = (np.mean(sats), np.std(sats)) if sats else (0.0, 0.0)
+
+    all_sats = [uav.current_satisfaction for uav in inner_env.uavs.values()]
+    avg_sat = np.mean(all_sats) if all_sats else 0.0
+
+    critical_sats = [uav.current_satisfaction for uav in inner_env.uavs.values()
+                     if uav.true_business_type.value in (0, 1)]
+    critical_sat = np.mean(critical_sats) if critical_sats else 0.0
+
+    return {
+        'avg': avg_sat,
+        'per_biz': biz_sats,
+        'critical_sat': critical_sat,
+    }
+
+
+def _run_fixed_action_baseline(env, num_steps, action=0):
+    """运行固定动作基线 (action=0: stay, action=1: best_sinr 等)"""
+    for step in range(num_steps):
+        actions = {uid: action for uid in range(env.num_agents)}
+        env.step(actions)
+
+
+def _run_algo_baseline(env, num_steps, algo_class, enable_lb=False):
+    """运行启发式算法基线 (传统/增强算法)"""
+    algo = algo_class(env.env)
+    for step in range(num_steps):
+        kwargs = {}
+        if enable_lb and algo_class == EnhancedHandoverAlgorithm:
+            kwargs['enable_load_balancing'] = True
+        algo.run_step(**kwargs)
+        env.advance_env_only()
 
 
 class ExperimentBAMAPPO:
@@ -203,14 +263,14 @@ class ExperimentBAMAPPO:
                 critic_hidden_dim=critic_hidden_dim,
                 actor_lr=actor_lr,
                 critic_lr=critic_lr,
-                gamma=0.99,
+                gamma=0.95,
                 gae_lambda=0.95,
                 clip_epsilon=0.2,
-                entropy_coef=0.02,
+                entropy_coef=0.05,
                 value_coef=0.5,
                 rollout_length=max(rollout_length, num_steps),
-                num_epochs=3,
-                batch_size=32,
+                num_epochs=5,
+                batch_size=64,
                 use_biz_heads=use_biz_heads,
                 use_attention_critic=use_attention_critic,
                 use_enhanced_algorithm=True,
@@ -227,9 +287,9 @@ class ExperimentBAMAPPO:
             # 执行模仿学习预训练
             if agent.use_pretrain and not (load_models and os.path.exists(model_path)):
                 # 收集示范数据
-                demonstrations = agent.collect_demonstrations(simple_env, num_demos=500)
+                demonstrations = agent.collect_demonstrations(simple_env, num_demos=1000)
                 # 预训练
-                agent.pretrain(demonstrations, epochs=50, batch_size=32)
+                agent.pretrain(demonstrations, epochs=50, batch_size=64)
 
             if load_models and os.path.exists(model_path):
                 agent.load(model_path)
@@ -275,7 +335,7 @@ class ExperimentBAMAPPO:
                 ep_switch_success = 0
                 ep_switch_fail = 0
                 ep_disconnected_steps = 0
-                ep_reward_diag = {'delta_sum': 0, 'biz_reward': 0, 'action_reward': 0,
+                ep_reward_diag = {'delta_sum': 0, 'value_reward': 0, 'biz_reward': 0, 'action_reward': 0,
                                   'connect_reward': 0, 'good_switch': 0, 'bad_switch': 0,
                                   'raw_mean': 0, 'norm_mean': 0, 'count': 0,
                                   'switch_attempts': 0, 'switch_success': 0, 'switch_rollback': 0, 'switch_disconnect': 0}
@@ -401,7 +461,7 @@ class ExperimentBAMAPPO:
                 ep_switch_success = 0
                 ep_switch_fail = 0
                 ep_disconnected_steps = 0
-                ep_reward_diag = {'delta_sum': 0, 'biz_reward': 0, 'action_reward': 0,
+                ep_reward_diag = {'delta_sum': 0, 'value_reward': 0, 'biz_reward': 0, 'action_reward': 0,
                                   'connect_reward': 0, 'good_switch': 0, 'bad_switch': 0,
                                   'raw_mean': 0, 'norm_mean': 0, 'count': 0,
                                   'switch_attempts': 0, 'switch_success': 0, 'switch_rollback': 0, 'switch_disconnect': 0}
@@ -630,9 +690,22 @@ class ExperimentBAMAPPO:
                            bs_capacity_range, pos_range, load_models, verbose,
                            use_biz_heads, use_attention_critic,
                            hidden_dim, critic_hidden_dim):
-        """Phase 2: BA-MAPPO vs 人工固定参数对比"""
+        """
+        Phase 2: 算法对比评估
+
+        研究脉络:
+          实验1→2→2b→3 验证了增强算法相对于传统算法(3GPP A3)的优势；
+          BA-MAPPO 的核心目标是: 通过多智能体协同决策，超越增强算法（单步贪心）。
+          因此基线优先级: 传统算法(3GPP) < 增强算法(本文) < BA-MAPPO(本文)。
+          简单基线(stay/best_sinr)仅作参考，不作为核心对比对象。
+
+        统计维度:
+          - 整体平均满意度
+          - 关键业务满意度（控制信令+视频回传）
+          - 分业务类型满意度
+        """
         print("\n" + "-" * 60)
-        print("Phase 2: BA-MAPPO-优化参数 vs 人工固定参数对比")
+        print("Phase 2: 算法对比评估 (传统 → 增强 → BA-MAPPO)")
         print("-" * 60)
 
         eval_results = {}
@@ -669,161 +742,120 @@ class ExperimentBAMAPPO:
                 agent.load(model_path)
                 print(f"  已加载模型: {model_path}")
             elif load_models:
-                print(f"  警告: 未找到模型 {model_path}, 使用 random 策略")
+                print(f"  警告: 未找到模型 {model_path}, 使用随机策略")
 
-            # 评估 BA-MAPPO
-            mappo_sats = []
-            # 初始化 action 分布计数 (stay, best_sinr, best_capacity)
-            action_labels = ['stay', 'best_sinr', 'best_capacity']
-            strategy_counts = {name: 0 for name in action_labels}
+            # ---- 评估 BA-MAPPO ----
+            mappo_avg_sats = []
+            mappo_biz_sats = {0: [], 1: [], 2: []}
+            mappo_critical_sats = []
+            strategy_counts = {}
 
             for rep in range(eval_episodes):
                 obs_dict, global_state = env.reset()
                 agent.reset_hidden()
-                ep_sats = []
                 for step in range(num_steps):
                     biz_types = {}
                     for uid in range(env.num_agents):
                         uav = env.env.uavs[uid]
                         biz_types[uid] = uav.true_business_type.value
-
                     actions, _, _, _ = agent.select_actions(obs_dict, global_state, biz_types, training=False)
                     next_obs, next_state, rewards, team_reward, done, info = env.step(actions)
                     obs_dict = next_obs
                     global_state = next_state
-
-                    ep_sats.append(info['avg_satisfaction'])
                     for sname, count in info['strategy_distribution'].items():
                         strategy_counts[sname] = strategy_counts.get(sname, 0) + count
 
-                mappo_sats.append(np.mean(ep_sats))
+                stats = _collect_biz_satisfaction(env)
+                mappo_avg_sats.append(stats['avg'])
+                mappo_critical_sats.append(stats['critical_sat'])
+                for bt in range(3):
+                    mappo_biz_sats[bt].append(stats['per_biz'][bt][0])
 
-            # 评估固定动作基线（使用统一环境 QMixHandoverEnv）
-            strategy_results = {}
-            # Baseline 1: stay (不切换)
-            rep_sats = []
-            for rep in range(eval_episodes):
-                seed = GLOBAL_SEED + num_uav * 300 + rep * 1000
-                set_global_seed(seed)
-                eval_env = QMixHandoverEnv(
-                    num_bs=num_bs, num_uav=num_uav,
-                    max_steps=num_steps, seed=seed,
-                    bs_capacity_range=bs_capacity_range,
-                    pos_range=pos_range,
-                )
-                eval_env.reset()
-                for step in range(num_steps):
-                    actions = {uid: 0 for uid in range(eval_env.num_agents)}
-                    eval_env.step(actions)
-                avg_sat = np.mean([eval_env.env.uavs[uid].current_satisfaction
-                                   for uid in range(eval_env.num_agents)])
-                rep_sats.append(avg_sat)
-            strategy_results['stay'] = {
-                'satisfaction': (np.mean(rep_sats), np.std(rep_sats)),
-            }
-            # Baseline 2: best-SINR (每步选择 SINR 最高的 BS)
-            rep_sats = []
-            for rep in range(eval_episodes):
-                seed = GLOBAL_SEED + num_uav * 350 + rep * 1000
-                set_global_seed(seed)
-                eval_env = QMixHandoverEnv(
-                    num_bs=num_bs, num_uav=num_uav,
-                    max_steps=num_steps, seed=seed,
-                    bs_capacity_range=bs_capacity_range,
-                    pos_range=pos_range,
-                )
-                eval_env.reset()
-                for step in range(num_steps):
-                    actions = {uid: 1 for uid in range(eval_env.num_agents)}  # action=1 = best_sinr
-                    eval_env.step(actions)
-                avg_sat = np.mean([eval_env.env.uavs[uid].current_satisfaction
-                                   for uid in range(eval_env.num_agents)])
-                rep_sats.append(avg_sat)
-            strategy_results['best_sinr'] = {
-                'satisfaction': (np.mean(rep_sats), np.std(rep_sats)),
-            }
-            # Baseline 3: random BS
-            rep_sats = []
-            for rep in range(eval_episodes):
-                seed = GLOBAL_SEED + num_uav * 400 + rep * 1000
-                set_global_seed(seed)
-                eval_env = QMixHandoverEnv(
-                    num_bs=num_bs, num_uav=num_uav,
-                    max_steps=num_steps, seed=seed,
-                    bs_capacity_range=bs_capacity_range,
-                    pos_range=pos_range,
-                )
-                eval_env.reset()
-                for step in range(num_steps):
-                    actions = {uid: np.random.randint(0, eval_env.action_dim)
-                               for uid in range(eval_env.num_agents)}
-                    eval_env.step(actions)
-                avg_sat = np.mean([eval_env.env.uavs[uid].current_satisfaction
-                                   for uid in range(eval_env.num_agents)])
-                rep_sats.append(avg_sat)
-            strategy_results['random_bs'] = {
-                'satisfaction': (np.mean(rep_sats), np.std(rep_sats)),
-            }
+            # ---- 评估基线算法 ----
+            def _eval_baseline(baseline_name, run_fn):
+                """通用基线评估函数，返回 {avg, critical, per_biz} 的多次重复均值"""
+                avg_list, critical_list = [], []
+                biz_lists = {0: [], 1: [], 2: []}
+                for rep in range(eval_episodes):
+                    seed = GLOBAL_SEED + num_uav * 300 + rep * 1000 + hash(baseline_name) % 10000
+                    set_global_seed(seed)
+                    eval_env = QMixHandoverEnv(
+                        num_bs=num_bs, num_uav=num_uav,
+                        max_steps=num_steps, seed=seed,
+                        bs_capacity_range=bs_capacity_range,
+                        pos_range=pos_range,
+                    )
+                    eval_env.reset()
+                    run_fn(eval_env, num_steps)
+                    stats = _collect_biz_satisfaction(eval_env)
+                    avg_list.append(stats['avg'])
+                    critical_list.append(stats['critical_sat'])
+                    for bt in range(3):
+                        biz_lists[bt].append(stats['per_biz'][bt][0])
+                return {
+                    'avg': (np.mean(avg_list), np.std(avg_list)),
+                    'critical': (np.mean(critical_list), np.std(critical_list)),
+                    'per_biz': {bt: (np.mean(biz_lists[bt]), np.std(biz_lists[bt])) for bt in range(3)},
+                }
 
-            # 增强算法基线（使用统一环境 QMixHandoverEnv）
-            enhanced_sats = []
-            for rep in range(eval_episodes):
-                seed = GLOBAL_SEED + num_uav * 500 + rep * 1000
-                set_global_seed(seed)
-                eval_env = QMixHandoverEnv(
-                    num_bs=num_bs, num_uav=num_uav,
-                    max_steps=num_steps, seed=seed,
-                    bs_capacity_range=bs_capacity_range,
-                    pos_range=pos_range,
-                )
-                eval_env.reset()
-                algo = EnhancedHandoverAlgorithm(eval_env.env)
-                for step in range(num_steps):
-                    algo.run_step(enable_load_balancing=True)
-                    eval_env.advance_env_only()
-                avg_sat = np.mean([eval_env.env.uavs[uid].current_satisfaction
-                                   for uid in range(eval_env.num_agents)])
-                enhanced_sats.append(avg_sat)
+            # 传统算法基线 (3GPP A3 — 论文核心对比对象)
+            traditional_results = _eval_baseline('traditional',
+                lambda e, steps: _run_algo_baseline(e, steps, IntegratedHandoverAlgorithm))
 
-            # 传统算法基线（使用统一环境 QMixHandoverEnv）
-            traditional_sats = []
-            from .algorithms import IntegratedHandoverAlgorithm
-            for rep in range(eval_episodes):
-                seed = GLOBAL_SEED + num_uav * 600 + rep * 1000
-                set_global_seed(seed)
-                eval_env = QMixHandoverEnv(
-                    num_bs=num_bs, num_uav=num_uav,
-                    max_steps=num_steps, seed=seed,
-                    bs_capacity_range=bs_capacity_range,
-                    pos_range=pos_range,
-                )
-                eval_env.reset()
-                algo = IntegratedHandoverAlgorithm(eval_env.env)
-                for step in range(num_steps):
-                    algo.run_step()
-                    eval_env.advance_env_only()
-                avg_sat = np.mean([eval_env.env.uavs[uid].current_satisfaction
-                                   for uid in range(eval_env.num_agents)])
-                traditional_sats.append(avg_sat)
+            # 增强算法基线 (本文前序工作 — BA-MAPPO 的直接改进对象)
+            enhanced_results = _eval_baseline('enhanced',
+                lambda e, steps: _run_algo_baseline(e, steps, EnhancedHandoverAlgorithm, enable_lb=True))
 
-            mappo_mean = np.mean(mappo_sats) if mappo_sats else 0
-            mappo_std = np.std(mappo_sats) if mappo_sats else 0
+            # 简单参考基线 (仅作参考，不作为核心对比)
+            stay_results = _eval_baseline('stay',
+                lambda e, steps: _run_fixed_action_baseline(e, steps, action=0))
+            best_sinr_results = _eval_baseline('best_sinr',
+                lambda e, steps: _run_fixed_action_baseline(e, steps, action=1))
 
+            # ---- 结果汇总 ----
             eval_results[num_uav] = {
-                'mappo': {'satisfaction': (mappo_mean, mappo_std)},
-                'enhanced': {'satisfaction': (np.mean(enhanced_sats), np.std(enhanced_sats))},
-                'traditional': {'satisfaction': (np.mean(traditional_sats), np.std(traditional_sats))},
-                'strategies': strategy_results,
+                'mappo': {
+                    'avg': (np.mean(mappo_avg_sats), np.std(mappo_avg_sats)),
+                    'critical': (np.mean(mappo_critical_sats), np.std(mappo_critical_sats)),
+                    'per_biz': {bt: (np.mean(mappo_biz_sats[bt]), np.std(mappo_biz_sats[bt]))
+                                for bt in range(3)},
+                },
+                'enhanced': enhanced_results,
+                'traditional': traditional_results,
+                'ref_baselines': {
+                    'stay': stay_results['avg'],
+                    'best_sinr': best_sinr_results['avg'],
+                },
                 'strategy_distribution': strategy_counts,
             }
 
             if verbose:
                 print(f"\n  UAV={num_uav} 对比结果:")
-                print(f"    BA-MAPPO:   {mappo_mean:.4f} +/- {mappo_std:.4f}")
-                print(f"    增强算法:   {np.mean(enhanced_sats):.4f} +/- {np.std(enhanced_sats):.4f}")
-                print(f"    传统算法:   {np.mean(traditional_sats):.4f} +/- {np.std(traditional_sats):.4f}")
-                for sn, sr in strategy_results.items():
-                    print(f"    基线-{sn}:  {sr['satisfaction'][0]:.4f} +/- {sr['satisfaction'][1]:.4f}")
+                print(f"  {'算法':<16} {'平均满意度':>12} {'关键业务':>12} {'控制信令':>10} {'视频回传':>10} {'环境监测':>10}")
+                print(f"  {'-'*70}")
+                for name, data in [
+                    ('传统算法(3GPP)', traditional_results),
+                    ('增强算法(本文)', enhanced_results),
+                    ('BA-MAPPO(本文)', eval_results[num_uav]['mappo']),
+                ]:
+                    avg = data['avg']
+                    cri = data['critical']
+                    biz0 = data['per_biz'][0]
+                    biz1 = data['per_biz'][1]
+                    biz2 = data['per_biz'][2]
+                    print(f"  {name:<16} {avg[0]:>8.4f}+/-{avg[1]:.3f} {cri[0]:>8.4f}+/-{cri[1]:.3f} "
+                          f"{biz0[0]:>8.4f} {biz1[0]:>8.4f} {biz2[0]:>8.4f}")
+                print(f"\n  [参考基线] stay={stay_results['avg'][0]:.4f}, "
+                      f"best_sinr={best_sinr_results['avg'][0]:.4f}")
+
+                # 计算相对提升
+                trad_avg = traditional_results['avg'][0]
+                enh_avg = enhanced_results['avg'][0]
+                mappo_avg = eval_results[num_uav]['mappo']['avg'][0]
+                if trad_avg > 0.001:
+                    print(f"\n  BA-MAPPO 相对提升:")
+                    print(f"    vs 传统算法: {(mappo_avg - trad_avg)/trad_avg*100:+.1f}%")
+                    print(f"    vs 增强算法: {(mappo_avg - enh_avg)/max(enh_avg,0.001)*100:+.1f}%")
 
         return eval_results
 
@@ -835,7 +867,12 @@ class ExperimentBAMAPPO:
                           use_biz_heads, use_attention_critic,
                           hidden_dim, critic_hidden_dim,
                           trained_uav_list=None):
-        """Phase 3: 多场景泛化验证"""
+        """
+        Phase 3: 多场景泛化验证
+
+        评估 BA-MAPPO 在不同业务场景下的泛化能力。
+        基线: 传统算法 + 增强算法 (与 Phase 2 一致，保持连贯性)。
+        """
         print("\n" + "-" * 60)
         print("Phase 3: 多场景泛化验证")
         print("-" * 60)
@@ -857,8 +894,6 @@ class ExperimentBAMAPPO:
         }
 
         scenario_results = {}
-
-        # 加载模型: 按场景 UAV 数量精确匹配 (Critic 依赖 num_agents)
         trained_uav_set = set(trained_uav_list) if trained_uav_list else set()
         if verbose:
             print(f"  已训练模型 UAV 数量: {trained_uav_list}")
@@ -869,19 +904,15 @@ class ExperimentBAMAPPO:
             s_uav = scenario_cfg['num_uav']
             s_cap = scenario_cfg['bs_capacity_range']
 
-            strategy_sats = {}
-            enhanced_sats = []
-            traditional_sats = []
-            mappo_sats = []
-
-            # 寻找与当前场景 UAV 数量精确匹配的训练模型
+            # ---- 评估 BA-MAPPO ----
+            mappo_avg_sats = []
             matching_uav = s_uav if s_uav in trained_uav_set else None
 
             if matching_uav is not None:
                 model_path = os.path.join(ExperimentBAMAPPO.MODEL_DIR,
                                           f'mappo_{num_bs}bs_{matching_uav}uav.pt')
                 if os.path.exists(model_path):
-                    print(f"  加载 BA-MAPPO 模型 (UAV={matching_uav}) 评估 {scenario_name}")
+                    print(f"  加载 BA-MAPPO 模型 (UAV={matching_uav})")
                     mappo_env = QMixHandoverEnv(
                         num_bs=num_bs, num_uav=matching_uav,
                         max_steps=num_steps, seed=GLOBAL_SEED + 9999,
@@ -896,7 +927,7 @@ class ExperimentBAMAPPO:
                         critic_hidden_dim=critic_hidden_dim,
                         use_biz_heads=use_biz_heads,
                         use_attention_critic=use_attention_critic,
-                        use_hierarchical=True,  # 与训练时的网络架构保持一致
+                        use_hierarchical=True,
                     )
                     mappo_agent.load(model_path)
 
@@ -905,7 +936,6 @@ class ExperimentBAMAPPO:
                         set_global_seed(seed)
                         obs_dict, global_state = mappo_env.reset()
                         mappo_agent.reset_hidden()
-                        ep_sats = []
                         for step in range(num_steps):
                             biz_types = {}
                             for uid in range(mappo_env.num_agents):
@@ -916,20 +946,17 @@ class ExperimentBAMAPPO:
                             next_obs, next_state, rewards, team_reward, done, info = mappo_env.step(actions)
                             obs_dict = next_obs
                             global_state = next_state
-                            ep_sats.append(info['avg_satisfaction'])
-                        mappo_sats.append(np.mean(ep_sats))
+                        mappo_avg_sats.append(_collect_biz_satisfaction(mappo_env)['avg'])
                 elif verbose:
                     print(f"  跳过 MAPPO: 模型文件不存在 {model_path}")
             elif verbose:
-                print(f"  跳过 MAPPO: 无 UAV={s_uav} 的训练模型 "
-                      f"(已有: {trained_uav_list})")
+                print(f"  跳过 MAPPO: 无 UAV={s_uav} 的训练模型 (已有: {trained_uav_list})")
 
-            # 固定动作基线
-            for baseline_name, baseline_fn in [('stay', lambda env, uid, step: 0),
-                                                ('best_sinr', lambda env, uid, step: 1)]:
-                rep_sats = []
+            # ---- 评估基线算法 (与 Phase 2 一致) ----
+            def _eval_scenario_baseline(baseline_name, run_fn):
+                avg_list = []
                 for rep in range(repeats):
-                    seed = GLOBAL_SEED + hash(scenario_name) % 10000 + rep * 1000 + hash(baseline_name) % 100
+                    seed = GLOBAL_SEED + hash(scenario_name) % 10000 + rep * 1000 + hash(baseline_name) % 10000
                     set_global_seed(seed)
                     eval_env = QMixHandoverEnv(
                         num_bs=num_bs, num_uav=s_uav,
@@ -937,68 +964,36 @@ class ExperimentBAMAPPO:
                         bs_capacity_range=s_cap,
                     )
                     eval_env.reset()
-                    for step in range(num_steps):
-                        actions = {uid: baseline_fn(eval_env, uid, step)
-                                   for uid in range(eval_env.num_agents)}
-                        eval_env.step(actions)
-                    avg_sat = np.mean([eval_env.env.uavs[uid].current_satisfaction
-                                       for uid in range(eval_env.num_agents)])
-                    rep_sats.append(avg_sat)
-                strategy_sats[baseline_name] = (np.mean(rep_sats), np.std(rep_sats))
+                    run_fn(eval_env, num_steps)
+                    avg_list.append(_collect_biz_satisfaction(eval_env)['avg'])
+                return (np.mean(avg_list), np.std(avg_list))
 
-            for rep in range(repeats):
-                seed = GLOBAL_SEED + hash(scenario_name) % 10000 + rep * 1000
-                set_global_seed(seed)
-                eval_env = QMixHandoverEnv(
-                    num_bs=num_bs, num_uav=s_uav,
-                    max_steps=num_steps, seed=seed,
-                    bs_capacity_range=s_cap,
-                )
-                eval_env.reset()
-                algo = EnhancedHandoverAlgorithm(eval_env.env)
-                for step in range(num_steps):
-                    algo.run_step(enable_load_balancing=True)
-                    eval_env.advance_env_only()
-                avg_sat = np.mean([eval_env.env.uavs[uid].current_satisfaction
-                                   for uid in range(eval_env.num_agents)])
-                enhanced_sats.append(avg_sat)
-
-            from .algorithms import IntegratedHandoverAlgorithm
-            for rep in range(repeats):
-                seed = GLOBAL_SEED + hash(scenario_name) % 10000 + rep * 1000
-                set_global_seed(seed)
-                eval_env = QMixHandoverEnv(
-                    num_bs=num_bs, num_uav=s_uav,
-                    max_steps=num_steps, seed=seed,
-                    bs_capacity_range=s_cap,
-                )
-                eval_env.reset()
-                algo = IntegratedHandoverAlgorithm(eval_env.env)
-                for step in range(num_steps):
-                    algo.run_step()
-                    eval_env.advance_env_only()
-                avg_sat = np.mean([eval_env.env.uavs[uid].current_satisfaction
-                                   for uid in range(eval_env.num_agents)])
-                traditional_sats.append(avg_sat)
-
-            best_strat = max(strategy_sats, key=lambda k: strategy_sats[k][0])
+            traditional_sat = _eval_scenario_baseline('traditional',
+                lambda e, steps: _run_algo_baseline(e, steps, IntegratedHandoverAlgorithm))
+            enhanced_sat = _eval_scenario_baseline('enhanced',
+                lambda e, steps: _run_algo_baseline(e, steps, EnhancedHandoverAlgorithm, enable_lb=True))
+            stay_sat = _eval_scenario_baseline('stay',
+                lambda e, steps: _run_fixed_action_baseline(e, steps, action=0))
 
             scenario_results[scenario_name] = {
                 'name_cn': scenario_names_cn.get(scenario_name, scenario_name),
-                'strategies': strategy_sats,
-                'best_strategy': best_strat,
-                'enhanced': (np.mean(enhanced_sats), np.std(enhanced_sats)),
-                'traditional': (np.mean(traditional_sats), np.std(traditional_sats)),
+                'traditional': traditional_sat,
+                'enhanced': enhanced_sat,
+                'ref_baseline_stay': stay_sat,
             }
-            if mappo_sats:
-                scenario_results[scenario_name]['mappo'] = (np.mean(mappo_sats), np.std(mappo_sats))
+            if mappo_avg_sats:
+                scenario_results[scenario_name]['mappo'] = (np.mean(mappo_avg_sats), np.std(mappo_avg_sats))
 
             if verbose:
-                print(f"    最优策略: {best_strat} ({strategy_sats[best_strat][0]:.4f})")
-                print(f"    增强算法: {np.mean(enhanced_sats):.4f}")
-                print(f"    传统算法: {np.mean(traditional_sats):.4f}")
-                if mappo_sats:
-                    print(f"    BA-MAPPO: {np.mean(mappo_sats):.4f} +/- {np.std(mappo_sats):.4f}")
+                print(f"    传统算法:   {traditional_sat[0]:.4f}")
+                print(f"    增强算法:   {enhanced_sat[0]:.4f}")
+                print(f"    [参考] stay: {stay_sat[0]:.4f}")
+                if mappo_avg_sats:
+                    m = scenario_results[scenario_name]['mappo']
+                    print(f"    BA-MAPPO:   {m[0]:.4f} +/- {m[1]:.4f}")
+                    trad = traditional_sat[0]
+                    if trad > 0.001:
+                        print(f"    BA-MAPPO vs 传统: {(m[0]-trad)/trad*100:+.1f}%")
 
         return scenario_results
 
@@ -1047,33 +1042,31 @@ class ExperimentBAMAPPO:
             ax.legend()
             ax.grid(True, alpha=0.3)
 
-        # 图3: 对比评估柱状图
+        # 图3: 对比评估柱状图 (核心对比: 传统 → 增强 → BA-MAPPO)
         ax = axes[0, 2]
         if 'evaluation' in all_results:
             uav_to_show = [u for u in num_uav_list if u in all_results.get('evaluation', {})]
             if uav_to_show:
                 x = np.arange(len(uav_to_show))
-                width = 0.2
-                mappo_vals = [all_results['evaluation'][u]['mappo']['satisfaction'][0] for u in uav_to_show]
-                enh_vals = [all_results['evaluation'][u]['enhanced']['satisfaction'][0] for u in uav_to_show]
-                trad_vals = [all_results['evaluation'][u]['traditional']['satisfaction'][0] for u in uav_to_show]
-                ax.bar(x - width, mappo_vals, width, label=mode_name, color=COLORS['warning'], alpha=0.8)
-                ax.bar(x, enh_vals, width, label='增强算法', color=COLORS['primary'], alpha=0.8)
-                ax.bar(x + width, trad_vals, width, label='传统算法', color=COLORS['danger'], alpha=0.8)
+                width = 0.25
+                mappo_vals = [all_results['evaluation'][u]['mappo']['avg'][0] for u in uav_to_show]
+                enh_vals = [all_results['evaluation'][u]['enhanced']['avg'][0] for u in uav_to_show]
+                trad_vals = [all_results['evaluation'][u]['traditional']['avg'][0] for u in uav_to_show]
+                ax.bar(x - width, trad_vals, width, label='传统算法(3GPP)', color=COLORS['danger'], alpha=0.8)
+                ax.bar(x, enh_vals, width, label='增强算法(本文)', color=COLORS['primary'], alpha=0.8)
+                ax.bar(x + width, mappo_vals, width, label=mode_name, color=COLORS['warning'], alpha=0.8)
                 ax.set_xticks(x)
                 ax.set_xticklabels([f'UAV={u}' for u in uav_to_show])
                 ax.set_ylabel('平均满意度')
-                ax.set_title('(c) 算法对比')
-                ax.legend()
+                ax.set_title('(c) 算法对比: 传统→增强→BA-MAPPO')
+                ax.legend(fontsize=8)
                 ax.grid(True, alpha=0.3, axis='y')
 
         # 图4: 策略分布热力图
         ax = axes[1, 0]
         if 'evaluation' in all_results:
-            # 使用实际的 action 标签 (stay, BS0, ..., BS{n-1}) 而非策略配置名
             uav_to_show = [u for u in num_uav_list if u in all_results.get('evaluation', {})]
             if uav_to_show:
-                # 从第一个 UAV 的 strategy_distribution 中提取实际使用的 action 标签
                 sample_dist = all_results['evaluation'][uav_to_show[0]].get('strategy_distribution', {})
                 strat_names = list(sample_dist.keys()) if sample_dist else ['stay']
                 matrix = np.zeros((len(uav_to_show), len(strat_names)))
@@ -1092,7 +1085,7 @@ class ExperimentBAMAPPO:
                     for j in range(matrix.shape[1]):
                         ax.text(j, i, f'{matrix[i,j]:.2f}', ha='center', va='center', fontsize=8)
 
-        # 图5: 多场景泛化对比
+        # 图5: 多场景泛化对比 (仅核心算法: 传统+增强+BA-MAPPO)
         ax = axes[1, 1]
         ax.axis('off')
         if 'scenarios' in all_results and all_results['scenarios']:
@@ -1101,24 +1094,21 @@ class ExperimentBAMAPPO:
             s_names = list(scenarios_data.keys())
             s_names_cn = [scenarios_data[s].get('name_cn', s) for s in s_names]
 
-            best_strat_sats = [scenarios_data[s]['strategies'][scenarios_data[s]['best_strategy']][0] for s in s_names]
-            enhanced_sats = [scenarios_data[s]['enhanced'][0] for s in s_names]
-            traditional_sats = [scenarios_data[s]['traditional'][0] for s in s_names]
+            trad_sats = [scenarios_data[s]['traditional'][0] for s in s_names]
+            enh_sats = [scenarios_data[s]['enhanced'][0] for s in s_names]
             mappo_scenario_sats = [scenarios_data[s].get('mappo', (0, 0))[0] if 'mappo' in scenarios_data[s] else 0 for s in s_names]
 
             x = np.arange(len(s_names))
-            width = 0.2
+            width = 0.25
             has_mappo = any('mappo' in scenarios_data[s] for s in s_names)
             if has_mappo:
-                offsets = [-1.5*width, -0.5*width, 0.5*width, 1.5*width]
-                ax2.bar(x + offsets[0], best_strat_sats, width, label='最优策略', color=COLORS['success'], alpha=0.8)
-                ax2.bar(x + offsets[1], enhanced_sats, width, label='增强算法', color=COLORS['primary'], alpha=0.8)
-                ax2.bar(x + offsets[2], traditional_sats, width, label='传统算法', color=COLORS['danger'], alpha=0.8)
-                ax2.bar(x + offsets[3], mappo_scenario_sats, width, label=mode_name, color=COLORS['warning'], alpha=0.8)
+                offsets = [-width, 0, width]
+                ax2.bar(x + offsets[0], trad_sats, width, label='传统算法', color=COLORS['danger'], alpha=0.8)
+                ax2.bar(x + offsets[1], enh_sats, width, label='增强算法', color=COLORS['primary'], alpha=0.8)
+                ax2.bar(x + offsets[2], mappo_scenario_sats, width, label=mode_name, color=COLORS['warning'], alpha=0.8)
             else:
-                ax2.bar(x - width, best_strat_sats, width, label='最优策略', color=COLORS['success'], alpha=0.8)
-                ax2.bar(x, enhanced_sats, width, label='增强算法', color=COLORS['primary'], alpha=0.8)
-                ax2.bar(x + width, traditional_sats, width, label='传统算法', color=COLORS['danger'], alpha=0.8)
+                ax2.bar(x - width/2, trad_sats, width, label='传统算法', color=COLORS['danger'], alpha=0.8)
+                ax2.bar(x + width/2, enh_sats, width, label='增强算法', color=COLORS['primary'], alpha=0.8)
             ax2.set_xticks(x)
             ax2.set_xticklabels(s_names_cn, rotation=20, ha='right', fontsize=8)
             ax2.set_ylabel('平均满意度')
@@ -1134,20 +1124,22 @@ class ExperimentBAMAPPO:
             for num_uav in num_uav_list:
                 if num_uav in all_results['evaluation']:
                     ev = all_results['evaluation'][num_uav]
-                    mp = ev['mappo']['satisfaction'][0]
-                    en = ev['enhanced']['satisfaction'][0]
-                    tr = ev['traditional']['satisfaction'][0]
+                    mp = ev['mappo']['avg'][0]
+                    en = ev['enhanced']['avg'][0]
+                    tr = ev['traditional']['avg'][0]
                     improvement_vs_trad = (mp - tr) / max(tr, 0.001) * 100
+                    improvement_vs_enh = (mp - en) / max(en, 0.001) * 100
                     text_lines.append(f'UAV={num_uav}:')
-                    text_lines.append(f'  {mode_name} vs 传统: +{improvement_vs_trad:.1f}%')
+                    text_lines.append(f'  {mode_name} vs 传统: {improvement_vs_trad:+.1f}%')
+                    text_lines.append(f'  {mode_name} vs 增强: {improvement_vs_enh:+.1f}%')
                     text_lines.append(f'  {mode_name}={mp:.4f}, 增强={en:.4f}, 传统={tr:.4f}')
                     text_lines.append('')
         if 'scenarios' in all_results:
-            text_lines.append('【场景最优策略】\n')
+            text_lines.append('【场景泛化】\n')
             for sn, sd in all_results['scenarios'].items():
-                line = f'  {sd["name_cn"]}: {sd["best_strategy"]}'
+                line = f'  {sd["name_cn"]}: 传统={sd["traditional"][0]:.4f}, 增强={sd["enhanced"][0]:.4f}'
                 if 'mappo' in sd:
-                    line += f' ({mode_name}={sd["mappo"][0]:.4f})'
+                    line += f', MAPPO={sd["mappo"][0]:.4f}'
                 text_lines.append(line)
 
         ax.text(0.05, 0.95, '\n'.join(text_lines), transform=ax.transAxes,
