@@ -1,0 +1,238 @@
+{
+  "source_config": {
+    "num_bs": 4,
+    "num_uav": 15,
+    "max_steps": 60,
+    "bs_capacity_range": [
+      60,
+      100
+    ]
+  },
+  "source_performance": 140.61170885031794,
+  "results_by_method": {
+    "zero_shot": [
+      {
+        "method": "zero_shot",
+        "avg_reward": 109.51722679212446,
+        "std_reward": 1.181714127086014,
+        "avg_satisfaction": 0.5,
+        "min_reward": 107.15576093012916,
+        "max_reward": 110.15635123256362,
+        "final_reward": 110.13272495123395,
+        "scene_similarity": 0.8490789060033948,
+        "difficulty_score": 0.0,
+        "transfer_efficiency": 127.4821509721619
+      },
+      {
+        "method": "zero_shot",
+        "avg_reward": 120.26936643061552,
+        "std_reward": 2.0423160875449717,
+        "avg_satisfaction": 0.5,
+        "min_reward": 117.29131861607941,
+        "max_reward": 122.8789239808468,
+        "final_reward": 117.29131861607941,
+        "scene_similarity": 0.9261617519954302,
+        "difficulty_score": 0.0,
+        "transfer_efficiency": 128.47071157763196
+      },
+      {
+        "method": "zero_shot",
+        "avg_reward": 156.56193211435053,
+        "std_reward": 5.2546848961256005,
+        "avg_satisfaction": 0.5,
+        "min_reward": 147.5704649050102,
+        "max_reward": 162.47071773620053,
+        "final_reward": 147.5704649050102,
+        "scene_similarity": 0.999999978569252,
+        "difficulty_score": 0.0,
+        "transfer_efficiency": 155.0118172637324
+      },
+      {
+        "method": "zero_shot",
+        "avg_reward": 161.57160224086948,
+        "std_reward": 3.226930295282014,
+        "avg_satisfaction": 0.5,
+        "min_reward": 158.35093588357094,
+        "max_reward": 165.97230316910998,
+        "final_reward": 164.99153788534414,
+        "scene_similarity": 0.9706421717717432,
+        "difficulty_score": 0.0,
+        "transfer_efficiency": 164.76101772061799
+      },
+      {
+        "method": "zero_shot",
+        "avg_reward": 115.84974763955313,
+        "std_reward": 1.6882353270085813,
+        "avg_satisfaction": 0.5,
+        "min_reward": 113.25119332303396,
+        "max_reward": 118.21893364995742,
+        "final_reward": 113.25119332303396,
+        "scene_similarity": 0.8114587203000125,
+        "difficulty_score": 0.0,
+        "transfer_efficiency": 141.02929919259068
+      },
+      {
+        "method": "zero_shot",
+        "avg_reward": 130.1832285676214,
+        "std_reward": 1.5376419293267172,
+        "avg_satisfaction": 0.5,
+        "min_reward": 127.95434844289149,
+        "max_reward": 132.5159360855195,
+        "final_reward": 129.8582487982925,
+        "scene_similarity": 0.7421090452564488,
+        "difficulty_score": 0.0,
+        "transfer_efficiency": 173.0908960458419
+      }
+    ],
+    "fine_tuning": [
+      {
+        "method": "fine_tuning",
+        "avg_reward": 108.51363449050977,
+        "std_reward": 1.3089464163862712,
+        "avg_satisfaction": 0.5,
+        "min_reward": 107.05458744051396,
+        "max_reward": 110.1765673970181,
+        "final_reward": 109.99160275348312,
+        "scene_similarity": 0.8490789060033948,
+        "difficulty_score": 0.0,
+        "transfer_efficiency": 126.3139319708555
+      },
+      {
+        "method": "fine_tuning",
+        "avg_reward": 120.92644276285937,
+        "std_reward": 1.4363801672035807,
+        "avg_satisfaction": 0.5,
+        "min_reward": 118.28088236178891,
+        "max_reward": 122.26187589543953,
+        "final_reward": 122.0896324615194,
+        "scene_similarity": 0.9261617519954302,
+        "difficulty_score": 0.0,
+        "transfer_efficiency": 129.17259491226218
+      },
+      {
+        "method": "fine_tuning",
+        "avg_reward": 154.42651962442855,
+        "std_reward": 3.0837053397160035,
+        "avg_satisfaction": 0.5,
+        "min_reward": 148.9868606313399,
+        "max_reward": 158.53997237605307,
+        "final_reward": 154.32438482108296,
+        "scene_similarity": 0.999999978569252,
+        "difficulty_score": 0.0,
+        "transfer_efficiency": 152.89754742686867
+      },
+      {
+        "method": "fine_tuning",
+        "avg_reward": 156.35694020372392,
+        "std_reward": 3.0707408552153437,
+        "avg_satisfaction": 0.5,
+        "min_reward": 152.51723825562496,
+        "max_reward": 161.60642189290715,
+        "final_reward": 161.60642189290715,
+        "scene_similarity": 0.9706421717717432,
+        "difficulty_score": 0.0,
+        "transfer_efficiency": 159.44341851139353
+      },
+      {
+        "method": "fine_tuning",
+        "avg_reward": 111.2860521366767,
+        "std_reward": 1.1199767814589592,
+        "avg_satisfaction": 0.5,
+        "min_reward": 109.61453825536141,
+        "max_reward": 112.50643098799529,
+        "final_reward": 110.32863928504263,
+        "scene_similarity": 0.8114587203000125,
+        "difficulty_score": 0.0,
+        "transfer_efficiency": 135.4736998787144
+      },
+      {
+        "method": "fine_tuning",
+        "avg_reward": 129.40363160749,
+        "std_reward": 0.7995120462772617,
+        "avg_satisfaction": 0.5,
+        "min_reward": 128.49910500702234,
+        "max_reward": 130.53887296193255,
+        "final_reward": 128.49910500702234,
+        "scene_similarity": 0.7421090452564488,
+        "difficulty_score": 0.0,
+        "transfer_efficiency": 172.05434826723413
+      }
+    ],
+    "meta_learning": [
+      {
+        "method": "meta_learning",
+        "avg_reward": 108.46177621865186,
+        "std_reward": 1.0071543569773802,
+        "avg_satisfaction": 0.5,
+        "min_reward": 107.09316943930764,
+        "max_reward": 110.16388591150962,
+        "final_reward": 110.16388591150962,
+        "scene_similarity": 0.8490789060033948,
+        "difficulty_score": 0.0,
+        "transfer_efficiency": 126.25356700147316
+      },
+      {
+        "method": "meta_learning",
+        "avg_reward": 120.82241044436721,
+        "std_reward": 1.3426568094727935,
+        "avg_satisfaction": 0.5,
+        "min_reward": 118.40754828784048,
+        "max_reward": 122.21465222890954,
+        "final_reward": 121.89582723581023,
+        "scene_similarity": 0.9261617519954302,
+        "difficulty_score": 0.0,
+        "transfer_efficiency": 129.06146847682473
+      },
+      {
+        "method": "meta_learning",
+        "avg_reward": 158.20812153536605,
+        "std_reward": 1.2710779006359858,
+        "avg_satisfaction": 0.5,
+        "min_reward": 157.00512354596907,
+        "max_reward": 160.40917034336437,
+        "final_reward": 160.40917034336437,
+        "scene_similarity": 0.999999978569252,
+        "difficulty_score": 0.0,
+        "transfer_efficiency": 156.6417078141733
+      },
+      {
+        "method": "meta_learning",
+        "avg_reward": 162.85722451489468,
+        "std_reward": 2.502801166660425,
+        "avg_satisfaction": 0.5,
+        "min_reward": 158.1900172545979,
+        "max_reward": 165.62835863209358,
+        "final_reward": 165.62835863209358,
+        "scene_similarity": 0.9706421717717432,
+        "difficulty_score": 0.0,
+        "transfer_efficiency": 166.07201811508648
+      },
+      {
+        "method": "meta_learning",
+        "avg_reward": 113.34641646431143,
+        "std_reward": 1.190896416619088,
+        "avg_satisfaction": 0.5,
+        "min_reward": 111.98460565540014,
+        "max_reward": 115.16217401870527,
+        "final_reward": 112.65876094004419,
+        "scene_similarity": 0.8114587203000125,
+        "difficulty_score": 0.0,
+        "transfer_efficiency": 137.98187743738984
+      },
+      {
+        "method": "meta_learning",
+        "avg_reward": 129.43385862754943,
+        "std_reward": 0.9570533385850565,
+        "avg_satisfaction": 0.5,
+        "min_reward": 128.13007256365185,
+        "max_reward": 130.77188623417032,
+        "final_reward": 128.13007256365185,
+        "scene_similarity": 0.7421090452564488,
+        "difficulty_score": 0.0,
+        "transfer_efficiency": 172.09453794484813
+      }
+    ]
+  },
+  "scenarios_tested": 6,
+  "timestamp": "20260406_194346"
+}

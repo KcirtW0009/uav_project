@@ -1396,12 +1396,19 @@ class MAPPOAgent:
                 total_adv_mean += adv_batch.mean().item()
                 total_ret_mean += ret_batch.mean().item()
 
-            # KL Divergence Early Stop (标准 PPO 实践)
+            # KL Divergence Early Stop (自适应策略)
             with torch.no_grad():
                 approx_kl = ((ratio - 1.0) - (new_log_probs - old_log_probs)).mean().item()
-            if approx_kl > 0.2:  # 大幅放宽阈值以适应hidden state不一致
+
+            # 自适应KL阈值：初期宽松，后期严格
+            adaptive_kl_threshold = 0.5 * (1 + 1 / max(1, self._current_train_step / 100))
+            adaptive_kl_threshold = min(adaptive_kl_threshold, 0.8)  # 上限0.8
+
+            if approx_kl > adaptive_kl_threshold:
                 if num_updates == 0:
-                    print(f"[DEBUG] KL early stop! kl={approx_kl:.4f}")
+                    print(f"[DEBUG-KL] Early stop at step {num_updates+1}: "
+                          f"kl={approx_kl:.4f} > threshold={adaptive_kl_threshold:.4f} "
+                          f"(train_step={self._current_train_step})")
                 break
 
             surr1 = ratio * adv_batch
