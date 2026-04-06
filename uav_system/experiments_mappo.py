@@ -263,10 +263,10 @@ class ExperimentBAMAPPO:
                 critic_hidden_dim=critic_hidden_dim,
                 actor_lr=actor_lr,
                 critic_lr=critic_lr,
-                gamma=0.95,
+                gamma=0.99,
                 gae_lambda=0.95,
-                clip_epsilon=0.2,
-                entropy_coef=0.05,
+                clip_epsilon=0.25,
+                entropy_coef=0.15,
                 value_coef=0.5,
                 rollout_length=max(rollout_length, num_steps),
                 num_epochs=5,
@@ -302,6 +302,8 @@ class ExperimentBAMAPPO:
             episode_actor_losses = []
             episode_critic_losses = []
             episode_entropies = []
+            episode_actor_grads = []
+            episode_value_mses = []
             best_reward = float('-inf')
             best_sat = float('-inf')  # satisfaction-based 模型选择
             save_interval = 50
@@ -309,13 +311,14 @@ class ExperimentBAMAPPO:
             best_model_path = model_path.replace('.pt', '_best.pt')
             latest_model_path = model_path.replace('.pt', '_latest.pt')
             # ---- Early stopping 参数 (基于 satisfaction 而非 reward) ----
-            early_stop_patience = train_episodes // 5       # 200 轮无改善则停止
+            early_stop_patience = train_episodes // 3       # ~333 轮无改善则停止（放宽）
             early_stop_min_delta = 0.002                    # 最小改善幅度
             early_stop_warmup = train_episodes // 5         # 前 20% 不计入 best_sat 追踪
             no_improve_count = 0
             early_stopped = False
             # 早期健康检查: 在 10% 训练进度时检查 reward 是否在正增长
             health_check_ep = max(10, train_episodes // 10)
+            mid_check_eps = [2 * health_check_ep, 3 * health_check_ep]  # Ep200, Ep300
 
             # 设置 LR schedule 的总步数
             agent._total_train_steps = train_episodes
@@ -417,11 +420,25 @@ class ExperimentBAMAPPO:
                     episode_actor_losses.append(train_stats['actor_loss'])
                     episode_critic_losses.append(train_stats['critic_loss'])
                     episode_entropies.append(train_stats['entropy'])
+                    if 'actor_grad_norm' in train_stats:
+                        episode_actor_grads.append(train_stats['actor_grad_norm'])
+                    if 'value_mse' in train_stats:
+                        episode_value_mses.append(train_stats['value_mse'])
+                    if 'actor_grad_norm' in train_stats:
+                        episode_actor_grads.append(train_stats['actor_grad_norm'])
+                    if 'value_mse' in train_stats:
+                        episode_value_mses.append(train_stats['value_mse'])
+                    if 'actor_grad_norm' in train_stats:
+                        episode_actor_grads.append(train_stats['actor_grad_norm'])
+                    if 'value_mse' in train_stats:
+                        episode_value_mses.append(train_stats['value_mse'])
 
                 if verbose and (ep + 1) % 30 == 0:
                     avg_al = np.mean(episode_actor_losses[-20:]) if episode_actor_losses else 0
                     avg_cl = np.mean(episode_critic_losses[-20:]) if episode_critic_losses else 0
                     avg_ent = np.mean(episode_entropies[-20:]) if episode_entropies else 0
+                    avg_ag = np.mean(episode_actor_grads[-20:]) if episode_actor_grads else 0
+                    avg_vmse = np.mean(episode_value_mses[-20:]) if episode_value_mses else 0
                     recent_rews = episode_rewards[-30:]
                     stay_pct = ep_action_counts['stay'] / max(sum(ep_action_counts.values()), 1) * 100
                     # reward 组分 + 切换诊断摘要
@@ -544,8 +561,8 @@ class ExperimentBAMAPPO:
                     episode_critic_losses.append(train_stats['critic_loss'])
                     episode_entropies.append(train_stats['entropy'])
 
-                # ---- 早期健康检查 ----
-                if ep == health_check_ep and verbose:
+                # ---- 早期/中期健康检查 ----
+                if (ep == health_check_ep or ep + 1 in mid_check_eps) and verbose:
                     recent_avg = np.mean(episode_rewards[-health_check_ep:])
                     early_avg = np.mean(episode_rewards[:max(1, health_check_ep // 2)])
                     stay_pct = ep_action_counts['stay'] / max(sum(ep_action_counts.values()), 1) * 100
@@ -568,12 +585,37 @@ class ExperimentBAMAPPO:
                           f"变异系数={reward_std/max(abs(np.mean(episode_rewards)),0.01)*100:.1f}%")
                     print(f"  Satisfaction: {np.mean(episode_satisfactions):.3f}")
                     print(f"  Action 分布: {action_str}")
+
+                    # [增强] 基站容量利用率分布
+                    if hasattr(env, 'env') and hasattr(env.env, 'base_stations'):
+                        bs_list = env.env.base_stations
+                        cap_utils = []
+                        for bs_idx, bs in enumerate(bs_list):
+                            if hasattr(bs, 'available_capacity') and hasattr(bs, 'total_capacity'):
+                                total_cap = getattr(bs, 'total_capacity', None)
+                                avail = bs.available_capacity
+                                if total_cap and total_cap > 0:
+                                    used_pct = (total_cap - avail) / total_cap * 100
+                                    cap_utils.append((bs_idx, used_pct, avail, total_cap))
+                        if cap_utils:
+                            avg_load = np.mean([c[1] for c in cap_utils])
+                            max_load = max(c[1] for c in cap_utils)
+                            max_bs = max(cap_utils, key=lambda x: x[1])
+                            print(f"  容量利用率: 平均={avg_load:.0f}%, 最高={max_load:.0f}% "
+                                  f"(BS#{max_bs[0]}: 已用{max_bs[3]-max_bs[2]}/{max_bs[3]})")
+                            if avg_load > 90:
+                                print(f"    [OVERLOAD] 系统过载! 平均负载>90%，断连率高是预期行为")
+
+                    # [增强] 增强算法使用概率
+                    if hasattr(agent, 'enhanced_algorithm_prob'):
+                        print(f"  增强算法概率: {agent.enhanced_algorithm_prob:.2%} "
+                              f"(ep {ep+1}/{train_episodes})")
                     if recent_avg <= early_avg and len(episode_rewards) > health_check_ep // 2:
-                        print(f"  ⚠ Reward 无上升趋势 (前期={early_avg:.2f} → 近期={recent_avg:.2f})")
+                        print(f"  [WARN] Reward 无上升趋势 (前期={early_avg:.2f} -> 近期={recent_avg:.2f})")
                     else:
-                        print(f"  ✓ Reward 趋势正常 (前期={early_avg:.2f} → 近期={recent_avg:.2f})")
+                        print(f"  [OK] Reward 趋势正常 (前期={early_avg:.2f} -> 近期={recent_avg:.2f})")
                     if reward_std / max(abs(np.mean(episode_rewards)), 0.01) > 0.3:
-                        print(f"  ⚠ Reward 变异系数 > 30%，PPO 难以收敛 — 考虑 reward 归一化")
+                        print(f"  [WARN] Reward 变异系数 > 30%，PPO 难以收敛 -- 考虑 reward 归一化")
                     # Reward 组分
                     if ep_reward_diag['count'] > 0:
                         n = ep_reward_diag['count']
@@ -613,9 +655,10 @@ class ExperimentBAMAPPO:
                     avg_al = np.mean(episode_actor_losses[-20:]) if episode_actor_losses else 0
                     avg_cl = np.mean(episode_critic_losses[-20:]) if episode_critic_losses else 0
                     avg_ent = np.mean(episode_entropies[-20:]) if episode_entropies else 0
+                    avg_ag = np.mean(episode_actor_grads[-20:]) if episode_actor_grads else 0
+                    avg_vmse = np.mean(episode_value_mses[-20:]) if episode_value_mses else 0
                     recent_rews = episode_rewards[-30:]
                     stay_pct = ep_action_counts['stay'] / max(sum(ep_action_counts.values()), 1) * 100
-                    # reward 组分 + 切换诊断摘要
                     n = max(ep_reward_diag['count'], 1)
                     rd_str = (f"Δs={ep_reward_diag['delta_sum']/n:.2f} "
                               f"biz={ep_reward_diag['biz_reward']/n:.2f} "
@@ -626,12 +669,21 @@ class ExperimentBAMAPPO:
                     sr = ep_reward_diag.get('switch_rollback', 0)
                     sd = ep_reward_diag.get('switch_disconnect', 0)
                     sw_str = f"sw={sa}(ok={ss},rb={sr},dc={sd})" if sa > 0 else "sw=0"
+                    total_steps = (ep + 1) * num_steps
+                    dc_rate = ep_disconnected_steps / max(total_steps, 1) * 100
+                    dc_trend = "[BAD]" if dc_rate > 30 else ("[WARN]" if dc_rate > 15 else "[OK]")
                     print(f"  标准环境 Episode {ep+1}/{train_episodes}: "
-                          f"reward={episode_reward:.1f}(μ={np.mean(recent_rews):.1f},σ={np.std(recent_rews):.1f}), "
+                          f"reward={episode_reward:.1f}(mu={np.mean(recent_rews):.1f},sigma={np.std(recent_rews):.1f}), "
                           f"sat={np.mean(episode_sat):.3f}, "
                           f"stay={stay_pct:.0f}%, {sw_str}, "
+                          f"dc={dc_rate:.0f}%{dc_trend}, "
                           f"a_loss={avg_al:.4f}, c_loss={avg_cl:.2f}, "
-                          f"H={avg_ent:.3f} | {rd_str}")
+                          f"H={avg_ent:.3f}, grad={avg_ag:.2f}, vMSE={avg_vmse:.1f} | {rd_str}")
+                    if avg_al < 1e-6 and avg_cl < 1e-6:
+                        print(f"    [WARN] WARNING: Loss values near zero! Possible causes:")
+                        print(f"           - Policy not updating (ratio~=1, insufficient exploration)")
+                        print(f"           - Advantage values too small (weak reward signal)")
+                        print(f"           - Suggestion: increase entropy_coef or check reward design")
 
                 # ---- Early stopping 判断 (基于 satisfaction) ----
                 ep_sat = np.mean(episode_sat)
@@ -877,12 +929,16 @@ class ExperimentBAMAPPO:
         print("Phase 3: 多场景泛化验证")
         print("-" * 60)
 
+        # 场景定义：多场景泛化验证
+        # 容量设计原则：保持与训练时 bs_capacity_range 一致的负载率
+        # 训练配置：UAV=30/50, BS=8, capacity=(80,200), 负载率约 40-80%
+        # 泛化场景按比例缩放：capacity_per_bs ≈ num_uav * avg_demand / bs_count * load_factor
         scenarios = {
-            'default':               {'num_uav': 50, 'bs_capacity_range': (500, 1000)},
-            'smart_city':            {'num_uav': 400, 'bs_capacity_range': (1500, 2400)},
-            'industrial_inspection': {'num_uav': 300, 'bs_capacity_range': (1400, 2300)},
-            'emergency_rescue':      {'num_uav': 300, 'bs_capacity_range': (900, 1200)},
-            'logistics_delivery':    {'num_uav': 500, 'bs_capacity_range': (1200, 2100)},
+            'default':               {'num_uav': 50,  'bs_capacity_range': (100, 250)},
+            'smart_city':            {'num_uav': 400, 'bs_capacity_range': (800, 1600)},
+            'industrial_inspection': {'num_uav': 300, 'bs_capacity_range': (600, 1200)},
+            'emergency_rescue':      {'num_uav': 200, 'bs_capacity_range': (400, 800)},
+            'logistics_delivery':    {'num_uav': 500, 'bs_capacity_range': (1000, 2000)},
         }
 
         scenario_names_cn = {
@@ -898,59 +954,97 @@ class ExperimentBAMAPPO:
         if verbose:
             print(f"  已训练模型 UAV 数量: {trained_uav_list}")
 
+        # 预加载所有可用模型（避免重复加载）
+        # 关键：必须用与训练时相同的环境参数来获取正确的 obs_dim / state_dim
+        loaded_models = {}
+        for t_uav in sorted(trained_uav_set):
+            model_path = os.path.join(ExperimentBAMAPPO.MODEL_DIR,
+                                      f'mappo_{num_bs}bs_{t_uav}uav.pt')
+            if os.path.exists(model_path):
+                try:
+                    # 动态获取正确的 obs_dim 和 state_dim
+                    _tmp_env = QMixHandoverEnv(
+                        num_bs=num_bs, num_uav=t_uav,
+                        max_steps=1, seed=0,
+                        bs_capacity_range=bs_capacity_range,
+                        pos_range=pos_range,
+                    )
+                    agent_tmp = MAPPOAgent(
+                        num_agents=t_uav,
+                        obs_dim=_tmp_env.obs_dim,
+                        state_dim=_tmp_env.state_dim,
+                        action_dim=_tmp_env.action_dim,
+                        hidden_dim=hidden_dim, critic_hidden_dim=critic_hidden_dim,
+                        use_biz_heads=use_biz_heads,
+                        use_attention_critic=use_attention_critic,
+                        use_hierarchical=True,
+                    )
+                    agent_tmp.load(model_path)
+                    loaded_models[t_uav] = agent_tmp
+                    if verbose:
+                        print(f"  预加载模型: UAV={t_uav} (obs_dim={_tmp_env.obs_dim}, state_dim={_tmp_env.state_dim})")
+                except Exception as e:
+                    if verbose:
+                        print(f"  加载模型 UAV={t_uav} 失败: {e}")
+                        import traceback
+                        tb_lines = traceback.format_exc().split('\n')
+                        for line in tb_lines:
+                            if 'size mismatch' in line or 'Error' in line or 'Missing' in line:
+                                print(f"    ↳ {line.strip()}")
+
         for scenario_name, scenario_cfg in scenarios.items():
             print(f"\n>>> 场景: {scenario_name} ({scenario_names_cn.get(scenario_name, scenario_name)}) <<<")
 
             s_uav = scenario_cfg['num_uav']
             s_cap = scenario_cfg['bs_capacity_range']
 
-            # ---- 评估 BA-MAPPO ----
+            # ---- 评估 BA-MAPPO（支持跨 UAV 泛化）----
             mappo_avg_sats = []
-            matching_uav = s_uav if s_uav in trained_uav_set else None
+            mappo_model_source = None
+
+            # 策略1: 精确匹配
+            if s_uav in loaded_models:
+                matching_uav = s_uav
+                mappo_model_source = f"exact(UAV={s_uav})"
+            # 策略2: 选择最接近的已训练模型（CTDE 架构允许跨数量泛化）
+            elif loaded_models:
+                matching_uav = min(loaded_models.keys(), key=lambda x: abs(x - s_uav))
+                mappo_model_source = f"nearest(trained={matching_uav}, target={s_uav})"
+                if verbose:
+                    print(f"  [泛化] 使用最近训练模型 UAV={matching_uav} 评估 UAV={s_uav} 场景")
+            else:
+                matching_uav = None
 
             if matching_uav is not None:
-                model_path = os.path.join(ExperimentBAMAPPO.MODEL_DIR,
-                                          f'mappo_{num_bs}bs_{matching_uav}uav.pt')
-                if os.path.exists(model_path):
-                    print(f"  加载 BA-MAPPO 模型 (UAV={matching_uav})")
-                    mappo_env = QMixHandoverEnv(
-                        num_bs=num_bs, num_uav=matching_uav,
-                        max_steps=num_steps, seed=GLOBAL_SEED + 9999,
-                        bs_capacity_range=s_cap,
-                    )
-                    mappo_agent = MAPPOAgent(
-                        num_agents=mappo_env.num_agents,
-                        obs_dim=mappo_env.obs_dim,
-                        state_dim=mappo_env.state_dim,
-                        action_dim=mappo_env.action_dim,
-                        hidden_dim=hidden_dim,
-                        critic_hidden_dim=critic_hidden_dim,
-                        use_biz_heads=use_biz_heads,
-                        use_attention_critic=use_attention_critic,
-                        use_hierarchical=True,
-                    )
-                    mappo_agent.load(model_path)
+                base_agent = loaded_models[matching_uav]
+                # 创建目标场景环境
+                mappo_env = QMixHandoverEnv(
+                    num_bs=num_bs, num_uav=s_uav,
+                    max_steps=num_steps, seed=GLOBAL_SEED + 9999,
+                    bs_capacity_range=s_cap,
+                )
 
-                    for rep in range(repeats):
-                        seed = GLOBAL_SEED + hash(scenario_name) % 10000 + rep * 1000
-                        set_global_seed(seed)
-                        obs_dict, global_state = mappo_env.reset()
-                        mappo_agent.reset_hidden()
-                        for step in range(num_steps):
-                            biz_types = {}
-                            for uid in range(mappo_env.num_agents):
-                                uav = mappo_env.env.uavs[uid]
-                                biz_types[uid] = uav.true_business_type.value
-                            actions, _, _, _ = mappo_agent.select_actions(
-                                obs_dict, global_state, biz_types, training=False)
-                            next_obs, next_state, rewards, team_reward, done, info = mappo_env.step(actions)
-                            obs_dict = next_obs
-                            global_state = next_state
-                        mappo_avg_sats.append(_collect_biz_satisfaction(mappo_env)['avg'])
-                elif verbose:
-                    print(f"  跳过 MAPPO: 模型文件不存在 {model_path}")
+                for rep in range(repeats):
+                    seed = GLOBAL_SEED + hash(scenario_name) % 10000 + rep * 1000
+                    set_global_seed(seed)
+                    obs_dict, global_state = mappo_env.reset()
+                    base_agent.reset_hidden()
+                    for step in range(num_steps):
+                        biz_types = {}
+                        for uid in range(mappo_env.num_agents):
+                            uav = mappo_env.env.uavs[uid]
+                            biz_types[uid] = uav.true_business_type.value
+                        actions, _, _, _ = base_agent.select_actions(
+                            obs_dict, global_state, biz_types, training=False)
+                        next_obs, next_state, rewards, team_reward, done, info = mappo_env.step(actions)
+                        obs_dict = next_obs
+                        global_state = next_state
+                    mappo_avg_sats.append(_collect_biz_satisfaction(mappo_env)['avg'])
+
+                if verbose:
+                    print(f"  BA-MAPPO 模型来源: {mappo_model_source}")
             elif verbose:
-                print(f"  跳过 MAPPO: 无 UAV={s_uav} 的训练模型 (已有: {trained_uav_list})")
+                print(f"  跳过 MAPPO: 无可用训练模型")
 
             # ---- 评估基线算法 (与 Phase 2 一致) ----
             def _eval_scenario_baseline(baseline_name, run_fn):
@@ -983,6 +1077,7 @@ class ExperimentBAMAPPO:
             }
             if mappo_avg_sats:
                 scenario_results[scenario_name]['mappo'] = (np.mean(mappo_avg_sats), np.std(mappo_avg_sats))
+                scenario_results[scenario_name]['mappo_source'] = mappo_model_source
 
             if verbose:
                 print(f"    传统算法:   {traditional_sat[0]:.4f}")
@@ -990,10 +1085,11 @@ class ExperimentBAMAPPO:
                 print(f"    [参考] stay: {stay_sat[0]:.4f}")
                 if mappo_avg_sats:
                     m = scenario_results[scenario_name]['mappo']
-                    print(f"    BA-MAPPO:   {m[0]:.4f} +/- {m[1]:.4f}")
+                    src = scenario_results[scenario_name].get('mappo_source', '')
+                    print(f"    BA-MAPPO:   {m[0]:.4f} +/- {m[1]:.4f}  ({src})")
                     trad = traditional_sat[0]
                     if trad > 0.001:
-                        print(f"    BA-MAPPO vs 传统: {(m[0]-trad)/trad*100:+.1f}%")
+                        print(f"    vs 传统: {(m[0]-trad)/trad*100:+.1f}%")
 
         return scenario_results
 

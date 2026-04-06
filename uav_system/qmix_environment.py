@@ -589,8 +589,8 @@ class QMixHandoverEnv:
             action = actions.get(uid, 0)
             biz_type = uav.true_business_type.value
 
-            # a. 满意度变化 (核心信号) - 增加权重
-            r_delta = 5.0 * delta_sat
+            # a. 满意度变化 (核心信号) - 增加权重以强化学习信号
+            r_delta = 8.0 * delta_sat
             ep_delta_sum += r_delta
 
             # b. 价值奖励：基于预测的未来满意度
@@ -628,23 +628,27 @@ class QMixHandoverEnv:
                 # 尝试切换但未成功 (allocation 失败)
                 r_action = -0.1   # 减少尝试切换但失败的惩罚
             else:
-                # 留守
-                r_action = -0.05 if new_sat > 0.7 else -0.15  # 进一步减少留守奖励
+                # 留守：满意度高时给予小奖励（鼓励稳定连接）
+                r_action = 0.03 if new_sat > 0.7 else (-0.01 if new_sat > 0.4 else -0.02)
             ep_action_reward_sum += r_action
 
-            # e. 连接状态奖励
+            # e. 连接状态奖励（强化连接稳定性信号）
             is_connected = uav.connected_bs_id is not None
             was_connected = not self._last_disconnected.get(uid, False)
-            r_connect = 1.0 if is_connected else -2.0
-            if not is_connected and was_connected:
-                r_connect -= 1.0  # 额外惩罚断连
+            if is_connected:
+                r_connect = 2.0 if new_sat > 0.5 else 1.0  # 基础奖励提升（之前1.0）
+            else:
+                if was_connected:
+                    r_connect = -4.0  # 从连接→断连：重度惩罚
+                else:
+                    r_connect = -2.5  # 持续断连：中度惩罚
             ep_connect_reward_sum += r_connect
 
             # 综合奖励
             r_individual = r_delta + r_value + r_biz + r_action + r_connect
 
             # 奖励平滑：限制奖励范围，减少极端值
-            r_individual = np.clip(r_individual, -10.0, 10.0)
+            r_individual = np.clip(r_individual, -10.0, 20.0)
 
             rewards_raw[uid] = r_individual
             team_reward += r_individual

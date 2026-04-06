@@ -349,6 +349,66 @@ class EnhancedHandoverAlgorithm:
 
     # ==================== 决策 ====================
 
+    def _is_high_load_mode(self) -> bool:
+        """判断系统是否处于高负载模式（需要保守策略）"""
+        if not hasattr(self.env, 'base_stations') or not self.env.base_stations:
+            return False
+        total_capacity = 0
+        used_capacity = 0
+        for bs in self.env.base_stations.values():
+            if hasattr(bs, 'total_capacity') and hasattr(bs, 'available_capacity'):
+                total_cap = bs.total_capacity
+                avail = bs.available_capacity
+                if total_cap > 0:
+                    total_capacity += total_cap
+                    used_capacity += (total_cap - avail)
+        if total_capacity == 0:
+            return False
+        load_ratio = used_capacity / total_capacity
+        self._current_load_ratio = load_ratio
+        return load_ratio > 0.80
+
+    def _conservative_decision(self, uav_id: int, t_start: float) -> Optional[Tuple[int, float]]:
+        """
+        高负载模式下的保守决策（类 A3 策略）：
+        - 仅在 SINR 显著改善时切换（>3dB 迟滞）
+        - 不使用 ε-greedy 探索
+        - 不执行降级搜索（避免分配失败）
+        - 不触发抢占/负载均衡副作用
+        """
+        uav = self.env.uavs[uav_id]
+        current_bs_id = uav.connected_bs_id
+
+        # 未连接：仍用宽松策略
+        if current_bs_id is None:
+            best_bs, best_sinr = None, -999
+            for bs_id in self.env.base_stations.keys():
+                sinr = self.env.sinr_matrix[uav_id, bs_id]
+                if sinr > best_sinr:
+                    bs = self.env.base_stations[bs_id]
+                    if bs.available_capacity >= uav.required_rate * 0.9:
+                        best_bs, best_sinr = bs_id, sinr
+            self.decision_time_history.append((time() - t_start) * 1000)
+            if best_bs is not None:
+                return (best_bs, 1.0)
+            return None
+
+        current_sinr = self.env.sinr_matrix[uav_id, current_bs_id]
+        hysteresis = 3.0  # 高负载下增大迟滞到 3dB（比标准 A3 的 2dB 更保守）
+
+        for bs_id in self.env.base_stations.keys():
+            if bs_id == current_bs_id:
+                continue
+            neighbor_sinr = self.env.sinr_matrix[uav_id, bs_id]
+            if neighbor_sinr > current_sinr + hysteresis:
+                bs = self.env.base_stations[bs_id]
+                if bs.available_capacity >= uav.required_rate * 0.9:
+                    self.decision_time_history.append((time() - t_start) * 1000)
+                    return (bs_id, 1.0)
+
+        self.decision_time_history.append((time() - t_start) * 1000)
+        return None
+
     def _emergency_select(self, uav) -> Tuple[Optional[int], float]:
         """紧急切换：选择SINR最高且有足够容量的基站"""
         best_bs, best_sinr, best_ratio = None, -999, 1.0
@@ -363,12 +423,19 @@ class EnhancedHandoverAlgorithm:
         return best_bs, best_ratio
 
     def make_intelligent_decision(self, uav_id: int) -> Optional[Tuple[int, float]]:
-        """增强决策：业务感知效用函数 + 动态阈值 + 降级搜索"""
+        """增强决策：业务感知效用函数 + 动态阈值 + 降级搜索 + 负载自适应"""
         from time import time
         t_start = time()
         self.decision_calls += 1
         uav = self.env.uavs[uav_id]
         current_bs_id = uav.connected_bs_id
+
+        # [新增] 负载感知自适应机制
+        # 当系统负载过高时，退化为保守的类 A3 策略，避免过度切换导致断连
+        if self._is_high_load_mode():
+            result = self._conservative_decision(uav_id, t_start)
+            if result is not None:
+                return result
 
         # 未连接：使用宽松策略
         if current_bs_id is None:
@@ -662,10 +729,11 @@ class EnhancedHandoverAlgorithm:
                     if self.execute_handover(uav_id, decision[0], decision[1]):
                         handover_count += 1
 
-        # 周期性负载均衡
+        # 周期性负载均衡（高负载模式下禁用，避免适得其反）
         migration_count = 0
         if enable_load_balancing and self.env.current_step % 5 == 0:
-            migration_count = self.global_load_balancing_v2()
+            if not self._is_high_load_mode():
+                migration_count = self.global_load_balancing_v2()
 
         return handover_count, migration_count
 

@@ -54,6 +54,14 @@ class ObsNormalizer:
         self.var = np.ones(obs_dim, dtype=np.float64)
         self.count = 0
 
+    def reset(self, new_obs_dim=None):
+        """Reset normalizer for new observation dimension (for transfer learning)"""
+        if new_obs_dim is not None:
+            self.obs_dim = new_obs_dim
+        self.mean = np.zeros(self.obs_dim, dtype=np.float64)
+        self.var = np.ones(self.obs_dim, dtype=np.float64)
+        self.count = 0
+
     def update(self, obs: np.ndarray):
         """更新 running stats (仅训练时调用)"""
         self.count += 1
@@ -295,7 +303,7 @@ class ActorNetwork(nn.Module):
         self._init_weights()
 
     def _init_weights(self):
-        """正交初始化 + stay-biased 输出头"""
+        """正交初始化 - 均衡探索与利用"""
         for module in [self.fc, self.rnn]:
             for name, param in module.named_parameters():
                 if 'weight' in name:
@@ -303,20 +311,17 @@ class ActorNetwork(nn.Module):
                 elif 'bias' in name:
                     nn.init.zeros_(param)
 
-        # 辅助函数：获取Sequential中的最后一个线性层
         def get_last_linear(module):
             if isinstance(module, nn.Sequential):
                 return module[-1]
             return module
 
-        # 输出头: 使用较小 gain，并给 action 0 (stay) 一个微小的正向 bias
-        # 这模拟了"弱模仿学习"——基线 stay 策略是最好的默认行为
         heads = self.biz_heads if self.use_biz_heads else [self.output_head]
         for head in heads:
             last_linear = get_last_linear(head)
-            nn.init.orthogonal_(last_linear.weight, gain=0.01)
+            nn.init.orthogonal_(last_linear.weight, gain=0.5)
             nn.init.zeros_(last_linear.bias)
-            last_linear.bias.data[0] = 0.5  # stay (action 0) 初始偏高，鼓励少切换
+            last_linear.bias.data[0] = 0.1
 
     def _get_logits(self, h: torch.Tensor,
                     biz_types: torch.Tensor = None) -> torch.Tensor:
@@ -690,16 +695,16 @@ class TransformerActorNetwork(nn.Module):
                 elif 'bias' in name:
                     nn.init.zeros_(param)
 
-        # 输出头: 使用较小 gain，并给 action 0 (stay) 一个微小的正向 bias
+        # 输出头: 均衡初始化，轻微stay偏好
         if self.use_biz_heads:
             for head in self.biz_heads:
-                nn.init.orthogonal_(head.weight, gain=0.01)
+                nn.init.orthogonal_(head.weight, gain=0.5)
                 nn.init.zeros_(head.bias)
-                head.bias.data[0] = 0.5  # stay 轻微偏好
+                head.bias.data[0] = 0.1
         else:
-            nn.init.orthogonal_(self.output_head.weight, gain=0.01)
+            nn.init.orthogonal_(self.output_head.weight, gain=0.5)
             nn.init.zeros_(self.output_head.bias)
-            self.output_head.bias.data[0] = 0.5  # stay 轻微偏好
+            self.output_head.bias.data[0] = 0.1
 
     def _get_logits(self, h: torch.Tensor, biz_types: torch.Tensor = None) -> torch.Tensor:
         """根据隐藏状态 h 计算 logits"""
@@ -1006,6 +1011,10 @@ class MAPPOAgent:
         # RNN 隐藏状态
         self.actor_hidden = None
 
+        # 切换冷却机制：防止过度频繁切换（减少断连率）
+        self.switch_cooldown_steps = 5  # 切换后 N 步内强制留守
+        self._switch_cooldown = None    # per-agent 冷却计数器
+
         # Observation Normalizer (running mean/std)
         self.obs_normalizer = ObsNormalizer(obs_dim, decay=0.999, clip_val=5.0)
 
@@ -1210,6 +1219,18 @@ class MAPPOAgent:
                     values_dict[uid] = per_agent_values[uid].item()
 
             pre_hidden_np = pre_hidden.cpu().numpy() if pre_hidden is not None else np.zeros((self.num_agents, self.hidden_dim))
+
+        # 切换冷却机制：减少过度频繁切换导致的断连
+        if self._switch_cooldown is not None:
+            for uid in range(self.num_agents):
+                if self._switch_cooldown[uid] > 0:
+                    if actions.get(uid, 0) != 0:
+                        actions[uid] = 0  # 强制留守
+                        log_probs_dict[uid] = 0.0  # 冷却覆盖的动作不参与策略梯度
+                    self._switch_cooldown[uid] -= 1
+                elif actions.get(uid, 0) != 0:
+                    self._switch_cooldown[uid] = self.switch_cooldown_steps
+
         return actions, log_probs_dict, values_dict, pre_hidden_np
 
     def _select_expert(self, env, biz_types):
@@ -1264,6 +1285,7 @@ class MAPPOAgent:
     def reset_hidden(self):
         """重置 RNN 隐藏状态"""
         self.actor_hidden = self.actor.init_hidden(batch_size=self.num_agents).to(self.device)
+        self._switch_cooldown = np.zeros(self.num_agents, dtype=np.int32)
 
     def _update_lr(self):
         """根据当前训练进度更新学习率: linear warmup + cosine decay"""
@@ -1314,6 +1336,8 @@ class MAPPOAgent:
         Returns:
             训练统计信息
         """
+        print(f"[DEBUG-TRAIN] train() called, buffer.ptr={self.buffer.ptr}")
+
         if self.buffer.ptr == 0:
             return {}
 
@@ -1332,12 +1356,31 @@ class MAPPOAgent:
         total_entropy = 0.0
         num_updates = 0
         approx_kl = 0.0
+        total_actor_grad = 0.0
+        total_critic_grad = 0.0
+        total_value_error = 0.0
+        total_ratio_mean = 0.0
+        total_adv_mean = 0.0
+        total_ret_mean = 0.0
 
         # burn-in: 跳过前几步 (hidden 是零向量冷启动，信息不可靠)
         burn_in = min(5, self.buffer.ptr // 3)
 
-        for obs_batch, obs_all_batch, states_batch, actions_batch, old_log_probs_batch, adv_batch, ret_batch, old_values_batch, biz_types_batch, hidden_batch in \
-                self.buffer.get_batches(self.batch_size, advantages, returns, self.num_epochs, burn_in=burn_in):
+        try:
+            batch_iterator = list(self.buffer.get_batches(
+                self.batch_size, advantages, returns, self.num_epochs, burn_in=burn_in
+            ))
+        except Exception as e:
+            print(f"[ERROR] Exception in get_batches(): {e}")
+            import traceback
+            traceback.print_exc()
+            return {}
+
+        if len(batch_iterator) == 0:
+            print(f"[WARN] No batches generated! ptr={self.buffer.ptr}, burn_in={burn_in}")
+            return {}
+
+        for obs_batch, obs_all_batch, states_batch, actions_batch, old_log_probs_batch, adv_batch, ret_batch, old_values_batch, biz_types_batch, hidden_batch in batch_iterator:
 
             # obs 已在 insert_experience 中归一化，无需重复归一化
 
@@ -1348,10 +1391,17 @@ class MAPPOAgent:
             )
             ratio = torch.exp(new_log_probs - old_log_probs)
 
+            with torch.no_grad():
+                total_ratio_mean += ratio.mean().item()
+                total_adv_mean += adv_batch.mean().item()
+                total_ret_mean += ret_batch.mean().item()
+
             # KL Divergence Early Stop (标准 PPO 实践)
             with torch.no_grad():
                 approx_kl = ((ratio - 1.0) - (new_log_probs - old_log_probs)).mean().item()
-            if approx_kl > 0.015:
+            if approx_kl > 0.2:  # 大幅放宽阈值以适应hidden state不一致
+                if num_updates == 0:
+                    print(f"[DEBUG] KL early stop! kl={approx_kl:.4f}")
                 break
 
             surr1 = ratio * adv_batch
@@ -1363,52 +1413,41 @@ class MAPPOAgent:
 
             # 策略蒸馏：从增强算法中学习
             if self.use_distillation and self.enhanced_algorithm:
-                # 计算增强算法的动作分布
                 with torch.no_grad():
-                    # 获取增强算法的动作建议
-                    # 这里简化处理，使用业务类型特定的动作分布
                     distillation_loss = 0.0
                     for i in range(obs_batch.shape[0]):
                         biz_type = biz_types_batch[i].item()
-                        # 根据业务类型生成增强算法的动作分布
-                        if biz_type == 0:  # 延迟敏感型
-                            # 更倾向于best_sinr
+                        if biz_type == 0:
                             enhanced_probs = torch.tensor([0.3, 0.5, 0.1, 0.1, 0.0, 0.0], device=self.device)
-                        elif biz_type == 1:  # 吞吐量敏感型
-                            # 更倾向于best_capacity
+                        elif biz_type == 1:
                             enhanced_probs = torch.tensor([0.3, 0.1, 0.5, 0.1, 0.0, 0.0], device=self.device)
-                        else:  # 可靠性敏感型
-                            # 更倾向于混合策略
+                        else:
                             enhanced_probs = torch.tensor([0.2, 0.2, 0.2, 0.4, 0.0, 0.0], device=self.device)
-                        
-                        # 计算MAPPO的动作分布
+
                         if self.use_hierarchical:
                             high_level_logits, low_level_logits, _ = self.actor(obs_batch[i].unsqueeze(0), hidden_batch[i].unsqueeze(0), biz_types_batch[i].unsqueeze(0))
-                            # 计算联合概率分布
                             high_probs = torch.softmax(high_level_logits[0], dim=0)
                             low_probs = torch.softmax(low_level_logits[0], dim=0)
-                            # 构建完整的动作分布
                             mappo_probs = torch.zeros_like(enhanced_probs)
-                            mappo_probs[0] = high_probs[0]  # stay
+                            mappo_probs[0] = high_probs[0]
                             for j in range(len(low_probs)):
-                                mappo_probs[j+1] = high_probs[1] * low_probs[j]  # switch + 底层动作
+                                mappo_probs[j+1] = high_probs[1] * low_probs[j]
                         else:
                             actor_logits, _ = self.actor(obs_batch[i].unsqueeze(0), hidden_batch[i].unsqueeze(0), biz_types_batch[i].unsqueeze(0))
                             mappo_probs = torch.softmax(actor_logits[0], dim=0)
-                        
-                        # 计算KL散度作为蒸馏损失
+
                         distillation_loss += torch.sum(enhanced_probs * torch.log(enhanced_probs / (mappo_probs + 1e-8)))
-                    
+
                     distillation_loss = distillation_loss / obs_batch.shape[0]
                     ppo_loss += self.distillation_weight * distillation_loss
 
             self.actor_optimizer.zero_grad()
             ppo_loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
+            actor_grad_norm = torch.nn.utils.clip_grad_norm_(self.actor.parameters(), self.max_grad_norm)
             self.actor_optimizer.step()
 
             # Critic 更新: value clipping (标准 PPO 实践，防止 critic 震荡)
-            value_pred = self.critic(states_batch, obs_all_batch)  # (batch,)
+            value_pred = self.critic(states_batch, obs_all_batch)
             value_pred_clipped = old_values_batch + torch.clamp(
                 value_pred - old_values_batch, -self.clip_epsilon, self.clip_epsilon
             )
@@ -1418,12 +1457,15 @@ class MAPPOAgent:
 
             self.critic_optimizer.zero_grad()
             critic_loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm)
+            critic_grad_norm = torch.nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm)
             self.critic_optimizer.step()
 
             total_actor_loss += actor_loss.item()
             total_critic_loss += critic_loss.item()
             total_entropy += entropy.mean().item()
+            total_actor_grad += actor_grad_norm
+            total_critic_grad += critic_grad_norm
+            total_value_error += ((value_pred.detach() - ret_batch) ** 2).mean().item()
             num_updates += 1
 
         avg_stats = {
@@ -1432,6 +1474,13 @@ class MAPPOAgent:
             'entropy': total_entropy / max(num_updates, 1),
             'total_loss': (total_actor_loss + self.value_coef * total_critic_loss) / max(num_updates, 1),
             'approx_kl': approx_kl,
+            'actor_grad_norm': total_actor_grad / max(num_updates, 1),
+            'critic_grad_norm': total_critic_grad / max(num_updates, 1),
+            'value_mse': total_value_error / max(num_updates, 1),
+            'ratio_mean': total_ratio_mean / max(num_updates, 1),
+            'advantage_mean': total_adv_mean / max(num_updates, 1),
+            'return_mean': total_ret_mean / max(num_updates, 1),
+            'num_updates': num_updates,
         }
 
         self.actor_loss_history.append(avg_stats['actor_loss'])
