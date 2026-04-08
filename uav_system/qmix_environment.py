@@ -271,7 +271,13 @@ class QMixHandoverEnv:
         # 9. 上次动作 one-hot
         last_action = np.zeros(self.action_dim)
         if uav_id in self._last_actions:
-            last_action[self._last_actions[uav_id]] = 1.0
+            action = self._last_actions[uav_id]
+            # 确保动作索引在有效范围内
+            if action < len(last_action):
+                last_action[action] = 1.0
+            else:
+                # 对于超出范围的动作，映射到最后一个类别
+                last_action[-1] = 1.0
 
         # 10. 满意度变化趋势 (最近5步的线性趋势)
         if uav_id in self._sat_history and len(self._sat_history[uav_id]) >= 2:
@@ -749,28 +755,39 @@ class QMixHandoverEnv:
                 r_biz = biz_weight * delta_rr  # 用连续信号替代分段满意度
             ep_biz_reward_sum += r_biz
 
-            # --- d. 动作奖励 (V13: 鼓励适度探索，防止保守策略坍缩) ---
+            # --- d. 动作奖励 (V14: 增强信号强度，明确区分好坏动作) ---
             r_action = 0.0
             if switched:
-                # 降低切换成本：让"有益切换"(δsat>0.03)有正期望收益
-                r_action = 5.0 * delta_sat - 0.05  # 切换成本 -0.05 (原-0.15, 降幅66%)
-                if delta_sat > 0.03:
+                # 增强切换奖励信号，让有益切换有更明显的正收益
+                if delta_sat > 0.05:
+                    # 成功切换：大幅奖励
+                    r_action = 8.0 * delta_sat + 0.5  # 基础奖励+比例奖励
                     ep_good_switch += 1
-                elif delta_sat < -0.05:
+                elif delta_sat > 0.0:
+                    # 轻微改善：小奖励
+                    r_action = 4.0 * delta_sat + 0.1
+                elif delta_sat > -0.05:
+                    # 轻微恶化：小惩罚
+                    r_action = 4.0 * delta_sat - 0.05
+                else:
+                    # 严重恶化：大惩罚
+                    r_action = 6.0 * delta_sat - 0.2
                     ep_bad_switch += 1
             elif action != 0:
-                # 尝试切换但未成功：轻微惩罚 (原-0.3太重，阻碍探索)
-                r_action = -0.10
+                # 尝试切换但未成功：轻微惩罚
+                r_action = -0.15
             else:
-                # 留守: 分层信号 (修复策略坍缩: 加重低sat惩罚,降低高sat奖励)
-                if new_sat < 0.4:
-                    r_action = -0.40   # 极低 sat 留守: 强惩罚 (原-0.25)
-                elif new_sat < 0.6:
-                    r_action = -0.20   # 低 sat 留守: 中等惩罚 (原-0.12)
-                elif new_sat < 0.8:
-                    r_action = 0.02    # 中等 sat: 轻微鼓励探索 (原0.04)
+                # 留守: 强化分层信号，明确区分好坏
+                if new_sat < 0.3:
+                    r_action = -0.60   # 极低 sat 留守: 极强惩罚
+                elif new_sat < 0.5:
+                    r_action = -0.35   # 低 sat 留守: 强惩罚
+                elif new_sat < 0.7:
+                    r_action = -0.10   # 中等 sat: 轻微惩罚，鼓励探索
+                elif new_sat < 0.85:
+                    r_action = 0.08    # 较高 sat: 适度奖励
                 else:
-                    r_action = 0.03    # 高 sat 留守: 降低正信号 (原0.06)
+                    r_action = 0.15    # 高 sat 留守: 明确奖励
             ep_action_reward_sum += r_action
 
             # --- e. 连接状态奖励 (仅诊断，不参与个体 reward) ---

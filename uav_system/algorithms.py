@@ -230,11 +230,20 @@ class EnhancedHandoverAlgorithm:
         self.emergency_sinr_threshold = -5
         self.emergency_satisfaction_threshold = 0.7
         # 业务特化权重
-        self.business_weights = {
-            BusinessType.CONTROL_SIGNAL: {'sinr': 0.5, 'load': 0.2, 'rate': 0.3},
-            BusinessType.VIDEO_STREAMING: {'sinr': 0.3, 'load': 0.25, 'rate': 0.45},
-            BusinessType.ENVIRONMENT_MONITORING: {'sinr': 0.25, 'load': 0.25, 'rate': 0.5}
-        }
+        if weight_config == 'optimized':
+            # 优化的权重配置，用于MAPPO实验
+            self.business_weights = {
+                BusinessType.CONTROL_SIGNAL: {'sinr': 0.55, 'load': 0.15, 'rate': 0.30},
+                BusinessType.VIDEO_STREAMING: {'sinr': 0.35, 'load': 0.20, 'rate': 0.45},
+                BusinessType.ENVIRONMENT_MONITORING: {'sinr': 0.30, 'load': 0.20, 'rate': 0.50}
+            }
+        else:
+            # 默认权重配置，保持与原有实验一致
+            self.business_weights = {
+                BusinessType.CONTROL_SIGNAL: {'sinr': 0.5, 'load': 0.2, 'rate': 0.3},
+                BusinessType.VIDEO_STREAMING: {'sinr': 0.3, 'load': 0.25, 'rate': 0.45},
+                BusinessType.ENVIRONMENT_MONITORING: {'sinr': 0.25, 'load': 0.25, 'rate': 0.5}
+            }
         # 统计指标
         self.handover_attempts = 0
         self.handover_successes = 0

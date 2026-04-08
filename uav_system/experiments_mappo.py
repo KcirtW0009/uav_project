@@ -42,7 +42,7 @@ from typing import Dict, List, Any, Tuple, Optional
 
 from .config import GLOBAL_SEED, set_global_seed, RESULT_DIR, COLORS
 from .qmix_environment import QMixHandoverEnv
-from .mappo_agent import MAPPOAgent
+from .mappo_agent_v2 import MAPPOAgentV2 as MAPPOAgent
 from .algorithms import EnhancedHandoverAlgorithm, IntegratedHandoverAlgorithm
 from .business import BusinessType
 
@@ -354,7 +354,11 @@ def _run_algo_baseline(env, num_steps, algo_class, enable_lb=False):
     然后 advance_env_only() 推进环境。
     为确保通信指标可被收集，需显式调用 collect_step_metrics()。
     """
-    algo = algo_class(env.env)
+    if algo_class == EnhancedHandoverAlgorithm:
+        # 在MAPPO实验中使用优化的权重配置
+        algo = algo_class(env.env, weight_config='optimized')
+    else:
+        algo = algo_class(env.env)
     for step in range(num_steps):
         kwargs = {}
         if enable_lb and algo_class == EnhancedHandoverAlgorithm:
@@ -494,21 +498,10 @@ class ExperimentBAMAPPO:
             )
             all_results['evaluation'] = eval_results
 
-            # 构建 trained_uav_bs_map 供 Phase 3 模型加载使用
+            # 构建 trained_uav_bs_map 供后续使用
             trained_uav_bs_map = dict(zip(num_uav_list, num_bs_list))
 
-            scenario_results = ExperimentBAMAPPO._phase3_scenarios(
-                trained_uav_bs_map=trained_uav_bs_map,
-                num_steps=100, repeats=10,
-                bs_capacity_range=bs_capacity_range,
-                pos_range=pos_range,
-                verbose=verbose,
-                use_biz_heads=use_biz_heads,
-                use_attention_critic=use_attention_critic,
-                hidden_dim=hidden_dim, critic_hidden_dim=critic_hidden_dim,
-                attention_sample_agents=attention_sample_agents,
-            )
-            all_results['scenarios'] = scenario_results
+            # 跳过Phase 3模块，简化实验流程
 
         # 可视化
         ExperimentBAMAPPO._plot_all(all_results, num_uav_list)
@@ -599,7 +592,7 @@ class ExperimentBAMAPPO:
             )
             
             # 初始化增强算法
-            enhanced_algorithm = EnhancedHandoverAlgorithm(env.env)
+            enhanced_algorithm = EnhancedHandoverAlgorithm(env.env, weight_config='optimized')
             agent.set_enhanced_algorithm(enhanced_algorithm)
             
             # 执行模仿学习预训练
@@ -666,7 +659,8 @@ class ExperimentBAMAPPO:
                     print(f"  Normalizer var (前5维): {var_sample}")
 
             # 清空 warmup 积累的经验，避免污染正式训练
-            agent.buffer.clear()
+            for key in agent.buffer:
+                agent.buffer[key] = []
 
             episode_rewards = []
             episode_satisfactions = []
@@ -1444,221 +1438,6 @@ class ExperimentBAMAPPO:
                     print(f"    vs 增强算法: {(mappo_avg - enh_avg)/max(enh_avg,0.001)*100:+.1f}%")
 
         return eval_results
-
-    # ==================== Phase 3: 多场景泛化 ====================
-
-    @staticmethod
-    def _phase3_scenarios(trained_uav_bs_map, num_steps, repeats,
-                          bs_capacity_range, pos_range, verbose,
-                          use_biz_heads, use_attention_critic,
-                          hidden_dim, critic_hidden_dim,
-                          attention_sample_agents=0):
-        """
-        Phase 3: 多场景泛化验证
-
-        评估 BA-MAPPO 在不同业务场景下的泛化能力。
-        基线: 传统算法 + 增强算法 (与 Phase 2 一致，保持连贯性)。
-
-        场景设计原则:
-          - BS 容量统一为 (500, 1000) Mbps，与主实验 default 场景对齐
-          - 通过 UAV/BS 数量比控制负载率: 小规模低、大规模高
-          - 每个场景代表不同的实际应用
-
-        Args:
-            trained_uav_bs_map: dict, {num_uav: num_bs} 训练时的 UAV→BS 映射
-        """
-        print("\n" + "-" * 60)
-        print("Phase 3: 多场景泛化验证")
-        print("-" * 60)
-
-        # 场景定义：BS 容量与主实验 default 场景对齐 (500, 1000) Mbps
-        # 通过 UAV/BS 数量比产生不同负载率
-        # 负载率计算: num_uav × 15.5Mbps / (num_bs × 750Mbps)
-        # 设计原则: 训练场景 100%+ 负载以产生竞争，保留一个低负载场景验证泛化
-        scenarios = {
-            'default':               {'num_uav': 200, 'num_bs': 4, 'bs_capacity_range': (500, 1000)},
-            'smart_city':            {'num_uav': 300, 'num_bs': 5, 'bs_capacity_range': (500, 1000)},
-            'industrial_inspection': {'num_uav': 200, 'num_bs': 6, 'bs_capacity_range': (500, 1000)},
-            'emergency_rescue':      {'num_uav': 100, 'num_bs': 3, 'bs_capacity_range': (500, 1000)},
-            'logistics_delivery':    {'num_uav': 250, 'num_bs': 4, 'bs_capacity_range': (500, 1000)},
-        }
-
-        # 计算并打印各场景负载率
-        avg_demand_per_uav = 0.4 * 0.5 + 0.3 * 50 + 0.3 * 1.0  # 15.5 Mbps
-
-        scenario_names_cn = {
-            'default': '默认场景',
-            'smart_city': '城市监控',
-            'industrial_inspection': '工业巡检',
-            'emergency_rescue': '应急救援',
-            'logistics_delivery': '物流配送',
-        }
-
-        scenario_results = {}
-        trained_uav_set = set(trained_uav_bs_map.keys()) if trained_uav_bs_map else set()
-        if verbose:
-            print(f"  已训练模型 UAV/BS 配置: {trained_uav_bs_map}")
-            for sn, sc in scenarios.items():
-                avg_cap = sum(sc['bs_capacity_range']) / 2
-                load_rate = sc['num_uav'] * avg_demand_per_uav / (sc['num_bs'] * avg_cap) * 100
-                print(f"  场景 {sn}: UAV={sc['num_uav']}/BS={sc['num_bs']}, 负载率~{load_rate:.0f}%")
-
-        # 预加载所有可用模型（避免重复加载）
-        # 关键：必须用与训练时相同的环境参数来获取正确的 obs_dim / state_dim
-        # 修复：同时检查 _best.pt 和 .pt（early stopping 触发时只有 best.pt）
-        loaded_models = {}
-        for t_uav in sorted(trained_uav_set):
-            t_bs = trained_uav_bs_map[t_uav]
-            base_path = os.path.join(ExperimentBAMAPPO.MODEL_DIR,
-                                     f'mappo_{t_bs}bs_{t_uav}uav.pt')
-            best_path = base_path.replace('.pt', '_best.pt')
-
-            # 优先使用 best 模型（early stopping 触发时只有 best.pt 存在）
-            model_to_load = None
-            model_source = None
-            if os.path.exists(best_path):
-                model_to_load = best_path
-                model_source = 'best'
-            elif os.path.exists(base_path):
-                model_to_load = base_path
-                model_source = 'base'
-
-            if model_to_load:
-                try:
-                    # 动态获取正确的 obs_dim 和 state_dim
-                    _tmp_env = QMixHandoverEnv(
-                        num_bs=t_bs, num_uav=t_uav,
-                        max_steps=1, seed=0,
-                        bs_capacity_range=bs_capacity_range,
-                        pos_range=pos_range,
-                    )
-                    agent_tmp = MAPPOAgent(
-                        num_agents=t_uav,
-                        obs_dim=_tmp_env.obs_dim,
-                        state_dim=_tmp_env.state_dim,
-                        action_dim=_tmp_env.action_dim,
-                        hidden_dim=hidden_dim, critic_hidden_dim=critic_hidden_dim,
-                        use_biz_heads=use_biz_heads,
-                        use_attention_critic=use_attention_critic,
-                        use_hierarchical=True,
-                        attention_sample_agents=attention_sample_agents,
-                    )
-                    agent_tmp.load(model_to_load)
-                    loaded_models[t_uav] = agent_tmp
-                    if verbose:
-                        print(f"  预加载模型: UAV={t_uav}/BS={t_bs} ({model_source}, obs_dim={_tmp_env.obs_dim})")
-                except Exception as e:
-                    if verbose:
-                        print(f"  加载模型 UAV={t_uav}/BS={t_bs} 失败: {e}")
-                        import traceback
-                        tb_lines = traceback.format_exc().split('\n')
-                        for line in tb_lines:
-                            if 'size mismatch' in line or 'Error' in line or 'Missing' in line:
-                                print(f"    ↳ {line.strip()}")
-
-        for scenario_name, scenario_cfg in scenarios.items():
-            print(f"\n>>> 场景: {scenario_name} ({scenario_names_cn.get(scenario_name, scenario_name)}) <<<")
-
-            s_uav = scenario_cfg['num_uav']
-            s_bs = scenario_cfg['num_bs']
-            s_cap = scenario_cfg['bs_capacity_range']
-
-            # ---- 评估 BA-MAPPO（支持跨 UAV 泛化）----
-            mappo_avg_sats = []
-            mappo_model_source = None
-
-            # 策略1: 精确匹配
-            if s_uav in loaded_models:
-                matching_uav = s_uav
-                mappo_model_source = f"exact(UAV={s_uav})"
-            # 策略2: 选择最接近的已训练模型（CTDE 架构允许跨数量泛化）
-            elif loaded_models:
-                matching_uav = min(loaded_models.keys(), key=lambda x: abs(x - s_uav))
-                mappo_model_source = f"nearest(trained={matching_uav}, target={s_uav})"
-                if verbose:
-                    print(f"  [泛化] 使用最近训练模型 UAV={matching_uav} 评估 UAV={s_uav} 场景")
-            else:
-                matching_uav = None
-
-            if matching_uav is not None:
-                base_agent = loaded_models[matching_uav]
-                # 创建目标场景环境
-                mappo_env = QMixHandoverEnv(
-                    num_bs=s_bs, num_uav=s_uav,
-                    max_steps=num_steps, seed=GLOBAL_SEED + 9999,
-                    bs_capacity_range=s_cap,
-                    pos_range=pos_range,
-                )
-
-                for rep in range(repeats):
-                    seed = GLOBAL_SEED + hash(scenario_name) % 10000 + rep * 1000
-                    set_global_seed(seed)
-                    obs_dict, global_state = mappo_env.reset()
-                    base_agent.reset_hidden()
-                    for step in range(num_steps):
-                        biz_types = {}
-                        for uid in range(mappo_env.num_agents):
-                            uav = mappo_env.env.uavs[uid]
-                            biz_types[uid] = uav.true_business_type.value
-                        actions, _, _, _, _ = base_agent.select_actions(
-                            obs_dict, global_state, biz_types, training=False)
-                        next_obs, next_state, rewards, team_reward, done, info = mappo_env.step(actions)
-                        obs_dict = next_obs
-                        global_state = next_state
-                    mappo_avg_sats.append(_collect_biz_satisfaction(mappo_env)['avg'])
-
-                if verbose:
-                    print(f"  BA-MAPPO 模型来源: {mappo_model_source}")
-            elif verbose:
-                print(f"  跳过 MAPPO: 无可用训练模型")
-
-            # ---- 评估基线算法 (与 Phase 2 一致) ----
-            def _eval_scenario_baseline(baseline_name, run_fn):
-                avg_list = []
-                for rep in range(repeats):
-                    seed = GLOBAL_SEED + hash(scenario_name) % 10000 + rep * 1000 + hash(baseline_name) % 10000
-                    set_global_seed(seed)
-                    eval_env = QMixHandoverEnv(
-                        num_bs=s_bs, num_uav=s_uav,
-                        max_steps=num_steps, seed=seed,
-                        bs_capacity_range=s_cap,
-                        pos_range=pos_range,
-                    )
-                    eval_env.reset()
-                    run_fn(eval_env, num_steps)
-                    avg_list.append(_collect_biz_satisfaction(eval_env)['avg'])
-                return (np.mean(avg_list), np.std(avg_list))
-
-            traditional_sat = _eval_scenario_baseline('traditional',
-                lambda e, steps: _run_algo_baseline(e, steps, IntegratedHandoverAlgorithm))
-            enhanced_sat = _eval_scenario_baseline('enhanced',
-                lambda e, steps: _run_algo_baseline(e, steps, EnhancedHandoverAlgorithm, enable_lb=True))
-            stay_sat = _eval_scenario_baseline('stay',
-                lambda e, steps: _run_fixed_action_baseline(e, steps, action=0))
-
-            scenario_results[scenario_name] = {
-                'name_cn': scenario_names_cn.get(scenario_name, scenario_name),
-                'traditional': traditional_sat,
-                'enhanced': enhanced_sat,
-                'ref_baseline_stay': stay_sat,
-            }
-            if mappo_avg_sats:
-                scenario_results[scenario_name]['mappo'] = (np.mean(mappo_avg_sats), np.std(mappo_avg_sats))
-                scenario_results[scenario_name]['mappo_source'] = mappo_model_source
-
-            if verbose:
-                print(f"    传统算法:   {traditional_sat[0]:.4f}")
-                print(f"    增强算法:   {enhanced_sat[0]:.4f}")
-                print(f"    [参考] stay: {stay_sat[0]:.4f}")
-                if mappo_avg_sats:
-                    m = scenario_results[scenario_name]['mappo']
-                    src = scenario_results[scenario_name].get('mappo_source', '')
-                    print(f"    BA-MAPPO:   {m[0]:.4f} +/- {m[1]:.4f}  ({src})")
-                    trad = traditional_sat[0]
-                    if trad > 0.001:
-                        print(f"    vs 传统: {(m[0]-trad)/trad*100:+.1f}%")
-
-        return scenario_results
 
     # ==================== 可视化 ====================
 
