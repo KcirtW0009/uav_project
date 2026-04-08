@@ -9,6 +9,7 @@
 import numpy as np
 from typing import Optional, Tuple, Dict
 from collections import defaultdict
+from time import time
 from .business import BusinessType, QOS_PROFILES
 from .environment import NetworkEnvironmentWithRecognition
 
@@ -356,8 +357,8 @@ class EnhancedHandoverAlgorithm:
         total_capacity = 0
         used_capacity = 0
         for bs in self.env.base_stations.values():
-            if hasattr(bs, 'total_capacity') and hasattr(bs, 'available_capacity'):
-                total_cap = bs.total_capacity
+            if hasattr(bs, 'capacity') and hasattr(bs, 'available_capacity'):
+                total_cap = bs.capacity
                 avail = bs.available_capacity
                 if total_cap > 0:
                     total_capacity += total_cap

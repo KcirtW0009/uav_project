@@ -76,10 +76,13 @@ class BaseStation:
         """
         if self.failure_state:
             return False
-        if rate > self.available_capacity:
+        # 如果该UAV已有旧分配，先扣除旧值再检查容量
+        old_rate = self.connected_uavs.get(uav_id, 0.0)
+        net_increase = rate - old_rate
+        if net_increase > self.available_capacity:
             return False
         self.connected_uavs[uav_id] = rate
-        self.current_load += rate
+        self.current_load += net_increase
         return True
 
     def release(self, uav_id: int):

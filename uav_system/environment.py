@@ -292,6 +292,15 @@ class NetworkEnvironmentWithRecognition:
     def reset(self):
         """重置仿真状态"""
         self.current_step = 0
+        # 清理 BS 和 UAV 的旧分配状态，防止跨 episode load 泄漏
+        for bs in self.base_stations.values():
+            bs.connected_uavs.clear()
+            bs.current_load = 0.0
+        for uav in self.uavs.values():
+            uav.connected_bs_id = None
+            uav.current_allocated_rate = 0.0
+            uav.handover_count = 0
+        self.connection_matrix = np.zeros((self.num_uav, self.num_bs), dtype=int)
         self.stats_history = {k: [] for k in self.stats_history.keys()}
         self.feedback_buffer.clear()
         self.uav_interruption_counters = {uav_id: 0 for uav_id in range(self.num_uav)}

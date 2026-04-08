@@ -187,17 +187,27 @@ class RolloutBuffer:
             last_gae = delta + self.gamma * self.gae_lambda * next_non_terminal * last_gae
             advantages[t] = last_gae
 
+            # 只在第 0 步和最后一步打印（避免刷屏）
+            if t == 0 or t == self.ptr - 1:
+                print(f"[GAE-DEBUG] t={t}: reward_mean={reward.mean():.6f}, "
+                      f"V_t_mean={self.values[t].cpu().numpy().mean():.6f}, "
+                      f"V_next_mean={next_val.mean():.6f}, "
+                      f"done={self.dones[t]}, "
+                      f"delta_mean={delta.mean():.6f}, "
+                      f"gae_mean={last_gae.mean():.6f}")
+
         returns = advantages + self.values[:self.ptr].cpu().numpy()
         return advantages, returns
 
     def get_batches(self, batch_size: int, advantages: np.ndarray,
                     returns: np.ndarray, num_epochs: int = 5,
-                    burn_in: int = 0):
+                    burn_in: int = 0, sample_agents: int = 0):
         """
         生成 mini-batch 数据（带随机打乱）
 
         Args:
             burn_in: 跳过前 burn_in 步（这些步的 hidden 是"冷启动"，不用于 PPO 更新）
+            sample_agents: PPO 更新时随机采样的 agent 数量 (0=使用全部 agent)
 
         Yields:
             (obs_batch, obs_all_batch, state_batch, actions_batch,
@@ -205,29 +215,46 @@ class RolloutBuffer:
              old_values_batch, biz_types_batch, hidden_batch)
         """
         ptr = self.ptr
-        # burn-in: 跳过轨迹开头"冷"步骤
         start_idx = min(burn_in, ptr)
         N = self.num_agents
-        # obs/actions/log_probs: (ptr, N, ...) -> (ptr*N, ...)
-        obs_flat = self.obs[start_idx:ptr].reshape(-1, self.obs_dim)
-        actions_flat = self.actions[start_idx:ptr].reshape(-1)
-        log_probs_flat = self.log_probs[start_idx:ptr].reshape(-1)
-        # states: (ptr, state_dim) -> 重复到 (ptr*N, state_dim)
-        actual_len = ptr - start_idx
-        state_repeated = self.states[start_idx:ptr].unsqueeze(1).expand(actual_len, N, self.state_dim)
-        states_flat = state_repeated.reshape(-1, self.state_dim)
-        # obs_all: (ptr, N, obs_dim) -> 每个 step 重复 N 次 -> (ptr*N, N, obs_dim)
-        obs_all_repeated = self.obs[start_idx:ptr].unsqueeze(2).expand(actual_len, N, N, self.obs_dim)
-        obs_all_flat = obs_all_repeated.reshape(-1, N, self.obs_dim)
-        # biz_types: (ptr, N) -> (ptr*N,)
-        biz_flat = self.biz_types[start_idx:ptr].reshape(-1)
-        # hiddens: (ptr, N, hidden_dim) -> (ptr*N, hidden_dim)
-        hidden_flat = self.hiddens[start_idx:ptr].reshape(-1, self.hidden_dim)
-        # old values: (ptr, N) -> (ptr*N,) — 用于 value clipping
-        values_flat = self.values[start_idx:ptr].reshape(-1)
 
-        adv_flat = torch.FloatTensor(advantages[start_idx:].reshape(-1), device=self.device)
-        ret_flat = torch.FloatTensor(returns[start_idx:].reshape(-1), device=self.device)
+        # Agent 采样: 若指定了 sample_agents 且小于总 agent 数，则随机采样子集
+        if 0 < sample_agents < N:
+            sampled_agents = np.random.choice(N, size=sample_agents, replace=False)
+        else:
+            sampled_agents = np.arange(N)
+
+        actual_len = ptr - start_idx
+        # obs/actions/log_probs: (ptr, N, ...) -> 仅取采样的agent -> (actual_len, sample_agents, ...)
+        obs_selected = self.obs[start_idx:ptr, sampled_agents, :]
+        actions_selected = self.actions[start_idx:ptr, sampled_agents]
+        log_probs_selected = self.log_probs[start_idx:ptr, sampled_agents]
+        hiddens_selected = self.hiddens[start_idx:ptr, sampled_agents, :]
+        biz_selected = self.biz_types[start_idx:ptr, sampled_agents]
+        values_selected = self.values[start_idx:ptr, sampled_agents]
+
+        N_s = len(sampled_agents)
+        obs_flat = obs_selected.reshape(-1, self.obs_dim)
+        actions_flat = actions_selected.reshape(-1)
+        log_probs_flat = log_probs_selected.reshape(-1)
+
+        # states: (ptr, state_dim) -> 重复到 (actual_len, N_s, state_dim)
+        state_repeated = self.states[start_idx:ptr].unsqueeze(1).expand(actual_len, N_s, self.state_dim)
+        states_flat = state_repeated.reshape(-1, self.state_dim)
+
+        # obs_all: (ptr, N, obs_dim) — 保留全部agent观测用于Critic注意力
+        obs_all_repeated = self.obs[start_idx:ptr].unsqueeze(1).expand(actual_len, N_s, N, self.obs_dim)
+        obs_all_flat = obs_all_repeated.reshape(-1, N, self.obs_dim)
+
+        biz_flat = biz_selected.reshape(-1)
+        hidden_flat = hiddens_selected.reshape(-1, self.hidden_dim)
+        values_flat = values_selected.reshape(-1)
+
+        # advantages/returns 也只取采样的 agent
+        adv_selected = advantages[start_idx:, sampled_agents]
+        ret_selected = returns[start_idx:, sampled_agents]
+        adv_flat = torch.FloatTensor(adv_selected.reshape(-1), device=self.device)
+        ret_flat = torch.FloatTensor(ret_selected.reshape(-1), device=self.device)
 
         # 归一化优势 (标准 PPO 实践，降低方差)
         if adv_flat.std() > 1e-8:
@@ -393,7 +420,8 @@ class ActorNetwork(nn.Module):
         logits = torch.clamp(logits, -10.0, 10.0)
 
         dist = Categorical(logits=logits)
-        log_probs = dist.log_prob(actions)
+        actions_clamped = torch.clamp(actions, 0, logits.shape[1] - 1)
+        log_probs = dist.log_prob(actions_clamped)
         entropy = dist.entropy()
         return log_probs, entropy
 
@@ -607,30 +635,31 @@ class HierarchicalActorNetwork(nn.Module):
         high_level_logits = self._get_high_level_logits(h, biz_types)
         low_level_logits = self._get_low_level_logits(h, biz_types)
         
-        # 计算 log probability
-        log_probs = torch.zeros(obs.shape[0], device=obs.device)
-        entropy = torch.zeros(obs.shape[0], device=obs.device)
-        
-        for i in range(obs.shape[0]):
-            action = actions[i].item()
-            if action == 0:  # stay
-                dist = Categorical(logits=high_level_logits[i].unsqueeze(0))
-                log_probs[i] = dist.log_prob(torch.tensor(0, device=obs.device))
-                entropy[i] = dist.entropy()
-            else:  # switch
-                # 高层策略概率
-                high_dist = Categorical(logits=high_level_logits[i].unsqueeze(0))
-                high_log_prob = high_dist.log_prob(torch.tensor(1, device=obs.device))
-                high_entropy = high_dist.entropy()
-                
-                # 底层策略概率
-                low_dist = Categorical(logits=low_level_logits[i].unsqueeze(0))
-                low_log_prob = low_dist.log_prob(torch.tensor(action-1, device=obs.device))
-                low_entropy = low_dist.entropy()
-                
-                # 总概率
-                log_probs[i] = high_log_prob + low_log_prob
-                entropy[i] = high_entropy + low_entropy
+        # 计算 log probability — 批量操作，保证梯度链完整
+        # high_level: 0=stay, 1=switch
+        # low_level: 0..action_dim-2 对应 action 1..action_dim-1
+        high_dist = Categorical(logits=high_level_logits)
+        low_dist = Categorical(logits=low_level_logits)
+
+        # mask: stay (action==0) vs switch (action>0)
+        is_stay = (actions == 0)
+        is_switch = ~is_stay
+
+        # 将 action 映射到底层索引: action k -> low_level index k-1, clamp 到合法范围
+        low_action_idx = torch.clamp(actions - 1, 0, low_level_logits.shape[1] - 1)
+
+        # 高层 log_prob: stay 选 0, switch 选 1
+        high_action = torch.where(is_stay, torch.zeros_like(actions), torch.ones_like(actions))
+        high_log_probs = high_dist.log_prob(high_action)
+        high_entropies = high_dist.entropy()
+
+        # 底层 log_prob (仅 switch 时使用)
+        low_log_probs = low_dist.log_prob(low_action_idx)
+        low_entropies = low_dist.entropy()
+
+        # 组合: stay 用高层 log_prob, switch 用高层+底层
+        log_probs = torch.where(is_stay, high_log_probs, high_log_probs + low_log_probs)
+        entropy = torch.where(is_stay, high_entropies, high_entropies + low_entropies)
 
         return log_probs, entropy
 
@@ -774,15 +803,14 @@ class TransformerActorNetwork(nn.Module):
         logits = torch.clamp(logits, -10.0, 10.0)
 
         dist = Categorical(logits=logits)
-        log_probs = dist.log_prob(actions)
+        actions_clamped = torch.clamp(actions, 0, logits.shape[1] - 1)
+        log_probs = dist.log_prob(actions_clamped)
         entropy = dist.entropy()
         return log_probs, entropy
 
     def init_hidden(self, batch_size: int = 1) -> torch.Tensor:
         """初始化隐藏状态"""
         return torch.zeros(batch_size, self.hidden_dim)
-
-
 # ==============================================================================
 # Critic Network (价值网络)
 # ==============================================================================
@@ -793,15 +821,19 @@ class AttentionCritic(nn.Module):
 
     将各 agent 的观测通过 self-attention 聚合为统一表示，
     再与全局状态拼接后输入 MLP 得到价值估计。
+
+    支持随机采样子集 agent 执行 Attention 以降低 O(N^2) 计算开销。
     """
 
-    def __init__(self, obs_dim: int, embed_dim: int = 64, num_heads: int = 2):
+    def __init__(self, obs_dim: int, embed_dim: int = 64, num_heads: int = 2,
+                 sample_agents: int = 0):
         super().__init__()
         self.obs_embed = nn.Linear(obs_dim, embed_dim)
         self.attention = nn.MultiheadAttention(
             embed_dim=embed_dim, num_heads=num_heads, batch_first=True
         )
         self.norm = nn.LayerNorm(embed_dim)
+        self.sample_agents = sample_agents  # 0=使用全部agent
 
     def forward(self, obs_all: torch.Tensor) -> torch.Tensor:
         """
@@ -809,13 +841,29 @@ class AttentionCritic(nn.Module):
             obs_all: (batch, num_agents, obs_dim)
 
         Returns:
-            aggregated: (batch, num_agents * embed_dim)
+            aggregated: (batch, effective_dim * embed_dim)
         """
         B, N, _ = obs_all.shape
-        embedded = self.obs_embed(obs_all)  # (B, N, embed_dim)
+
+        # 随机采样子集 agent 执行 Attention (降低 O(N^2) -> O(K^2), K=sample_agents)
+        # 训练和评估都使用相同的采样数，保证 Critic MLP 输入维度一致
+        if 0 < self.sample_agents < N:
+            K = min(self.sample_agents, N)
+            if self.training:
+                indices = torch.randperm(N, device=obs_all.device)[:K]
+            else:
+                # 评估时使用固定子集保证稳定性
+                indices = torch.arange(K, device=obs_all.device)
+            obs_sampled = obs_all[:, indices, :]  # (B, K, obs_dim)
+        else:
+            obs_sampled = obs_all
+
+        B_sub, K_sub, _ = obs_sampled.shape
+        embedded = self.obs_embed(obs_sampled)  # (B_sub, K_sub, embed_dim)
         attn_out, _ = self.attention(embedded, embedded, embedded)
         attn_out = self.norm(attn_out + embedded)  # 残差连接
-        return attn_out.reshape(B, -1)  # 展平
+
+        return attn_out.reshape(B, -1)
 
 
 class CriticNetwork(nn.Module):
@@ -833,15 +881,18 @@ class CriticNetwork(nn.Module):
 
     def __init__(self, state_dim: int, obs_dim: int, num_agents: int,
                  hidden_dim: int = 128, use_attention: bool = True,
-                 attn_embed_dim: int = 64, attn_num_heads: int = 2):
+                 attn_embed_dim: int = 64, attn_num_heads: int = 2,
+                 attn_sample_agents: int = 0):
         super().__init__()
         self.use_attention = use_attention
 
         if use_attention:
+            effective_agents = min(attn_sample_agents, num_agents) if 0 < attn_sample_agents < num_agents else num_agents
             self.att_critic = AttentionCritic(
-                obs_dim=obs_dim, embed_dim=attn_embed_dim, num_heads=attn_num_heads
+                obs_dim=obs_dim, embed_dim=attn_embed_dim, num_heads=attn_num_heads,
+                sample_agents=attn_sample_agents
             )
-            input_dim = state_dim + num_agents * attn_embed_dim
+            input_dim = state_dim + effective_agents * attn_embed_dim
         else:
             input_dim = state_dim
 
@@ -910,9 +961,9 @@ class MAPPOAgent:
     def __init__(self, num_agents: int, obs_dim: int, state_dim: int,
                  action_dim: int = 5, hidden_dim: int = 64,
                  critic_hidden_dim: int = 128,
-                 actor_lr: float = 1e-4, critic_lr: float = 3e-4,
+                 actor_lr: float = 1e-5, critic_lr: float = 3e-4,
                  gamma: float = 0.99, gae_lambda: float = 0.95,
-                 clip_epsilon: float = 0.2, entropy_coef: float = 0.02,
+                 clip_epsilon: float = 0.25, entropy_coef: float = 0.04,
                  value_coef: float = 0.5, max_grad_norm: float = 2.0,
                  rollout_length: int = 150, num_epochs: int = 5,
                  batch_size: int = 32,
@@ -928,6 +979,9 @@ class MAPPOAgent:
                  transformer_heads: int = 2,
                  use_data_augmentation: bool = True,
                  augmentation_noise: float = 0.01,
+                 train_sample_agents: int = 0,
+                 attention_sample_agents: int = 0,
+                 num_parallel_envs: int = 1,
                  device: Optional[str] = None):
         self.num_agents = num_agents
         self.obs_dim = obs_dim
@@ -958,6 +1012,9 @@ class MAPPOAgent:
         self.transformer_heads = transformer_heads  # Transformer 头数
         self.use_data_augmentation = use_data_augmentation  # 数据增强开关
         self.augmentation_noise = augmentation_noise  # 数据增强噪声强度
+        self.train_sample_agents = train_sample_agents  # PPO更新时采样的agent数 (0=全部)
+        self.attention_sample_agents = attention_sample_agents  # Critic Attention时采样的agent数 (0=全部)
+        self.num_parallel_envs = num_parallel_envs  # 并行环境数
         self.enhanced_algorithm = None
         self.enhanced_algorithm_prob = 1.0  # 增强算法的使用概率，随训练进程递减
 
@@ -988,7 +1045,8 @@ class MAPPOAgent:
         self.critic = CriticNetwork(
             state_dim, obs_dim, num_agents,
             hidden_dim=critic_hidden_dim,
-            use_attention=use_attention_critic
+            use_attention=use_attention_critic,
+            attn_sample_agents=attention_sample_agents
         ).to(self.device)
 
         # 优化器 (Actor 和 Critic 独立优化)
@@ -1025,6 +1083,18 @@ class MAPPOAgent:
         self.entropy_history = []
         self.total_loss_history = []
 
+        # ===== 新增：训练健康监控器 =====
+        self.training_monitor = {
+            'kl_divergences': [],           # KL散度历史
+            'policy_gradient_norms': [],    # 梯度范数历史
+            'value_errors': [],             # 价值误差历史
+            'exploration_rates': [],        # 探索率历史
+            'best_satisfaction': 0.0,       # 最佳满意度
+            'recent_rewards': [],           # 最近奖励
+            'entropy_warning_count': 0,     # 熵警告计数
+            'kl_warning_count': 0,         # KL散度警告计数
+        }
+
     def select_actions(self, obs_dict: Dict[int, np.ndarray],
                        global_state: np.ndarray,
                        biz_types: Dict[int, int] = None,
@@ -1052,6 +1122,16 @@ class MAPPOAgent:
         log_probs_dict = {}
         values_dict = {}
 
+        # ---- obs_dim 自适应修复 (Phase3泛化场景) ----
+        # 检测实际obs_dim是否与模型训练时一致
+        if obs_dict:
+            actual_obs_dim = len(obs_dict[0]) if 0 in obs_dict else 0
+            if actual_obs_dim > 0 and actual_obs_dim != self.obs_dim:
+                if not hasattr(self, '_obs_dim_adjusted') or self._obs_dim_adjusted != actual_obs_dim:
+                    print(f"  [obs_dim自适应] 调整 {self.obs_dim} -> {actual_obs_dim}")
+                    self._adjust_network_for_obs_dim(actual_obs_dim)
+                    self._obs_dim_adjusted = actual_obs_dim
+
         # 混合专家模型：根据情况选择增强算法或MAPPO策略
         if self.use_enhanced_algorithm and self.enhanced_algorithm and training:
             # 基于环境状态和业务类型动态选择专家
@@ -1069,6 +1149,7 @@ class MAPPOAgent:
                 if training:
                     self.obs_normalizer.update(obs_batch)
                 obs_batch_norm = self.obs_normalizer.normalize(obs_batch)
+                obs_batch_augmented = obs_batch_norm.copy()  # 增强算法不加噪声
                 obs_t = torch.FloatTensor(obs_batch_norm).to(self.device)
                 state_t = torch.FloatTensor(global_state).unsqueeze(0).to(self.device)
                 obs_all_t = obs_t.unsqueeze(0)
@@ -1110,30 +1191,46 @@ class MAPPOAgent:
                 best_sinr_bs = np.argmax(sinr_row)
                 best_cap_bs = np.argmax(capacities)
 
-                # 增强算法的动作映射
+                # 增强算法的动作映射 — 映射到环境的语义动作空间 (0-5)
                 if uav.connected_bs_id == best_sinr_bs:
-                    action = 1
+                    action = 0  # stay: 已经连接到最佳SINR基站
                 elif uav.connected_bs_id == best_cap_bs:
-                    action = 2
+                    action = 0  # stay: 已经连接到最佳容量基站
                 else:
-                    action = 3
+                    # 根据切换目标选择对应的语义动作
+                    biz_type = uav.true_business_type.value
+                    if biz_type == 0:
+                        # 延迟敏感型 → best_sinr (action=1)
+                        action = 1
+                    elif biz_type == 1:
+                        # 吞吐量敏感型 → best_capacity (action=2)
+                        action = 2
+                    else:
+                        # 可靠性敏感型 → business_specific (action=5)
+                        action = 5
                 actions[uid] = action
 
                 # 用 Actor 网络计算该动作的有效 log_prob（关键修复！）
                 if self.use_hierarchical:
                     high_dist = Categorical(logits=high_level_logits[uid].unsqueeze(0))
-                    action_tensor = torch.tensor([action], device=self.device, dtype=torch.long)
                     if action == 0:
-                        log_probs_dict[uid] = high_dist.log_prob(action_tensor)[0].item()
+                        # Stay: 高层动作0
+                        high_act_t = torch.tensor([0], device=self.device, dtype=torch.long)
+                        log_probs_dict[uid] = high_dist.log_prob(high_act_t)[0].item()
                     else:
+                        # Switch: 高层动作1 + 底层动作(action-1)
                         low_dist = Categorical(logits=low_level_logits[uid].unsqueeze(0))
-                        low_action_tensor = torch.tensor([action - 1], device=self.device, dtype=torch.long)
+                        low_action = action - 1  # 转换为0-based底层动作
+                        # 确保low_action在有效范围内
+                        low_action = min(max(low_action, 0), low_level_logits[uid].shape[0] - 1)
+                        low_action_tensor = torch.tensor([low_action], device=self.device, dtype=torch.long)
                         high_act_t = torch.tensor([1], device=self.device, dtype=torch.long)
                         log_probs_dict[uid] = (high_dist.log_prob(high_act_t)[0].item() +
                                                 low_dist.log_prob(low_action_tensor)[0].item())
                 else:
                     dist = Categorical(logits=logits[uid])
-                    action_tensor = torch.tensor([action], device=self.device, dtype=torch.long)
+                    action_clamped = min(max(action, 0), logits[uid].shape[0] - 1)
+                    action_tensor = torch.tensor([action_clamped], device=self.device, dtype=torch.long)
                     log_probs_dict[uid] = dist.log_prob(action_tensor).item()
 
                 values_dict[uid] = per_agent_values[uid].item()
@@ -1145,17 +1242,25 @@ class MAPPOAgent:
                 pre_hidden = self.actor_hidden
 
                 obs_batch = np.array([obs_dict[i] for i in range(self.num_agents)])
+                
+                # 跨场景泛化时自动适配 obs_normalizer 维度
+                actual_obs_dim = obs_batch.shape[1]
+                if actual_obs_dim != self.obs_normalizer.obs_dim:
+                    self.obs_normalizer.reset(new_obs_dim=actual_obs_dim)
+                
                 # 训练时更新 running stats；eval 时仅使用
                 if training:
                     self.obs_normalizer.update(obs_batch)
                 obs_batch_norm = self.obs_normalizer.normalize(obs_batch)
                 
-                # 数据增强：在训练时添加随机噪声
+                # 数据增强：在训练时添加随机噪声（obs_batch_augmented用于actor采样，
+                # 后续insert_experience将使用augmented版本存储以保证PPO一致性）
+                obs_batch_augmented = obs_batch_norm.copy()
                 if training and self.use_data_augmentation:
                     noise = np.random.normal(0, self.augmentation_noise, obs_batch_norm.shape)
-                    obs_batch_norm = obs_batch_norm + noise
+                    obs_batch_augmented = obs_batch_norm + noise
 
-                obs_t = torch.FloatTensor(obs_batch_norm).to(self.device)  # (N, obs_dim)
+                obs_t = torch.FloatTensor(obs_batch_augmented).to(self.device)  # (N, obs_dim)
                 state_t = torch.FloatTensor(global_state).unsqueeze(0).to(self.device)  # (1, state_dim)
                 obs_all_t = obs_t.unsqueeze(0)  # (1, N, obs_dim)
 
@@ -1231,7 +1336,7 @@ class MAPPOAgent:
                 elif actions.get(uid, 0) != 0:
                     self._switch_cooldown[uid] = self.switch_cooldown_steps
 
-        return actions, log_probs_dict, values_dict, pre_hidden_np
+        return actions, log_probs_dict, values_dict, pre_hidden_np, obs_batch_augmented
 
     def _select_expert(self, env, biz_types):
         """
@@ -1253,14 +1358,14 @@ class MAPPOAgent:
             base_stations = env.env.base_stations
             if isinstance(base_stations, dict):
                 for bs_id, bs in base_stations.items():
-                    if hasattr(bs, 'current_load') and hasattr(bs, 'total_capacity'):
+                    if hasattr(bs, 'current_load') and hasattr(bs, 'capacity'):
                         total_load += bs.current_load
-                        total_capacity += bs.total_capacity
+                        total_capacity += bs.capacity
             elif isinstance(base_stations, list):
                 for bs in base_stations:
-                    if hasattr(bs, 'current_load') and hasattr(bs, 'total_capacity'):
+                    if hasattr(bs, 'current_load') and hasattr(bs, 'capacity'):
                         total_load += bs.current_load
-                        total_capacity += bs.total_capacity
+                        total_capacity += bs.capacity
         load_ratio = total_load / total_capacity if total_capacity > 0 else 0
         
         # 2. 基于业务类型的启发式规则
@@ -1314,15 +1419,20 @@ class MAPPOAgent:
                           done: bool, log_probs: Dict[int, float],
                           values: Dict[int, float],
                           biz_types: Dict[int, int] = None,
-                          pre_hidden: np.ndarray = None):
+                          pre_hidden: np.ndarray = None,
+                          obs_augmented: np.ndarray = None):
         """插入一条经验到 buffer
 
         Args:
             pre_hidden: (num_agents, hidden_dim) — 采样时 GRU 的输入 hidden state
+            obs_augmented: (num_agents, obs_dim) — 已归一化（+噪声）的obs，与select_actions中
+                           actor使用的obs一致，保证PPO importance sampling正确性
         """
-        obs_batch = np.array([obs_dict[i] for i in range(self.num_agents)])
-        # 在存储时归一化 obs，确保与 select_actions 中计算 value 时使用相同的归一化参数
-        obs_batch = self.obs_normalizer.normalize(obs_batch)
+        if obs_augmented is not None:
+            obs_batch = obs_augmented
+        else:
+            obs_batch = np.array([obs_dict[i] for i in range(self.num_agents)])
+            obs_batch = self.obs_normalizer.normalize(obs_batch)
         self.buffer.insert(step, obs_batch, global_state, actions, rewards,
                            team_reward, done, log_probs, values, biz_types,
                            hiddens=pre_hidden)
@@ -1351,6 +1461,18 @@ class MAPPOAgent:
         # 计算 GAE
         advantages, returns = self.buffer.compute_gae(next_values)
 
+        # 记录原始 advantage 统计 (归一化前，供 Health Check 使用)
+        raw_adv_mean = float(advantages.mean())
+        raw_adv_std = float(advantages.std())
+
+        print(f"[GAE-SUMMARY] advantages: mean={raw_adv_mean:.8f}, std={raw_adv_std:.8f}, "
+              f"min={advantages.min():.8f}, max={advantages.max():.8f}")
+        print(f"[GAE-SUMMARY] returns: mean={returns.mean():.6f}, std={returns.std():.6f}")
+        print(f"[GAE-SUMMARY] values: mean={self.buffer.values[:self.buffer.ptr].cpu().numpy().mean():.6f}, "
+              f"std={self.buffer.values[:self.buffer.ptr].cpu().numpy().std():.6f}")
+        print(f"[GAE-SUMMARY] rewards: mean={self.buffer.rewards[:self.buffer.ptr].cpu().numpy().mean():.6f}, "
+              f"std={self.buffer.rewards[:self.buffer.ptr].cpu().numpy().std():.6f}")
+
         total_actor_loss = 0.0
         total_critic_loss = 0.0
         total_entropy = 0.0
@@ -1368,7 +1490,8 @@ class MAPPOAgent:
 
         try:
             batch_iterator = list(self.buffer.get_batches(
-                self.batch_size, advantages, returns, self.num_epochs, burn_in=burn_in
+                self.batch_size, advantages, returns, self.num_epochs,
+                burn_in=burn_in, sample_agents=self.train_sample_agents
             ))
         except Exception as e:
             print(f"[ERROR] Exception in get_batches(): {e}")
@@ -1396,17 +1519,24 @@ class MAPPOAgent:
                 total_adv_mean += adv_batch.mean().item()
                 total_ret_mean += ret_batch.mean().item()
 
-            # KL Divergence Early Stop (自适应策略)
+            # KL Divergence Early Stop (自适应策略) - V16优化
+            # 标准PPO公式: KL(old||new) = mean(old_log_prob - new_log_prob)
+            # 这衡量策略更新的幅度，正值表示策略在变化
             with torch.no_grad():
-                approx_kl = ((ratio - 1.0) - (new_log_probs - old_log_probs)).mean().item()
+                approx_kl = (old_log_probs - new_log_probs).mean().item()
 
-            # 自适应KL阈值：初期宽松，后期严格
-            adaptive_kl_threshold = 0.5 * (1 + 1 / max(1, self._current_train_step / 100))
-            adaptive_kl_threshold = min(adaptive_kl_threshold, 0.8)  # 上限0.8
+            # 自适应KL阈值：V16放宽，防止过严导致训练不稳定
+            # KL=log概率差异，典型值0.1~0.8，更宽松的范围适应多智能体环境
+            if self._current_train_step < 100:
+                adaptive_kl_threshold = 0.8   # 早期允许探索
+            elif self._current_train_step < 200:
+                adaptive_kl_threshold = 0.5   # 中期适度收敛
+            else:
+                adaptive_kl_threshold = 0.3   # 后期精细调优
 
-            if approx_kl > adaptive_kl_threshold:
-                if num_updates == 0:
-                    print(f"[DEBUG-KL] Early stop at step {num_updates+1}: "
+            if approx_kl > adaptive_kl_threshold and num_updates > 0:
+                if num_updates <= 2:  # 仅在早期输出调试信息
+                    print(f"[DEBUG-KL] Early stop after {num_updates} updates: "
                           f"kl={approx_kl:.4f} > threshold={adaptive_kl_threshold:.4f} "
                           f"(train_step={self._current_train_step})")
                 break
@@ -1488,6 +1618,9 @@ class MAPPOAgent:
             'advantage_mean': total_adv_mean / max(num_updates, 1),
             'return_mean': total_ret_mean / max(num_updates, 1),
             'num_updates': num_updates,
+            # 原始 advantage 统计 (归一化前)，供 Health Check 使用
+            'raw_adv_mean': raw_adv_mean,
+            'raw_adv_std': raw_adv_std,
         }
 
         self.actor_loss_history.append(avg_stats['actor_loss'])
@@ -1496,10 +1629,82 @@ class MAPPOAgent:
         self.total_loss_history.append(avg_stats['total_loss'])
         self.train_step_count += 1
 
+        # ===== 新增：更新训练监控器 =====
+        # 1. KL散度
+        kl_value = avg_stats.get('approx_kl', 0.0)
+        self.training_monitor['kl_divergences'].append(kl_value)
+        
+        # 2. 梯度范数
+        actor_grad = avg_stats.get('actor_grad_norm', 0.0)
+        self.training_monitor['policy_gradient_norms'].append(actor_grad)
+        
+        # 3. 价值误差
+        value_error = avg_stats.get('value_mse', 0.0)
+        self.training_monitor['value_errors'].append(value_error)
+        
+        # 4. 健康度检测
+        self._check_training_health(kl_value, avg_stats.get('entropy', 0.0))
+        
+        # 5. 清理历史（避免内存溢出）
+        max_history = 1000
+        for key in ['kl_divergences', 'policy_gradient_norms', 'value_errors']:
+            if len(self.training_monitor[key]) > max_history:
+                self.training_monitor[key] = self.training_monitor[key][-max_history:]
+
         # 清空 buffer
         self.buffer.clear()
 
         return avg_stats
+
+    def _adjust_network_for_obs_dim(self, new_obs_dim: int):
+        """动态调整网络输入维度以适应不同的obs_dim (用于Phase3泛化)"""
+        import torch.nn as nn
+        
+        old_obs_dim = self.obs_dim
+        self.obs_dim = new_obs_dim
+        
+        # 调整 Actor 的 fc 层
+        if hasattr(self.actor, 'fc'):
+            old_fc = self.actor.fc
+            self.actor.fc = nn.Linear(new_obs_dim, old_fc.out_features).to(self.device)
+            # 尝试保留部分权重
+            with torch.no_grad():
+                min_dim = min(old_obs_dim, new_obs_dim)
+                self.actor.fc.weight[:, :min_dim] = old_fc.weight[:, :min_dim]
+        
+        # 调整 HierarchicalActorNetwork 的 fc 层
+        if hasattr(self.actor, 'input_embedding'):
+            old_emb = self.actor.input_embedding
+            self.actor.input_embedding = nn.Linear(new_obs_dim, old_emb.out_features).to(self.device)
+            with torch.no_grad():
+                min_dim = min(old_obs_dim, new_obs_dim)
+                self.actor.input_embedding.weight[:, :min_dim] = old_emb.weight[:, :min_dim]
+        
+        # 调整 Critic 的相关层
+        if hasattr(self.critic, 'state_fc'):
+            old_state_fc = self.critic.state_fc
+            self.critic.state_fc = nn.Linear(self.critic.state_dim, old_state_fc.out_features).to(self.device)
+            with torch.no_grad():
+                self.critic.state_fc.weight.copy_(old_state_fc.weight)
+        
+        # 调整 AttentionCritic 的 obs_embed (注意: 嵌套在 critic.att_critic 中)
+        if hasattr(self.critic, 'att_critic') and hasattr(self.critic.att_critic, 'obs_embed'):
+            old_obs_embed = self.critic.att_critic.obs_embed
+            self.critic.att_critic.obs_embed = nn.Linear(new_obs_dim, old_obs_embed.out_features).to(self.device)
+            with torch.no_grad():
+                min_dim = min(old_obs_dim, new_obs_dim)
+                self.critic.att_critic.obs_embed.weight[:, :min_dim] = old_obs_embed.weight[:, :min_dim]
+            print(f"  [obs_dim自适应] 已调整 Critic att_critic.obs_embed: {old_obs_dim} -> {new_obs_dim}")
+        elif hasattr(self.critic, 'obs_embed'):  # 非attention模式的fallback
+            old_obs_embed = self.critic.obs_embed
+            self.critic.obs_embed = nn.Linear(new_obs_dim, old_obs_embed.out_features).to(self.device)
+            with torch.no_grad():
+                min_dim = min(old_obs_dim, new_obs_dim)
+                self.critic.obs_embed.weight[:, :min_dim] = old_obs_embed.weight[:, :min_dim]
+        
+        # 重新初始化优化器
+        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=self.actor_lr)
+        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=self.critic_lr)
 
     def save(self, path: str):
         """保存模型"""
@@ -1557,8 +1762,8 @@ class MAPPOAgent:
         """
         if not self.use_enhanced_algorithm:
             return
-        # 线性递减策略
-        self.enhanced_algorithm_prob = max(0.0, 1.0 - step / total_steps)
+        # 线性递减策略 (修复:不完全衰减到0，保持20%引导防止策略坍缩)
+        self.enhanced_algorithm_prob = max(0.2, 1.0 - step / total_steps)
 
     def get_stats(self) -> dict:
         """获取训练统计"""
@@ -1575,6 +1780,58 @@ class MAPPOAgent:
             'avg_total_loss': _avg(self.total_loss_history),
             'enhanced_algorithm_prob': self.enhanced_algorithm_prob if self.use_enhanced_algorithm else 0.0,
         }
+
+    def _check_training_health(self, kl_value: float, entropy: float):
+        """
+        检查训练健康度并发出警告
+        
+        Args:
+            kl_value: 当前KL散度
+            entropy: 当前熵值
+        """
+        # 检查频率：每20步检查一次
+        if self.train_step_count % 20 != 0:
+            return
+        
+        recent_window = 20
+        
+        # 1. KL散度检测
+        if len(self.training_monitor['kl_divergences']) >= recent_window:
+            recent_kl = np.mean(self.training_monitor['kl_divergences'][-recent_window:])
+            if recent_kl < 0.001:
+                self.training_monitor['kl_warning_count'] += 1
+                if self.training_monitor['kl_warning_count'] % 5 == 0:
+                    print(f"[WARNING] KL散度过小({recent_kl:.6f})，策略更新不足，可能陷入局部最优")
+            elif recent_kl > 0.05:
+                self.training_monitor['kl_warning_count'] += 1
+                if self.training_monitor['kl_warning_count'] % 5 == 0:
+                    print(f"[WARNING] KL散度过大({recent_kl:.4f})，策略更新剧烈，可能不稳定")
+            else:
+                self.training_monitor['kl_warning_count'] = 0
+        
+        # 2. 熵值检测
+        if entropy < 0.01:
+            self.training_monitor['entropy_warning_count'] += 1
+            if self.training_monitor['entropy_warning_count'] % 5 == 0:
+                print(f"[WARNING] Entropy过小({entropy:.4f})，策略严重坍缩，探索几乎为零")
+                print(f"          建议: 增大entropy_coef参数")
+        elif entropy > 5.0:
+            # 熵值过大也可能有问题（策略过于随机）
+            pass  # 熵值大通常不是问题，这里只记录
+        else:
+            self.training_monitor['entropy_warning_count'] = 0
+        
+        # 3. 梯度范数检测
+        if len(self.training_monitor['policy_gradient_norms']) >= recent_window:
+            recent_grad = np.mean(self.training_monitor['policy_gradient_norms'][-recent_window:])
+            if recent_grad > 10.0:
+                if self.train_step_count % 20 == 0:
+                    print(f"[INFO] 梯度范数较大({recent_grad:.2f})，训练稳定")
+        
+        # 4. 重置警告计数（正常时）
+        if recent_kl > 0.001 and recent_kl < 0.05 and entropy > 0.01:
+            self.training_monitor['kl_warning_count'] = 0
+            self.training_monitor['entropy_warning_count'] = 0
 
     def collect_demonstrations(self, env, num_demos=1000):
         """
@@ -1619,12 +1876,30 @@ class MAPPOAgent:
                 best_sinr_bs = np.argmax(sinr_row)
                 best_cap_bs = np.argmax(capacities)
                 
+                # 记录增强算法切换前后的连接状态，判断是否实际切换了
+                prev_bs_id = uav.connected_bs_id
+
                 if uav.connected_bs_id == best_sinr_bs:
-                    action = 1  # best_sinr
+                    # 已连接到SINR最优BS → stay
+                    action = 0
                 elif uav.connected_bs_id == best_cap_bs:
-                    action = 2  # best_capacity
+                    # 已连接到容量最优BS → stay
+                    action = 0
                 else:
-                    action = 3  # sinr_capacity
+                    # 需要切换，根据SINR差距选择切换策略
+                    current_sinr = sinr_row[uav.connected_bs_id] if uav.connected_bs_id is not None else 0
+                    best_sinr_val = sinr_row[best_sinr_bs] if best_sinr_bs is not None else 0
+                    sinr_gap = best_sinr_val - current_sinr
+
+                    if sinr_gap > 5.0:
+                        action = 1  # best_sinr - SINR差距大，优先SINR
+                    else:
+                        # SINR差距不大，选容量更好的
+                        target_cap = capacities[best_cap_bs] if best_cap_bs < len(capacities) else 0
+                        if target_cap > uav.required_rate:
+                            action = 2  # best_capacity - 目标BS容量充足
+                        else:
+                            action = 3  # sinr_capacity - 综合考虑
                 
                 demonstrations.append((obs, action))
             

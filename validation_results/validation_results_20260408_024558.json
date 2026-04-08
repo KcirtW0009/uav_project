@@ -1,0 +1,2358 @@
+{
+  "version": "1.0",
+  "configuration": {
+    "expected_ranges": {
+      "satisfaction": {
+        "min": 0.4,
+        "max": 1.0
+      },
+      "reward": {
+        "min": -20.0,
+        "max": 20.0
+      },
+      "actor_loss": {
+        "min": 0.0,
+        "max": 10.0
+      },
+      "critic_loss": {
+        "min": 0.0,
+        "max": 10.0
+      },
+      "entropy": {
+        "min": 0.0,
+        "max": 2.0
+      },
+      "kl_divergence": {
+        "min": 0.0,
+        "max": 1.0
+      },
+      "handover_latency": {
+        "min": 0.0,
+        "max": 50.0
+      },
+      "packet_loss_rate": {
+        "min": 0.0,
+        "max": 10.0
+      },
+      "qos_violation_rate": {
+        "min": 0.0,
+        "max": 100.0
+      }
+    },
+    "statistical_checks": {
+      "reward_std_threshold": 30.0,
+      "satisfaction_std_threshold": 15.0,
+      "min_episodes_for_stats": 5
+    },
+    "data_integrity": {
+      "checksum_enabled": true,
+      "duplicate_check": true,
+      "range_check": true
+    },
+    "reproducibility": {
+      "seed_check": true,
+      "environment_check": true,
+      "hyperparameter_check": true
+    }
+  },
+  "results": {
+    "timestamp": "2026-04-08T02:45:58.279326",
+    "episode_validation": [
+      {
+        "episode": 1,
+        "valid": false,
+        "errors": [
+          "critic_loss value 64.039 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.6727043239760734,
+          "reward": 5.282924222974073,
+          "actor_loss": 0.048666020177511704,
+          "critic_loss": 64.0386148373286,
+          "entropy": 0.572285302562846
+        }
+      },
+      {
+        "episode": 2,
+        "valid": false,
+        "errors": [
+          "critic_loss value 42.988 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7406503168760031,
+          "reward": 6.125663961830172,
+          "actor_loss": 0.04573822461275591,
+          "critic_loss": 42.98801540136337,
+          "entropy": 0.5373690790600247
+        }
+      },
+      {
+        "episode": 3,
+        "valid": false,
+        "errors": [
+          "critic_loss value 33.742 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.6827321007256486,
+          "reward": 6.322015989289122,
+          "actor_loss": 0.03338813154259697,
+          "critic_loss": 33.74188395076328,
+          "entropy": 0.4933338256345855
+        }
+      },
+      {
+        "episode": 4,
+        "valid": false,
+        "errors": [
+          "critic_loss value 32.298 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7202026373006813,
+          "reward": 4.6664624738411264,
+          "actor_loss": 0.03372293929052022,
+          "critic_loss": 32.29814953539107,
+          "entropy": 0.5966733445723852
+        }
+      },
+      {
+        "episode": 5,
+        "valid": false,
+        "errors": [
+          "critic_loss value 54.356 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7272111122812878,
+          "reward": 6.443970371332981,
+          "actor_loss": 0.04271487826481461,
+          "critic_loss": 54.35609384112888,
+          "entropy": 0.5443820709983508
+        }
+      },
+      {
+        "episode": 6,
+        "valid": false,
+        "errors": [
+          "critic_loss value 18.683 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.6941164261096692,
+          "reward": 7.669776421401507,
+          "actor_loss": 0.019018608763710493,
+          "critic_loss": 18.683292065726388,
+          "entropy": 0.5300717463095983
+        }
+      },
+      {
+        "episode": 7,
+        "valid": false,
+        "errors": [
+          "critic_loss value 43.045 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.6860548152483332,
+          "reward": 6.451110400325069,
+          "actor_loss": 0.021675729050507977,
+          "critic_loss": 43.045322415563795,
+          "entropy": 0.5070243249336879
+        }
+      },
+      {
+        "episode": 8,
+        "valid": false,
+        "errors": [
+          "critic_loss value 18.111 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7518236071402956,
+          "reward": 5.112418921105918,
+          "actor_loss": 0.011408715224307444,
+          "critic_loss": 18.111207291815017,
+          "entropy": 0.40690053684843913
+        }
+      },
+      {
+        "episode": 9,
+        "valid": false,
+        "errors": [
+          "critic_loss value 45.253 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7155786013567511,
+          "reward": 7.268192961604556,
+          "actor_loss": 0.016166665125638247,
+          "critic_loss": 45.253415400452084,
+          "entropy": 0.4171509532464875
+        }
+      },
+      {
+        "episode": 10,
+        "valid": false,
+        "errors": [
+          "critic_loss value 42.165 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7378307526637785,
+          "reward": 11.660611239464075,
+          "actor_loss": 0.007618817273113462,
+          "critic_loss": 42.164659179581534,
+          "entropy": 0.4184574885500802
+        }
+      },
+      {
+        "episode": 11,
+        "valid": false,
+        "errors": [
+          "critic_loss value 32.871 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7054307131873035,
+          "reward": 9.103813356743672,
+          "actor_loss": 0.0026123484363779425,
+          "critic_loss": 32.87147051493327,
+          "entropy": 0.45307350473271474
+        }
+      },
+      {
+        "episode": 12,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.001 out of expected range [0.0, 10.0]",
+          "critic_loss value 18.083 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.6916067695549439,
+          "reward": 2.123245646092048,
+          "actor_loss": -0.0008555207660214768,
+          "critic_loss": 18.08262524339888,
+          "entropy": 0.5921900747550859
+        }
+      },
+      {
+        "episode": 13,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.012 out of expected range [0.0, 10.0]",
+          "critic_loss value 14.685 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7238610853999897,
+          "reward": 8.66465378039109,
+          "actor_loss": -0.01165025992732909,
+          "critic_loss": 14.685100813706716,
+          "entropy": 0.6682049757904477
+        }
+      },
+      {
+        "episode": 14,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.020 out of expected range [0.0, 10.0]",
+          "critic_loss value 35.397 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7462105848206481,
+          "reward": 11.550695475631109,
+          "actor_loss": -0.02021565203451448,
+          "critic_loss": 35.397167407141794,
+          "entropy": 0.6350270258055792
+        }
+      },
+      {
+        "episode": 15,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.018 out of expected range [0.0, 10.0]",
+          "critic_loss value 38.041 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7511370647712515,
+          "reward": 7.633733078323264,
+          "actor_loss": -0.018301608103017012,
+          "critic_loss": 38.04139995839861,
+          "entropy": 0.5837168744868703
+        }
+      },
+      {
+        "episode": 16,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.023 out of expected range [0.0, 10.0]",
+          "critic_loss value 30.258 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7004873115748425,
+          "reward": 9.123563355889509,
+          "actor_loss": -0.022630608319822283,
+          "critic_loss": 30.258276257250046,
+          "entropy": 0.5797338661220338
+        }
+      },
+      {
+        "episode": 17,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.019 out of expected range [0.0, 10.0]",
+          "critic_loss value 27.056 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7227106049729128,
+          "reward": 7.543003023720864,
+          "actor_loss": -0.018991235995458232,
+          "critic_loss": 27.056045344140795,
+          "entropy": 0.5418223210506969
+        }
+      },
+      {
+        "episode": 18,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.012 out of expected range [0.0, 10.0]",
+          "critic_loss value 15.095 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.686823192441327,
+          "reward": 5.0554546944631085,
+          "actor_loss": -0.01208780477496071,
+          "critic_loss": 15.094786567158168,
+          "entropy": 0.5621170121762488
+        }
+      },
+      {
+        "episode": 19,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.027 out of expected range [0.0, 10.0]",
+          "critic_loss value 36.562 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7056139608379646,
+          "reward": 9.685968273175567,
+          "actor_loss": -0.02680474559052123,
+          "critic_loss": 36.56197954018911,
+          "entropy": 0.5458536490797996
+        }
+      },
+      {
+        "episode": 20,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.035 out of expected range [0.0, 10.0]",
+          "critic_loss value 37.911 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.702985985754339,
+          "reward": 7.634211586499446,
+          "actor_loss": -0.03507541274755365,
+          "critic_loss": 37.91051261954837,
+          "entropy": 0.4734430147541894
+        }
+      },
+      {
+        "episode": 21,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.022 out of expected range [0.0, 10.0]",
+          "critic_loss value 27.951 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.6884070541513916,
+          "reward": 10.168670412882904,
+          "actor_loss": -0.02204840508962257,
+          "critic_loss": 27.9509786579344,
+          "entropy": 0.5294354849391514
+        }
+      },
+      {
+        "episode": 22,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.031 out of expected range [0.0, 10.0]",
+          "critic_loss value 25.668 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7300849871686838,
+          "reward": 12.261536927431077,
+          "actor_loss": -0.03139568079366452,
+          "critic_loss": 25.66841055817074,
+          "entropy": 0.4554597556591034
+        }
+      },
+      {
+        "episode": 23,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.035 out of expected range [0.0, 10.0]",
+          "critic_loss value 16.099 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.6860322459308855,
+          "reward": 4.552022053264362,
+          "actor_loss": -0.03498889102290074,
+          "critic_loss": 16.099330486191644,
+          "entropy": 0.5175005896223916
+        }
+      },
+      {
+        "episode": 24,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.030 out of expected range [0.0, 10.0]",
+          "critic_loss value 23.270 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.6915022242959853,
+          "reward": 9.110643325984025,
+          "actor_loss": -0.029734312059978642,
+          "critic_loss": 23.269717444313898,
+          "entropy": 0.4459736188252767
+        }
+      },
+      {
+        "episode": 25,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.020 out of expected range [0.0, 10.0]",
+          "critic_loss value 14.707 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7391728719882245,
+          "reward": 14.705658697417821,
+          "actor_loss": -0.019519256650366718,
+          "critic_loss": 14.706850801573859,
+          "entropy": 0.3792089943256643
+        }
+      },
+      {
+        "episode": 26,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.026 out of expected range [0.0, 10.0]",
+          "critic_loss value 30.001 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.6859478275116403,
+          "reward": 9.023229032544362,
+          "actor_loss": -0.025977201097541387,
+          "critic_loss": 30.000540200869242,
+          "entropy": 0.3848195733295547
+        }
+      },
+      {
+        "episode": 27,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.015 out of expected range [0.0, 10.0]",
+          "critic_loss value 13.386 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7247348848336741,
+          "reward": 6.562778182469573,
+          "actor_loss": -0.014704667285291685,
+          "critic_loss": 13.386009755399492,
+          "entropy": 0.3366794513331519
+        }
+      },
+      {
+        "episode": 28,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.020 out of expected range [0.0, 10.0]",
+          "critic_loss value 10.646 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7382263123543145,
+          "reward": 8.755153950665054,
+          "actor_loss": -0.020403170083752937,
+          "critic_loss": 10.64601635535558,
+          "entropy": 0.32107267901301384
+        }
+      },
+      {
+        "episode": 29,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.023 out of expected range [0.0, 10.0]",
+          "critic_loss value 17.749 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7080695383355089,
+          "reward": 6.490609927294571,
+          "actor_loss": -0.023217300321751583,
+          "critic_loss": 17.748777537875704,
+          "entropy": 0.3342477478086948
+        }
+      },
+      {
+        "episode": 30,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.027 out of expected range [0.0, 10.0]",
+          "critic_loss value 22.001 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.6913921700808623,
+          "reward": 11.52194541105371,
+          "actor_loss": -0.026650089982690084,
+          "critic_loss": 22.001271197530958,
+          "entropy": 0.2803311169975334
+        }
+      },
+      {
+        "episode": 31,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.025 out of expected range [0.0, 10.0]",
+          "critic_loss value 16.353 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.68773188837304,
+          "reward": 5.238971515439373,
+          "actor_loss": -0.02487933828185002,
+          "critic_loss": 16.352543404367236,
+          "entropy": 0.2855836951070362
+        }
+      },
+      {
+        "episode": 32,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.023 out of expected range [0.0, 10.0]",
+          "critic_loss value 15.250 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.6887117403498657,
+          "reward": 5.459372472702548,
+          "actor_loss": -0.022591519614474642,
+          "critic_loss": 15.25017425219218,
+          "entropy": 0.2721266322665744
+        }
+      },
+      {
+        "episode": 33,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.027 out of expected range [0.0, 10.0]",
+          "critic_loss value 22.477 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.6780315527143737,
+          "reward": 7.749777313417142,
+          "actor_loss": -0.02708196145378881,
+          "critic_loss": 22.476860178841484,
+          "entropy": 0.3193956987725364
+        }
+      },
+      {
+        "episode": 34,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.037 out of expected range [0.0, 10.0]",
+          "critic_loss value 38.704 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7130617761408895,
+          "reward": 13.38815086430324,
+          "actor_loss": -0.036768888770085245,
+          "critic_loss": 38.70437509218852,
+          "entropy": 0.2563567613148027
+        }
+      },
+      {
+        "episode": 35,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.026 out of expected range [0.0, 10.0]",
+          "critic_loss value 26.643 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7128813877149949,
+          "reward": 8.564114135502788,
+          "actor_loss": -0.02592705106880102,
+          "critic_loss": 26.64308693938785,
+          "entropy": 0.2463276009178824
+        }
+      },
+      {
+        "episode": 36,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.020 out of expected range [0.0, 10.0]",
+          "critic_loss value 13.761 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7195321310459295,
+          "reward": 11.336981509196955,
+          "actor_loss": -0.01998277836634467,
+          "critic_loss": 13.76093734105428,
+          "entropy": 0.229859654729565
+        }
+      },
+      {
+        "episode": 37,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.025 out of expected range [0.0, 10.0]",
+          "critic_loss value 25.010 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7125411996821068,
+          "reward": 6.376884092849474,
+          "actor_loss": -0.024628593746779694,
+          "critic_loss": 25.01023478772905,
+          "entropy": 0.2273050355207589
+        }
+      },
+      {
+        "episode": 38,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.034 out of expected range [0.0, 10.0]",
+          "critic_loss value 25.495 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7131161758978284,
+          "reward": 10.524391345117177,
+          "actor_loss": -0.03405712352444728,
+          "critic_loss": 25.49532885286543,
+          "entropy": 0.2000147436848945
+        }
+      },
+      {
+        "episode": 39,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.019 out of expected range [0.0, 10.0]",
+          "critic_loss value 18.957 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7361469618222626,
+          "reward": 9.316142378259707,
+          "actor_loss": -0.0191077319956902,
+          "critic_loss": 18.957263559765288,
+          "entropy": 0.13821851251025993
+        }
+      },
+      {
+        "episode": 40,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.022 out of expected range [0.0, 10.0]",
+          "critic_loss value 14.411 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.6994217141160277,
+          "reward": 7.623657011045122,
+          "actor_loss": -0.021837793523445725,
+          "critic_loss": 14.410864268408881,
+          "entropy": 0.19410772464341589
+        }
+      },
+      {
+        "episode": 41,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.035 out of expected range [0.0, 10.0]",
+          "critic_loss value 26.419 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7506685691888434,
+          "reward": 14.267937695033167,
+          "actor_loss": -0.03515043980959389,
+          "critic_loss": 26.419182708528307,
+          "entropy": 0.13125692018204266
+        }
+      },
+      {
+        "episode": 42,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.024 out of expected range [0.0, 10.0]",
+          "critic_loss value 13.420 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.6800917482370159,
+          "reward": 9.417676563002674,
+          "actor_loss": -0.023777169211664135,
+          "critic_loss": 13.419580278131697,
+          "entropy": 0.3111347571015358
+        }
+      },
+      {
+        "episode": 43,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.026 out of expected range [0.0, 10.0]",
+          "critic_loss value 15.342 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7455407654659217,
+          "reward": 9.98472761658037,
+          "actor_loss": -0.02634225462873777,
+          "critic_loss": 15.341644022199842,
+          "entropy": 0.14289033707852164
+        }
+      },
+      {
+        "episode": 44,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.019 out of expected range [0.0, 10.0]",
+          "critic_loss value 17.945 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7088665217824635,
+          "reward": 7.854422417454963,
+          "actor_loss": -0.018570670682109065,
+          "critic_loss": 17.94546174870597,
+          "entropy": 0.1769432461096181
+        }
+      },
+      {
+        "episode": 45,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.027 out of expected range [0.0, 10.0]",
+          "critic_loss value 19.320 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7139675642362664,
+          "reward": 12.15937975897153,
+          "actor_loss": -0.02653437513444159,
+          "critic_loss": 19.31963538726171,
+          "entropy": 0.2185476998695069
+        }
+      },
+      {
+        "episode": 46,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.023 out of expected range [0.0, 10.0]",
+          "critic_loss value 18.034 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7292172950245158,
+          "reward": 9.635711930251036,
+          "actor_loss": -0.023279306401188176,
+          "critic_loss": 18.033758150206673,
+          "entropy": 0.17411799360480573
+        }
+      },
+      {
+        "episode": 47,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.029 out of expected range [0.0, 10.0]",
+          "critic_loss value 27.544 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7099917255794064,
+          "reward": 8.347798673434358,
+          "actor_loss": -0.028790754260909227,
+          "critic_loss": 27.54360505474938,
+          "entropy": 0.13838645751691528
+        }
+      },
+      {
+        "episode": 48,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.019 out of expected range [0.0, 10.0]",
+          "critic_loss value 11.244 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7362626788628225,
+          "reward": 10.698007284955924,
+          "actor_loss": -0.01867094549557401,
+          "critic_loss": 11.243581851323446,
+          "entropy": 0.16690077195978828
+        }
+      },
+      {
+        "episode": 49,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.008 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7026600142770117,
+          "reward": 5.979194146614468,
+          "actor_loss": -0.0075204383685357045,
+          "critic_loss": 9.320207095146179,
+          "entropy": 0.2513542324718502
+        }
+      },
+      {
+        "episode": 50,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.030 out of expected range [0.0, 10.0]",
+          "critic_loss value 19.541 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7056104095834367,
+          "reward": 8.331352512288191,
+          "actor_loss": -0.029718225301864246,
+          "critic_loss": 19.541480916076235,
+          "entropy": 0.22388154783596595
+        }
+      },
+      {
+        "episode": 51,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.036 out of expected range [0.0, 10.0]",
+          "critic_loss value 18.478 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7048690144406777,
+          "reward": 10.252575767719398,
+          "actor_loss": -0.03571970841019518,
+          "critic_loss": 18.478130079640284,
+          "entropy": 0.19736540398250024
+        }
+      },
+      {
+        "episode": 52,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.024 out of expected range [0.0, 10.0]",
+          "critic_loss value 15.095 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7159030582143351,
+          "reward": 4.821643115309042,
+          "actor_loss": -0.023891058429661723,
+          "critic_loss": 15.094527032640245,
+          "entropy": 0.14851850184301535
+        }
+      },
+      {
+        "episode": 53,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.022 out of expected range [0.0, 10.0]",
+          "critic_loss value 18.438 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7121157023168321,
+          "reward": 6.586130197675202,
+          "actor_loss": -0.022269431630977325,
+          "critic_loss": 18.437534769376118,
+          "entropy": 0.20200019735429023
+        }
+      },
+      {
+        "episode": 54,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.025 out of expected range [0.0, 10.0]",
+          "critic_loss value 22.748 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7314984514917643,
+          "reward": 11.20306706974644,
+          "actor_loss": -0.024597361782151793,
+          "critic_loss": 22.747915399074554,
+          "entropy": 0.13470859893778753
+        }
+      },
+      {
+        "episode": 55,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.028 out of expected range [0.0, 10.0]",
+          "critic_loss value 21.000 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7144512214624338,
+          "reward": 7.924105859502102,
+          "actor_loss": -0.02757300194352865,
+          "critic_loss": 21.000100774235197,
+          "entropy": 0.1791777256048388
+        }
+      },
+      {
+        "episode": 56,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.030 out of expected range [0.0, 10.0]",
+          "critic_loss value 19.767 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.6927209228313005,
+          "reward": 10.811252700027117,
+          "actor_loss": -0.03028831878780491,
+          "critic_loss": 19.766858058505587,
+          "entropy": 0.16831251997500657
+        }
+      },
+      {
+        "episode": 57,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.033 out of expected range [0.0, 10.0]",
+          "critic_loss value 30.857 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7218766986147138,
+          "reward": 8.756574966438938,
+          "actor_loss": -0.033253209525719286,
+          "critic_loss": 30.857030630111694,
+          "entropy": 0.16842412246753358
+        }
+      },
+      {
+        "episode": 58,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.025 out of expected range [0.0, 10.0]",
+          "critic_loss value 18.117 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7171436110678538,
+          "reward": 8.893698895299973,
+          "actor_loss": -0.02490123911346826,
+          "critic_loss": 18.116644416915047,
+          "entropy": 0.13444229437348743
+        }
+      },
+      {
+        "episode": 59,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.029 out of expected range [0.0, 10.0]",
+          "critic_loss value 17.291 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7791126411810354,
+          "reward": 12.262153627608638,
+          "actor_loss": -0.029312535680623517,
+          "critic_loss": 17.291497225231595,
+          "entropy": 0.10484999203989799
+        }
+      },
+      {
+        "episode": 60,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.022 out of expected range [0.0, 10.0]",
+          "critic_loss value 14.353 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7029288026143911,
+          "reward": 8.368350054000446,
+          "actor_loss": -0.021847835084837345,
+          "critic_loss": 14.35303814543618,
+          "entropy": 0.2560404145055347
+        }
+      },
+      {
+        "episode": 61,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.026 out of expected range [0.0, 10.0]",
+          "critic_loss value 15.052 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7223330932020037,
+          "reward": 12.35808893226974,
+          "actor_loss": -0.025814481131318543,
+          "critic_loss": 15.052359051174587,
+          "entropy": 0.16115474007609817
+        }
+      },
+      {
+        "episode": 62,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.025 out of expected range [0.0, 10.0]",
+          "critic_loss value 16.809 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7041477522696106,
+          "reward": 8.020182087980226,
+          "actor_loss": -0.025370521426925228,
+          "critic_loss": 16.809271603160433,
+          "entropy": 0.2385354849199454
+        }
+      },
+      {
+        "episode": 63,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.025 out of expected range [0.0, 10.0]",
+          "critic_loss value 19.412 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7055282295952238,
+          "reward": 7.3704075202176185,
+          "actor_loss": -0.025341889805470905,
+          "critic_loss": 19.412459161546494,
+          "entropy": 0.16576324183907773
+        }
+      },
+      {
+        "episode": 64,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.030 out of expected range [0.0, 10.0]",
+          "critic_loss value 15.555 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7250284682999623,
+          "reward": 7.683675675098082,
+          "actor_loss": -0.029577466648899847,
+          "critic_loss": 15.554998434914483,
+          "entropy": 0.18373573667680224
+        }
+      },
+      {
+        "episode": 65,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.019 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7299096260685386,
+          "reward": 9.383383724314324,
+          "actor_loss": -0.01902026889276587,
+          "critic_loss": 9.231883650355869,
+          "entropy": 0.09883532010337351
+        }
+      },
+      {
+        "episode": 66,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.008 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.6885326508523807,
+          "reward": 5.338789709139418,
+          "actor_loss": -0.008330781690569387,
+          "critic_loss": 8.297570478916168,
+          "entropy": 0.23436185531770914
+        }
+      },
+      {
+        "episode": 67,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.026 out of expected range [0.0, 10.0]",
+          "critic_loss value 25.764 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7054245589101289,
+          "reward": 6.827103578385671,
+          "actor_loss": -0.02563925298034317,
+          "critic_loss": 25.764186494880253,
+          "entropy": 0.18556148981054624
+        }
+      },
+      {
+        "episode": 68,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.033 out of expected range [0.0, 10.0]",
+          "critic_loss value 18.689 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7037668231285621,
+          "reward": 7.104815259204524,
+          "actor_loss": -0.032627466173532106,
+          "critic_loss": 18.689012360572814,
+          "entropy": 0.1829537633392546
+        }
+      },
+      {
+        "episode": 69,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.026 out of expected range [0.0, 10.0]",
+          "critic_loss value 17.444 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7468325884172462,
+          "reward": 17.218386409234483,
+          "actor_loss": -0.02561605479568243,
+          "critic_loss": 17.44398738808102,
+          "entropy": 0.1476196910205292
+        }
+      },
+      {
+        "episode": 70,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.011 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.6877934747072447,
+          "reward": 5.151792276084595,
+          "actor_loss": -0.011319459959243735,
+          "critic_loss": 9.88253824710846,
+          "entropy": 0.24554199514289696
+        }
+      },
+      {
+        "episode": 71,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.030 out of expected range [0.0, 10.0]",
+          "critic_loss value 13.978 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7160714371307164,
+          "reward": 5.944880820445064,
+          "actor_loss": -0.0301577338638405,
+          "critic_loss": 13.977552325195736,
+          "entropy": 0.1392386671964131
+        }
+      },
+      {
+        "episode": 72,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.026 out of expected range [0.0, 10.0]",
+          "critic_loss value 18.311 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.6822529470050789,
+          "reward": 3.322602526601679,
+          "actor_loss": -0.026270684584354363,
+          "critic_loss": 18.311294184790718,
+          "entropy": 0.26619108998113206
+        }
+      },
+      {
+        "episode": 73,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.021 out of expected range [0.0, 10.0]",
+          "critic_loss value 17.635 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7022387762436373,
+          "reward": 5.557846274245983,
+          "actor_loss": -0.021160439213013485,
+          "critic_loss": 17.634997865888806,
+          "entropy": 0.23619700905446228
+        }
+      },
+      {
+        "episode": 74,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.021 out of expected range [0.0, 10.0]",
+          "critic_loss value 11.461 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7032734899689425,
+          "reward": 5.2748572837907615,
+          "actor_loss": -0.02073082742281258,
+          "critic_loss": 11.460557729668087,
+          "entropy": 0.19848213037591148
+        }
+      },
+      {
+        "episode": 75,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.030 out of expected range [0.0, 10.0]",
+          "critic_loss value 14.088 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7262091807188525,
+          "reward": 6.6563436170782335,
+          "actor_loss": -0.02989403936598036,
+          "critic_loss": 14.08804909520679,
+          "entropy": 0.19241152306397755
+        }
+      },
+      {
+        "episode": 76,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.028 out of expected range [0.0, 10.0]",
+          "critic_loss value 14.461 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7117788464783171,
+          "reward": 5.940068781709924,
+          "actor_loss": -0.02824150230218139,
+          "critic_loss": 14.460627139939202,
+          "entropy": 0.20416021259605058
+        }
+      },
+      {
+        "episode": 77,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.017 out of expected range [0.0, 10.0]",
+          "critic_loss value 11.180 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.717838353036003,
+          "reward": 7.56924930676797,
+          "actor_loss": -0.017427523180635437,
+          "critic_loss": 11.180155093140073,
+          "entropy": 0.2036921837160157
+        }
+      },
+      {
+        "episode": 78,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.027 out of expected range [0.0, 10.0]",
+          "critic_loss value 24.118 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7028645460674826,
+          "reward": 9.988571184483957,
+          "actor_loss": -0.02675398599045972,
+          "critic_loss": 24.11802392800649,
+          "entropy": 0.16798705510381196
+        }
+      },
+      {
+        "episode": 79,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.024 out of expected range [0.0, 10.0]",
+          "critic_loss value 18.016 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7276532734059373,
+          "reward": 8.592089410471816,
+          "actor_loss": -0.023953928948483534,
+          "critic_loss": 18.015763102637397,
+          "entropy": 0.13237675701834128
+        }
+      },
+      {
+        "episode": 80,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.032 out of expected range [0.0, 10.0]",
+          "critic_loss value 20.447 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7148761292962863,
+          "reward": 9.062617556607414,
+          "actor_loss": -0.03188595300178147,
+          "critic_loss": 20.44694566991594,
+          "entropy": 0.17729184226029449
+        }
+      },
+      {
+        "episode": 81,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.028 out of expected range [0.0, 10.0]",
+          "critic_loss value 13.098 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7514554243362138,
+          "reward": 11.860146173499048,
+          "actor_loss": -0.028468712822844584,
+          "critic_loss": 13.098079542981253,
+          "entropy": 0.11190490165393814
+        }
+      },
+      {
+        "episode": 82,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.023 out of expected range [0.0, 10.0]",
+          "critic_loss value 23.442 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.6924776060887105,
+          "reward": 8.131769053650709,
+          "actor_loss": -0.023265871312469245,
+          "critic_loss": 23.44204116264979,
+          "entropy": 0.1942320460246669
+        }
+      },
+      {
+        "episode": 83,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.013 out of expected range [0.0, 10.0]",
+          "critic_loss value 10.165 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7254023019426609,
+          "reward": 7.658147491484773,
+          "actor_loss": -0.013297597913899355,
+          "critic_loss": 10.16481223238839,
+          "entropy": 0.206348283133573
+        }
+      },
+      {
+        "episode": 84,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.006 out of expected range [0.0, 10.0]",
+          "critic_loss value 11.626 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7252169002062558,
+          "reward": 9.40608231484822,
+          "actor_loss": -0.005616711887220542,
+          "critic_loss": 11.626099534829457,
+          "entropy": 0.22357006828404136
+        }
+      },
+      {
+        "episode": 85,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.036 out of expected range [0.0, 10.0]",
+          "critic_loss value 25.564 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7133709936710707,
+          "reward": 8.949082158405808,
+          "actor_loss": -0.03590869093313813,
+          "critic_loss": 25.56356987555822,
+          "entropy": 0.20489475167608664
+        }
+      },
+      {
+        "episode": 86,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.025 out of expected range [0.0, 10.0]",
+          "critic_loss value 13.251 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7220813586024549,
+          "reward": 5.948405925881379,
+          "actor_loss": -0.024620462897130185,
+          "critic_loss": 13.25066601700253,
+          "entropy": 0.10230520443680385
+        }
+      },
+      {
+        "episode": 87,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.034 out of expected range [0.0, 10.0]",
+          "critic_loss value 20.075 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7210351616869388,
+          "reward": 9.145311678224003,
+          "actor_loss": -0.034035880853318504,
+          "critic_loss": 20.074745020601483,
+          "entropy": 0.2046167523910602
+        }
+      },
+      {
+        "episode": 88,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.025 out of expected range [0.0, 10.0]",
+          "critic_loss value 17.657 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7205116367490579,
+          "reward": 7.552778920448446,
+          "actor_loss": -0.025492774320041968,
+          "critic_loss": 17.65704073243671,
+          "entropy": 0.1567690119250781
+        }
+      },
+      {
+        "episode": 89,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.038 out of expected range [0.0, 10.0]",
+          "critic_loss value 29.539 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7081435760215736,
+          "reward": 14.167385287224507,
+          "actor_loss": -0.038181086013921436,
+          "critic_loss": 29.53891174528334,
+          "entropy": 0.10874284014700808
+        }
+      },
+      {
+        "episode": 90,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.033 out of expected range [0.0, 10.0]",
+          "critic_loss value 16.574 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7197323832984054,
+          "reward": 9.114873669711615,
+          "actor_loss": -0.03334469139162037,
+          "critic_loss": 16.57404916021559,
+          "entropy": 0.2129693764158421
+        }
+      },
+      {
+        "episode": 91,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.025 out of expected range [0.0, 10.0]",
+          "critic_loss value 11.343 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.6911617638496145,
+          "reward": 5.042408572287674,
+          "actor_loss": -0.02513835734118604,
+          "critic_loss": 11.343264651298522,
+          "entropy": 0.23445933254228699
+        }
+      },
+      {
+        "episode": 92,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.009 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7023266756845161,
+          "reward": 3.570284984238501,
+          "actor_loss": -0.00929180597886443,
+          "critic_loss": 9.81965240240097,
+          "entropy": 0.20896393621547354
+        }
+      },
+      {
+        "episode": 93,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.029 out of expected range [0.0, 10.0]",
+          "critic_loss value 22.584 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.6993119240384705,
+          "reward": 9.579132679261345,
+          "actor_loss": -0.029003747609547444,
+          "critic_loss": 22.584112527635362,
+          "entropy": 0.20268900144017404
+        }
+      },
+      {
+        "episode": 94,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.025 out of expected range [0.0, 10.0]",
+          "critic_loss value 22.130 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7190667815056091,
+          "reward": 9.315961815577046,
+          "actor_loss": -0.024687508762710624,
+          "critic_loss": 22.13001685142517,
+          "entropy": 0.17174284690214942
+        }
+      },
+      {
+        "episode": 95,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.023 out of expected range [0.0, 10.0]",
+          "critic_loss value 13.718 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7178594601785251,
+          "reward": 9.468298641303543,
+          "actor_loss": -0.022518669094683395,
+          "critic_loss": 13.718429899215698,
+          "entropy": 0.22719951606769528
+        }
+      },
+      {
+        "episode": 96,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.009 out of expected range [0.0, 10.0]",
+          "critic_loss value 10.298 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.710711668017341,
+          "reward": 8.232836150180509,
+          "actor_loss": -0.008775362222351962,
+          "critic_loss": 10.298442135916815,
+          "entropy": 0.17186235863413088
+        }
+      },
+      {
+        "episode": 97,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.009 out of expected range [0.0, 10.0]",
+          "critic_loss value 10.427 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.6919611166324746,
+          "reward": 4.69414536866463,
+          "actor_loss": -0.008746966955045031,
+          "critic_loss": 10.426891464657254,
+          "entropy": 0.19236514398383314
+        }
+      },
+      {
+        "episode": 98,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.030 out of expected range [0.0, 10.0]",
+          "critic_loss value 29.316 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7440107986868287,
+          "reward": 12.344823712754813,
+          "actor_loss": -0.03039031512517896,
+          "critic_loss": 29.315834592117202,
+          "entropy": 0.09248548196628689
+        }
+      },
+      {
+        "episode": 99,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.027 out of expected range [0.0, 10.0]",
+          "critic_loss value 17.107 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.694804430163658,
+          "reward": 3.591077620794655,
+          "actor_loss": -0.02723970504788061,
+          "critic_loss": 17.1066601673762,
+          "entropy": 0.22051249891519548
+        }
+      },
+      {
+        "episode": 100,
+        "valid": false,
+        "errors": [
+          "reward value 20.016 out of expected range [-20.0, 20.0]",
+          "actor_loss value -0.035 out of expected range [0.0, 10.0]",
+          "critic_loss value 28.727 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7734846100325785,
+          "reward": 20.016356467834214,
+          "actor_loss": -0.035244789755799706,
+          "critic_loss": 28.72718964682685,
+          "entropy": 0.08307884540247162
+        }
+      },
+      {
+        "episode": 101,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.025 out of expected range [0.0, 10.0]",
+          "critic_loss value 14.811 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.6763999697992692,
+          "reward": 5.324165935467079,
+          "actor_loss": -0.024953041173931625,
+          "critic_loss": 14.81062517563502,
+          "entropy": 0.18133668611860937
+        }
+      },
+      {
+        "episode": 102,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.017 out of expected range [0.0, 10.0]",
+          "critic_loss value 15.615 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7137525713940992,
+          "reward": 10.32360079187194,
+          "actor_loss": -0.01718982275284036,
+          "critic_loss": 15.614658419646364,
+          "entropy": 0.1575625712291322
+        }
+      },
+      {
+        "episode": 103,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.017 out of expected range [0.0, 10.0]",
+          "critic_loss value 13.607 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.720961232805983,
+          "reward": 7.052299444905491,
+          "actor_loss": -0.016737224808376697,
+          "critic_loss": 13.607446600331201,
+          "entropy": 0.19640104762381977
+        }
+      },
+      {
+        "episode": 104,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.015 out of expected range [0.0, 10.0]",
+          "critic_loss value 11.204 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7279931515242523,
+          "reward": 8.187479468025948,
+          "actor_loss": -0.014597708462840982,
+          "critic_loss": 11.204135190116034,
+          "entropy": 0.1477731283961071
+        }
+      },
+      {
+        "episode": 105,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.029 out of expected range [0.0, 10.0]",
+          "critic_loss value 18.057 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7231561682614439,
+          "reward": 9.020630374608622,
+          "actor_loss": -0.02855790766576926,
+          "critic_loss": 18.057432982656692,
+          "entropy": 0.1464109880849719
+        }
+      },
+      {
+        "episode": 106,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.010 out of expected range [0.0, 10.0]",
+          "critic_loss value 11.265 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.69854495353271,
+          "reward": 11.237930080528262,
+          "actor_loss": -0.009611173213592597,
+          "critic_loss": 11.265053353990828,
+          "entropy": 0.19751362800598143
+        }
+      },
+      {
+        "episode": 107,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.029 out of expected range [0.0, 10.0]",
+          "critic_loss value 15.134 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7437404685131174,
+          "reward": 11.95874369303098,
+          "actor_loss": -0.02928418913161603,
+          "critic_loss": 15.13358658451145,
+          "entropy": 0.14886156566398964
+        }
+      },
+      {
+        "episode": 108,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.024 out of expected range [0.0, 10.0]",
+          "critic_loss value 17.628 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7177953073631274,
+          "reward": 6.502760689953418,
+          "actor_loss": -0.024430198223701308,
+          "critic_loss": 17.62831077375612,
+          "entropy": 0.23410273025502693
+        }
+      },
+      {
+        "episode": 109,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.029 out of expected range [0.0, 10.0]",
+          "critic_loss value 21.882 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.6763418475461986,
+          "reward": 10.554745553979481,
+          "actor_loss": -0.0293419832105024,
+          "critic_loss": 21.88182740211487,
+          "entropy": 0.28278951595226925
+        }
+      },
+      {
+        "episode": 110,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.017 out of expected range [0.0, 10.0]",
+          "critic_loss value 11.742 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7221623472117171,
+          "reward": 11.856401775648978,
+          "actor_loss": -0.01706089358906158,
+          "critic_loss": 11.741628693209755,
+          "entropy": 0.15918507180694078
+        }
+      },
+      {
+        "episode": 111,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.020 out of expected range [0.0, 10.0]",
+          "critic_loss value 11.097 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.6941294000343601,
+          "reward": 4.2697899010510785,
+          "actor_loss": -0.01970215114718043,
+          "critic_loss": 11.096647578244768,
+          "entropy": 0.22860834306345307
+        }
+      },
+      {
+        "episode": 112,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.031 out of expected range [0.0, 10.0]",
+          "critic_loss value 19.815 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.6950910950809603,
+          "reward": 7.732061396951244,
+          "actor_loss": -0.030943804068697824,
+          "critic_loss": 19.815351290173002,
+          "entropy": 0.11226501159576906
+        }
+      },
+      {
+        "episode": 113,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.017 out of expected range [0.0, 10.0]",
+          "critic_loss value 12.662 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.681931972592528,
+          "reward": 3.2358300227963657,
+          "actor_loss": -0.01653279784756402,
+          "critic_loss": 12.662105287445916,
+          "entropy": 0.2573112931102514
+        }
+      },
+      {
+        "episode": 114,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.025 out of expected range [0.0, 10.0]",
+          "critic_loss value 17.391 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.6851466391745855,
+          "reward": 7.90012800127998,
+          "actor_loss": -0.0250538393518784,
+          "critic_loss": 17.390767232577005,
+          "entropy": 0.21227960457197495
+        }
+      },
+      {
+        "episode": 115,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.019 out of expected range [0.0, 10.0]",
+          "critic_loss value 18.178 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7209907004702971,
+          "reward": 10.01428118945592,
+          "actor_loss": -0.019150229933438824,
+          "critic_loss": 18.17805116971334,
+          "entropy": 0.15976288134439123
+        }
+      },
+      {
+        "episode": 116,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.032 out of expected range [0.0, 10.0]",
+          "critic_loss value 26.301 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7335770840127374,
+          "reward": 14.5378020985107,
+          "actor_loss": -0.03207447711481816,
+          "critic_loss": 26.300792923238543,
+          "entropy": 0.11151653022971005
+        }
+      },
+      {
+        "episode": 117,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.011 out of expected range [0.0, 10.0]",
+          "critic_loss value 18.810 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7272261040166955,
+          "reward": 6.4444128521471855,
+          "actor_loss": -0.01123792698363895,
+          "critic_loss": 18.81022544529127,
+          "entropy": 0.15846551841367845
+        }
+      },
+      {
+        "episode": 118,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.029 out of expected range [0.0, 10.0]",
+          "critic_loss value 25.525 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.727746949960693,
+          "reward": 12.35887721663371,
+          "actor_loss": -0.029173025835512414,
+          "critic_loss": 25.52478618621826,
+          "entropy": 0.15819814931083884
+        }
+      },
+      {
+        "episode": 119,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.018 out of expected range [0.0, 10.0]",
+          "critic_loss value 14.601 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.708369737753176,
+          "reward": 5.627818562098264,
+          "actor_loss": -0.01798072803972496,
+          "critic_loss": 14.601365190082126,
+          "entropy": 0.22145991139113902
+        }
+      },
+      {
+        "episode": 120,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.027 out of expected range [0.0, 10.0]",
+          "critic_loss value 14.155 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7135459666528454,
+          "reward": 5.360243718086616,
+          "actor_loss": -0.026737316393516432,
+          "critic_loss": 14.155095926472839,
+          "entropy": 0.14132069114228368
+        }
+      },
+      {
+        "episode": 121,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.024 out of expected range [0.0, 10.0]",
+          "critic_loss value 20.845 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7081366971244837,
+          "reward": 8.762101973247086,
+          "actor_loss": -0.023513507486010592,
+          "critic_loss": 20.845145101017422,
+          "entropy": 0.19827516238308615
+        }
+      },
+      {
+        "episode": 122,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.060 out of expected range [0.0, 10.0]",
+          "critic_loss value 23.779 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.698513691761723,
+          "reward": 9.914880519728657,
+          "actor_loss": -0.06012071456227984,
+          "critic_loss": 23.77937344142369,
+          "entropy": 0.23266700229474477
+        }
+      },
+      {
+        "episode": 123,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.024 out of expected range [0.0, 10.0]",
+          "critic_loss value 14.564 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.6950203909881029,
+          "reward": 6.807075903156776,
+          "actor_loss": -0.024260096629310786,
+          "critic_loss": 14.563683189194778,
+          "entropy": 0.2516728734661793
+        }
+      },
+      {
+        "episode": 124,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.037 out of expected range [0.0, 10.0]",
+          "critic_loss value 32.780 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7038208209795864,
+          "reward": 14.84797648995422,
+          "actor_loss": -0.037324751160674165,
+          "critic_loss": 32.78047489619755,
+          "entropy": 0.14250744032588872
+        }
+      },
+      {
+        "episode": 125,
+        "valid": false,
+        "errors": [
+          "actor_loss value -0.034 out of expected range [0.0, 10.0]",
+          "critic_loss value 26.286 out of expected range [0.0, 10.0]"
+        ],
+        "warnings": [],
+        "metrics": {
+          "satisfaction": 0.7006737700926584,
+          "reward": 6.759831619311414,
+          "actor_loss": -0.033945038363647956,
+          "critic_loss": 26.286119524637858,
+          "entropy": 0.1707118346627491
+        }
+      }
+    ],
+    "statistical_validation": {
+      "valid": true,
+      "statistics": {
+        "satisfaction": {
+          "mean": 0.7125541270625444,
+          "std": 0.02020113215203419,
+          "min": 0.6727043239760734,
+          "max": 0.7791126411810354,
+          "cv": 2.8350312467225436
+        },
+        "reward": {
+          "mean": 8.473238964301517,
+          "std": 2.9461414280016744,
+          "min": 2.123245646092048,
+          "max": 20.016356467834214,
+          "cv": 34.769955626343375,
+          "warning": "High variability: CV = 34.8% > 30.0%"
+        },
+        "actor_loss": {
+          "mean": -0.01991448257345176,
+          "std": 0.016828844369882485,
+          "min": -0.06012071456227984,
+          "max": 0.048666020177511704,
+          "cv": 0
+        },
+        "critic_loss": {
+          "mean": 20.779827484210433,
+          "std": 9.477133329719507,
+          "min": 8.297570478916168,
+          "max": 64.0386148373286,
+          "cv": 45.607372519914875
+        },
+        "entropy": {
+          "mean": 0.26035898371855415,
+          "std": 0.1432142112643831,
+          "min": 0.08307884540247162,
+          "max": 0.6682049757904477,
+          "cv": 55.006441190904496
+        }
+      }
+    },
+    "data_integrity": {
+      "valid": false,
+      "checks": {
+        "duplicate_check": true,
+        "range_check": false,
+        "checksum_valid": true
+      },
+      "errors": [
+        "critic_loss out of range in episode 1",
+        "critic_loss out of range in episode 2",
+        "critic_loss out of range in episode 3",
+        "critic_loss out of range in episode 4",
+        "critic_loss out of range in episode 5",
+        "critic_loss out of range in episode 6",
+        "critic_loss out of range in episode 7",
+        "critic_loss out of range in episode 8",
+        "critic_loss out of range in episode 9",
+        "critic_loss out of range in episode 10",
+        "critic_loss out of range in episode 11",
+        "actor_loss out of range in episode 12",
+        "critic_loss out of range in episode 12",
+        "actor_loss out of range in episode 13",
+        "critic_loss out of range in episode 13",
+        "actor_loss out of range in episode 14",
+        "critic_loss out of range in episode 14",
+        "actor_loss out of range in episode 15",
+        "critic_loss out of range in episode 15",
+        "actor_loss out of range in episode 16",
+        "critic_loss out of range in episode 16",
+        "actor_loss out of range in episode 17",
+        "critic_loss out of range in episode 17",
+        "actor_loss out of range in episode 18",
+        "critic_loss out of range in episode 18",
+        "actor_loss out of range in episode 19",
+        "critic_loss out of range in episode 19",
+        "actor_loss out of range in episode 20",
+        "critic_loss out of range in episode 20",
+        "actor_loss out of range in episode 21",
+        "critic_loss out of range in episode 21",
+        "actor_loss out of range in episode 22",
+        "critic_loss out of range in episode 22",
+        "actor_loss out of range in episode 23",
+        "critic_loss out of range in episode 23",
+        "actor_loss out of range in episode 24",
+        "critic_loss out of range in episode 24",
+        "actor_loss out of range in episode 25",
+        "critic_loss out of range in episode 25",
+        "actor_loss out of range in episode 26",
+        "critic_loss out of range in episode 26",
+        "actor_loss out of range in episode 27",
+        "critic_loss out of range in episode 27",
+        "actor_loss out of range in episode 28",
+        "critic_loss out of range in episode 28",
+        "actor_loss out of range in episode 29",
+        "critic_loss out of range in episode 29",
+        "actor_loss out of range in episode 30",
+        "critic_loss out of range in episode 30",
+        "actor_loss out of range in episode 31",
+        "critic_loss out of range in episode 31",
+        "actor_loss out of range in episode 32",
+        "critic_loss out of range in episode 32",
+        "actor_loss out of range in episode 33",
+        "critic_loss out of range in episode 33",
+        "actor_loss out of range in episode 34",
+        "critic_loss out of range in episode 34",
+        "actor_loss out of range in episode 35",
+        "critic_loss out of range in episode 35",
+        "actor_loss out of range in episode 36",
+        "critic_loss out of range in episode 36",
+        "actor_loss out of range in episode 37",
+        "critic_loss out of range in episode 37",
+        "actor_loss out of range in episode 38",
+        "critic_loss out of range in episode 38",
+        "actor_loss out of range in episode 39",
+        "critic_loss out of range in episode 39",
+        "actor_loss out of range in episode 40",
+        "critic_loss out of range in episode 40",
+        "actor_loss out of range in episode 41",
+        "critic_loss out of range in episode 41",
+        "actor_loss out of range in episode 42",
+        "critic_loss out of range in episode 42",
+        "actor_loss out of range in episode 43",
+        "critic_loss out of range in episode 43",
+        "actor_loss out of range in episode 44",
+        "critic_loss out of range in episode 44",
+        "actor_loss out of range in episode 45",
+        "critic_loss out of range in episode 45",
+        "actor_loss out of range in episode 46",
+        "critic_loss out of range in episode 46",
+        "actor_loss out of range in episode 47",
+        "critic_loss out of range in episode 47",
+        "actor_loss out of range in episode 48",
+        "critic_loss out of range in episode 48",
+        "actor_loss out of range in episode 49",
+        "actor_loss out of range in episode 50",
+        "critic_loss out of range in episode 50",
+        "actor_loss out of range in episode 51",
+        "critic_loss out of range in episode 51",
+        "actor_loss out of range in episode 52",
+        "critic_loss out of range in episode 52",
+        "actor_loss out of range in episode 53",
+        "critic_loss out of range in episode 53",
+        "actor_loss out of range in episode 54",
+        "critic_loss out of range in episode 54",
+        "actor_loss out of range in episode 55",
+        "critic_loss out of range in episode 55",
+        "actor_loss out of range in episode 56",
+        "critic_loss out of range in episode 56",
+        "actor_loss out of range in episode 57",
+        "critic_loss out of range in episode 57",
+        "actor_loss out of range in episode 58",
+        "critic_loss out of range in episode 58",
+        "actor_loss out of range in episode 59",
+        "critic_loss out of range in episode 59",
+        "actor_loss out of range in episode 60",
+        "critic_loss out of range in episode 60",
+        "actor_loss out of range in episode 61",
+        "critic_loss out of range in episode 61",
+        "actor_loss out of range in episode 62",
+        "critic_loss out of range in episode 62",
+        "actor_loss out of range in episode 63",
+        "critic_loss out of range in episode 63",
+        "actor_loss out of range in episode 64",
+        "critic_loss out of range in episode 64",
+        "actor_loss out of range in episode 65",
+        "actor_loss out of range in episode 66",
+        "actor_loss out of range in episode 67",
+        "critic_loss out of range in episode 67",
+        "actor_loss out of range in episode 68",
+        "critic_loss out of range in episode 68",
+        "actor_loss out of range in episode 69",
+        "critic_loss out of range in episode 69",
+        "actor_loss out of range in episode 70",
+        "actor_loss out of range in episode 71",
+        "critic_loss out of range in episode 71",
+        "actor_loss out of range in episode 72",
+        "critic_loss out of range in episode 72",
+        "actor_loss out of range in episode 73",
+        "critic_loss out of range in episode 73",
+        "actor_loss out of range in episode 74",
+        "critic_loss out of range in episode 74",
+        "actor_loss out of range in episode 75",
+        "critic_loss out of range in episode 75",
+        "actor_loss out of range in episode 76",
+        "critic_loss out of range in episode 76",
+        "actor_loss out of range in episode 77",
+        "critic_loss out of range in episode 77",
+        "actor_loss out of range in episode 78",
+        "critic_loss out of range in episode 78",
+        "actor_loss out of range in episode 79",
+        "critic_loss out of range in episode 79",
+        "actor_loss out of range in episode 80",
+        "critic_loss out of range in episode 80",
+        "actor_loss out of range in episode 81",
+        "critic_loss out of range in episode 81",
+        "actor_loss out of range in episode 82",
+        "critic_loss out of range in episode 82",
+        "actor_loss out of range in episode 83",
+        "critic_loss out of range in episode 83",
+        "actor_loss out of range in episode 84",
+        "critic_loss out of range in episode 84",
+        "actor_loss out of range in episode 85",
+        "critic_loss out of range in episode 85",
+        "actor_loss out of range in episode 86",
+        "critic_loss out of range in episode 86",
+        "actor_loss out of range in episode 87",
+        "critic_loss out of range in episode 87",
+        "actor_loss out of range in episode 88",
+        "critic_loss out of range in episode 88",
+        "actor_loss out of range in episode 89",
+        "critic_loss out of range in episode 89",
+        "actor_loss out of range in episode 90",
+        "critic_loss out of range in episode 90",
+        "actor_loss out of range in episode 91",
+        "critic_loss out of range in episode 91",
+        "actor_loss out of range in episode 92",
+        "actor_loss out of range in episode 93",
+        "critic_loss out of range in episode 93",
+        "actor_loss out of range in episode 94",
+        "critic_loss out of range in episode 94",
+        "actor_loss out of range in episode 95",
+        "critic_loss out of range in episode 95",
+        "actor_loss out of range in episode 96",
+        "critic_loss out of range in episode 96",
+        "actor_loss out of range in episode 97",
+        "critic_loss out of range in episode 97",
+        "actor_loss out of range in episode 98",
+        "critic_loss out of range in episode 98",
+        "actor_loss out of range in episode 99",
+        "critic_loss out of range in episode 99",
+        "reward out of range in episode 100",
+        "actor_loss out of range in episode 100",
+        "critic_loss out of range in episode 100",
+        "actor_loss out of range in episode 101",
+        "critic_loss out of range in episode 101",
+        "actor_loss out of range in episode 102",
+        "critic_loss out of range in episode 102",
+        "actor_loss out of range in episode 103",
+        "critic_loss out of range in episode 103",
+        "actor_loss out of range in episode 104",
+        "critic_loss out of range in episode 104",
+        "actor_loss out of range in episode 105",
+        "critic_loss out of range in episode 105",
+        "actor_loss out of range in episode 106",
+        "critic_loss out of range in episode 106",
+        "actor_loss out of range in episode 107",
+        "critic_loss out of range in episode 107",
+        "actor_loss out of range in episode 108",
+        "critic_loss out of range in episode 108",
+        "actor_loss out of range in episode 109",
+        "critic_loss out of range in episode 109",
+        "actor_loss out of range in episode 110",
+        "critic_loss out of range in episode 110",
+        "actor_loss out of range in episode 111",
+        "critic_loss out of range in episode 111",
+        "actor_loss out of range in episode 112",
+        "critic_loss out of range in episode 112",
+        "actor_loss out of range in episode 113",
+        "critic_loss out of range in episode 113",
+        "actor_loss out of range in episode 114",
+        "critic_loss out of range in episode 114",
+        "actor_loss out of range in episode 115",
+        "critic_loss out of range in episode 115",
+        "actor_loss out of range in episode 116",
+        "critic_loss out of range in episode 116",
+        "actor_loss out of range in episode 117",
+        "critic_loss out of range in episode 117",
+        "actor_loss out of range in episode 118",
+        "critic_loss out of range in episode 118",
+        "actor_loss out of range in episode 119",
+        "critic_loss out of range in episode 119",
+        "actor_loss out of range in episode 120",
+        "critic_loss out of range in episode 120",
+        "actor_loss out of range in episode 121",
+        "critic_loss out of range in episode 121",
+        "actor_loss out of range in episode 122",
+        "critic_loss out of range in episode 122",
+        "actor_loss out of range in episode 123",
+        "critic_loss out of range in episode 123",
+        "actor_loss out of range in episode 124",
+        "critic_loss out of range in episode 124",
+        "actor_loss out of range in episode 125",
+        "critic_loss out of range in episode 125"
+      ],
+      "checksum": "ee8d9d81407206e1d4e90580088ea5e6"
+    },
+    "reproducibility": {
+      "valid": true,
+      "checks": {
+        "seed_check": true,
+        "environment_check": true,
+        "hyperparameter_check": true
+      },
+      "details": {
+        "seed": 42,
+        "environment_config": {
+          "num_bs": 3,
+          "num_uav": 150,
+          "max_steps": 50
+        },
+        "hyperparameters": {
+          "actor_lr": 0.0001,
+          "critic_lr": 0.0003,
+          "clip_epsilon": 0.1
+        }
+      }
+    },
+    "overall_valid": false
+  },
+  "timestamp": "20260408_024558"
+}

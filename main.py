@@ -1,15 +1,15 @@
 """
 无人机业务识别与切换决策联动系统 — 主入口
 
-用法:
-    python main.py                  # 默认运行实验3
-    python main.py --all            # 运行所有实验(1, 2, 2b, 3, 4, mappo)
-    python main.py --exp mappo      # 运行 BA-MAPPO 多智能体强化学习实验
+【重要】必须使用 venv 中的 Python 运行（不要用系统Python）:
+    .\venv\Scripts\python.exe main.py                  # 默认运行实验3
+    .\venv\Scripts\python.exe main.py --all            # 运行所有实验(1, 2, 2b, 3, 4, mappo)
+    .\venv\Scripts\python.exe main.py --exp mappo      # 运行 BA-MAPPO 多智能体强化学习实验
 
     BA-MAPPO 实验用法:
-    python main.py --exp mappo --rl-load       # 加载已有模型，跳过训练
-    python main.py --exp mappo --rl-phase phase1  # 仅运行训练阶段
-    python main.py --exp mappo --rl-phase phase2  # 仅运行评估阶段
+    .\venv\Scripts\python.exe main.py --exp mappo --rl-load       # 加载已有模型，跳过训练
+    .\venv\Scripts\python.exe main.py --exp mappo --rl-phase phase1  # 仅运行训练阶段
+    .\venv\Scripts\python.exe main.py --exp mappo --rl-phase phase2  # 仅运行评估阶段
 """
 
 import sys
@@ -40,29 +40,38 @@ def main(force_retrain=False, run_experiments=None,
     print("无人机业务识别与切换决策联动系统")
     print("=" * 80)
 
-    # 步骤1: 初始化业务识别模型
-    print("\n步骤1: 初始化业务识别模型...")
-    recognition_model, all_model_results = train_or_load_recognition_model(
-        force_retrain=force_retrain, compare_models=True, verbose=True
-    )
-    scaler = recognition_model.scaler
+    # 判断是否仅运行 MAPPO 实验（不需要业务识别模型）
+    if run_experiments is None:
+        run_experiments = [3]
+    run_experiments_str = [str(exp) for exp in run_experiments]
+    only_mappo = (len(run_experiments_str) == 1 and run_experiments_str[0] == 'mappo')
 
-    # 如果是加载已有模型，尝试加载保存的模型对比结果
-    if all_model_results is None and not force_retrain:
-        import pickle
-        all_results_file = "all_model_results.pkl"
-        if os.path.exists(all_results_file):
-            with open(all_results_file, 'rb') as f:
-                all_model_results = pickle.load(f)
+    recognition_model = None
+    scaler = None
+    all_model_results = None
 
-    recognition_model.print_model_info()
+    if not only_mappo:
+        # 步骤1: 初始化业务识别模型（仅非 MAPPO 实验需要）
+        print("\n步骤1: 初始化业务识别模型...")
+        recognition_model, all_model_results = train_or_load_recognition_model(
+            force_retrain=force_retrain, compare_models=True, verbose=True
+        )
+        scaler = recognition_model.scaler
+
+        # 如果是加载已有模型，尝试加载保存的模型对比结果
+        if all_model_results is None and not force_retrain:
+            import pickle
+            all_results_file = "all_model_results.pkl"
+            if os.path.exists(all_results_file):
+                with open(all_results_file, 'rb') as f:
+                    all_model_results = pickle.load(f)
+
+        recognition_model.print_model_info()
+    else:
+        print("\n[跳过] MAPPO 实验不依赖业务识别模型，跳过模型加载")
 
     # 步骤2: 运行实验
     results = {}
-    if run_experiments is None:
-        run_experiments = [3]
-
-    run_experiments_str = [str(exp) for exp in run_experiments]
 
     exp_map = {
         '1': lambda: Experiment1.run(recognition_model, scaler, num_steps=150, repeats=10),
@@ -98,14 +107,20 @@ def main(force_retrain=False, run_experiments=None,
         else:
             print(f"警告: 未知的实验ID '{exp_id_str}', 跳过")
 
-    # 步骤3: 生成可视化
-    print("\n" + "=" * 80)
-    print("所有实验运行完成！")
-    print(f"结果已保存至: {os.path.abspath(RESULT_DIR)}")
-    print("=" * 80)
+    # 步骤3: 生成可视化（仅非 MAPPO 实验）
+    if not only_mappo and recognition_model is not None:
+        print("\n" + "=" * 80)
+        print("所有实验运行完成！")
+        print(f"结果已保存至: {os.path.abspath(RESULT_DIR)}")
+        print("=" * 80)
 
-    print("\n生成模型可视化...")
-    RecognitionModelVisualizer.visualize_model(recognition_model, all_model_results, show=False)
+        print("\n生成模型可视化...")
+        RecognitionModelVisualizer.visualize_model(recognition_model, all_model_results, show=False)
+    else:
+        print("\n" + "=" * 80)
+        print("MAPPO 实验运行完成！")
+        print(f"结果已保存至: {os.path.abspath(RESULT_DIR)}")
+        print("=" * 80)
 
     return results
 
@@ -121,30 +136,47 @@ def main(force_retrain=False, run_experiments=None,
 
 
 def _run_exp_mappo(load_models=False, phase='both', small_scale=False):
-    """运行 BA-MAPPO 多智能体强化学习实验"""
+    """运行 BA-MAPPO 多智能体强化学习实验
+
+    环境配置: BS 容量 (500, 1000) Mbps, pos_range=1000m
+    通过 UAV/BS 数量比控制负载率:
+      小规模: 150 UAV / 3 BS → 负载率 ~103%
+      大规模: 200 UAV / 4 BS → ~103%, 280 UAV / 5 BS → ~116%
+    """
     from uav_system.experiments_mappo import ExperimentBAMAPPO
+    # 统一容量范围 (500, 1000) Mbps — 与实验2/3/4保持一致
+    # 负载率: 小规模 150UAV/3BS→~103%, 标准 200UAV/4BS→~103%, 280UAV/5BS→~116%
+    _cap = (500, 1000)
     if small_scale:
         return ExperimentBAMAPPO.run(
-            num_uav_list=(10,),
-            num_bs=4,
+            num_uav_list=(150,),
+            num_bs_list=(3,),       # 4→3，提高单基站负载
             num_steps=50,
-            train_episodes=100,
+            train_episodes=200,
             eval_episodes=3,
-            bs_capacity_range=(50, 100),
+            bs_capacity_range=_cap,
+            pos_range=1000,
             load_models=load_models,
             phase=phase,
             verbose=True,
+            train_sample_agents=50,
+            attention_sample_agents=50,
+            num_parallel_envs=1,
         )
     return ExperimentBAMAPPO.run(
-        num_uav_list=(30, 50),
-        num_bs=8,
+        num_uav_list=(200, 280),
+        num_bs_list=(4, 5),
         num_steps=100,
         train_episodes=1000,
         eval_episodes=10,
-        bs_capacity_range=(80, 200),
+        bs_capacity_range=_cap,
+        pos_range=1000,
         load_models=load_models,
         phase=phase,
         verbose=True,
+        train_sample_agents=50,
+        attention_sample_agents=50,
+        num_parallel_envs=4,
     )
 
 
@@ -175,9 +207,10 @@ if __name__ == "__main__":
          rl_load=args.rl_load, rl_phase=args.rl_phase, small_scale=args.small)
 
 
-# python main.py                    只运行实验3
-# python main.py --all              运行全部实验
-# python main.py --exp mappo        运行 BA-MAPPO 多智能体实验
-# python main.py --exp mappo --rl-load  加载已有模型，仅评估
-# python main.py --exp mappo --rl-phase phase1  仅运行训练阶段
-# python main.py --exp mappo --rl-phase phase2  仅运行评估阶段
+# 【必须使用venv】.\venv\Scripts\python.exe main.py                    只运行实验3
+# 【必须使用venv】.\venv\Scripts\python.exe main.py --all              运行全部实验
+# 【必须使用venv】.\venv\Scripts\python.exe main.py --exp mappo        运行 BA-MAPPO 多智能体实验
+# 【必须使用venv】.\venv\Scripts\python.exe main.py --exp mappo --rl-load  加载已有模型，仅评估
+# 【必须使用venv】.\venv\Scripts\python.exe main.py --exp mappo --rl-phase phase1  仅运行训练阶段
+# 【必须使用venv】.\venv\Scripts\python.exe main.py --exp mappo --rl-phase phase2  仅运行评估阶段
+# venv\Scripts\python.exe main.py --exp mappo --rl-phase both --small

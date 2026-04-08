@@ -19,6 +19,7 @@ QMIX 多智能体环境
 """
 
 import numpy as np
+import time
 from typing import Dict, Tuple, List, Optional
 from collections import deque
 
@@ -131,6 +132,13 @@ class QMixHandoverEnv:
             for uav in self.env.uavs.values():
                 uav.velocity *= 0.5
 
+        # 保存原始位置用于 reset 时缩放（避免累积缩放）
+        self._original_positions = {}
+        for bs_id, bs in self.env.base_stations.items():
+            self._original_positions[('bs', bs_id)] = bs.position.copy()
+        for uav_id, uav in self.env.uavs.items():
+            self._original_positions[('uav', uav_id)] = uav.position.copy()
+
         # 如果 pos_range != 默认值(1000)，缩放所有位置
         if pos_range != 1000:
             scale = pos_range / 1000.0
@@ -169,6 +177,17 @@ class QMixHandoverEnv:
             self._state_history = {}  # UAV id -> 历史状态
             for uid in range(num_uav):
                 self._state_history[uid] = []
+        
+        # 通信指标监测
+        self._communication_metrics = {
+            'handover_latencies': [],  # 切换延迟（毫秒）
+            'ping_jitters': [],  # Ping抖动（毫秒）
+            'packet_losses': [],  # 丢包率（百分比）
+            'qos_violations': [],  # QoS违规率（百分比）
+            'ping_times': {}  # UAV id -> 最近的ping时间列表
+        }
+        for uid in range(num_uav):
+            self._communication_metrics['ping_times'][uid] = deque(maxlen=10)
 
     def _calc_obs_dim(self) -> int:
         """
@@ -349,9 +368,13 @@ class QMixHandoverEnv:
         """获取所有 agent 的局部观测"""
         return {uid: self.get_obs(uid) for uid in range(self.num_agents)}
 
-    def reset(self) -> Tuple[Dict[int, np.ndarray], np.ndarray]:
+    def reset(self, bs_capacity_range=None) -> Tuple[Dict[int, np.ndarray], np.ndarray]:
         """
         重置环境
+
+        Args:
+            bs_capacity_range: 如果提供，随机化所有 BS 的容量 (min, max)
+                              用于 Domain Randomization
 
         Returns:
             obs_dict: {agent_id: obs}
@@ -359,13 +382,21 @@ class QMixHandoverEnv:
         """
         self.env.reset()
 
-        # 如果 pos_range != 默认值，重新缩放位置
-        if self.pos_range != 1000:
-            scale = self.pos_range / 1000.0
+        # Domain Randomization: 随机化 BS 容量
+        if bs_capacity_range is not None:
+            low, high = bs_capacity_range
             for bs in self.env.base_stations.values():
-                bs.position *= scale
-            for uav in self.env.uavs.values():
-                uav.position *= scale
+                bs.capacity = np.random.uniform(low, high)
+
+        # 如果 pos_range != 默认值，从原始位置重新缩放（避免累积缩放）
+        if self.pos_range != 1000 and hasattr(self, '_original_positions'):
+            scale = self.pos_range / 1000.0
+            for key, pos in self._original_positions.items():
+                kind, obj_id = key
+                if kind == 'bs':
+                    self.env.base_stations[obj_id].position = pos * scale
+                else:
+                    self.env.uavs[obj_id].position = pos * scale
             self.env._update_sinr_matrix()
             self.env._initialize_connections()
 
@@ -376,6 +407,7 @@ class QMixHandoverEnv:
         self._last_disconnected = {}
         self._last_handover_count = {}
         self._last_actions = {}
+        self._last_rate_ratios = {}
         self._sat_history = {}
         for uid in range(self.num_agents):
             uav = self.env.uavs[uid]
@@ -383,9 +415,21 @@ class QMixHandoverEnv:
             self._last_disconnected[uid] = (uav.connected_bs_id is None)
             self._last_handover_count[uid] = uav.handover_count
             self._last_actions[uid] = 0
+            self._last_rate_ratios[uid] = uav.current_allocated_rate / max(uav.required_rate, 1e-6)
             self._sat_history[uid] = deque([uav.current_satisfaction], maxlen=10)
         # 不在此处 reset normalizer — EMA 需要跨 episode 持续积累
         # 调用者可通过 reset_normalizer() 手动重置
+        
+        # 重置通信指标
+        self._communication_metrics = {
+            'handover_latencies': [],
+            'ping_jitters': [],
+            'packet_losses': [],
+            'qos_violations': [],
+            'ping_times': {}
+        }
+        for uid in range(self.num_agents):
+            self._communication_metrics['ping_times'][uid] = deque(maxlen=10)
 
         obs_dict = self.get_all_obs()
         global_state = self.get_global_state()
@@ -411,6 +455,12 @@ class QMixHandoverEnv:
         # 保存旧状态
         old_sats = {uid: self.env.uavs[uid].current_satisfaction
                      for uid in range(self.num_agents)}
+        # 保存旧的 rate_ratio (V11: 用于连续增量信号)
+        old_rate_ratios = {}
+        for uid in range(self.num_agents):
+            uav = self.env.uavs[uid]
+            old_rate_ratios[uid] = uav.current_allocated_rate / max(uav.required_rate, 1e-6)
+        self._last_rate_ratios = old_rate_ratios
 
         # ====== 1. 根据 actions 执行切换 ======
         # action 0: stay (不切换)
@@ -421,6 +471,7 @@ class QMixHandoverEnv:
         ep_switch_success = 0    # 成功切换
         ep_switch_rollback = 0   # 切换失败但回滚成功
         ep_switch_disconnect = 0 # 切换失败且回滚也失败
+        handover_latencies = []  # 记录切换延迟
 
         for uid, action in actions.items():
             if action == 0:
@@ -515,6 +566,28 @@ class QMixHandoverEnv:
             target_bs = self.env.base_stations[target_bs_id]
             ep_switch_attempts += 1
 
+            # 记录切换开始时间
+            handover_start = time.time()
+
+            # ====== 预检查: 在释放旧资源前，先确认目标 BS 是否有足够容量 ======
+            # 计算释放旧资源后 UAV 自身可贡献的容量
+            # 跨BS切换时也计入自身释放容量，因为切换流程是先释放旧BS再分配新BS
+            uav_self_free = uav.current_allocated_rate  # UAV 自身释放的容量
+            effective_target_cap = target_bs.available_capacity + uav_self_free
+
+            # 检查目标 BS 能否至少以最低降级比率接受
+            min_ratio = uav.qos_profile.get_feasible_downgrade_ratios()[-1]  # 最低降级比率
+            min_required = uav.required_rate * min_ratio
+
+
+            if effective_target_cap < min_required and target_bs_id != uav.connected_bs_id:
+                # 目标 BS 容量不足，跳过切换（保持当前连接）
+                ep_switch_rollback += 1  # 计为回滚（切换未实际发生）
+                handover_end = time.time()
+                handover_latency = (handover_end - handover_start) * 1000
+                handover_latencies.append(handover_latency)
+                continue
+
             # 释放当前 BS 资源
             old_bs_id = uav.connected_bs_id
             if old_bs_id is not None:
@@ -549,6 +622,12 @@ class QMixHandoverEnv:
                     uav.current_allocated_rate = 0.0
                     ep_switch_disconnect += 1
 
+            # 记录切换结束时间并计算延迟
+            handover_end = time.time()
+            handover_latency = (handover_end - handover_start) * 1000  # 转换为毫秒
+            handover_latencies.append(handover_latency)
+            self._communication_metrics['handover_latencies'].append(handover_latency)
+
         # ====== 2. 推进环境 ======
         self.env.current_step += 1
         for uav in self.env.uavs.values():
@@ -561,14 +640,58 @@ class QMixHandoverEnv:
 
         self._current_step += 1
 
-        # ====== 3. 计算奖励 (V8: 基于价值的奖励机制) ======
-        # V8 设计:
-        #   - 基础奖励：满意度变化 (权重调整为 3.0)
-        #   - 价值奖励：基于预测的未来满意度
-        #   - 业务类型特定奖励：为不同业务类型设计差异化奖励
-        #   - 动作奖励：鼓励有益的切换，惩罚有害的切换
-        #   - 连接状态奖励：强鼓励保持连接
-        #   - 平滑奖励信号：减少奖励波动
+        # 监测 Ping 抖动和丢包率
+        ping_jitters = []
+        packet_losses = []
+        qos_violations = []
+        
+        for uid in range(self.num_agents):
+            uav = self.env.uavs[uid]
+            
+            # 模拟 Ping 时间（基于 SINR）
+            if uav.connected_bs_id is not None:
+                sinr = self.env.sinr_matrix[uid][uav.connected_bs_id]
+                # 基于 SINR 计算延迟：SINR 越高，延迟越低
+                base_ping = 20  # 基础延迟（毫秒）
+                sinr_factor = max(0.1, min(1.0, (sinr + 10) / 40))
+                ping_time = base_ping / sinr_factor
+                
+                # 添加随机抖动
+                jitter = np.random.normal(0, 5)
+                ping_time += jitter
+                
+                # 记录 Ping 时间
+                self._communication_metrics['ping_times'][uid].append(ping_time)
+                
+                # 计算 Ping 抖动（最近几次的标准差）
+                if len(self._communication_metrics['ping_times'][uid]) >= 3:
+                    ping_history = list(self._communication_metrics['ping_times'][uid])
+                    jitter_value = np.std(ping_history)
+                    ping_jitters.append(jitter_value)
+                    self._communication_metrics['ping_jitters'].append(jitter_value)
+                
+                # 模拟丢包率（基于 SINR）
+                # SINR 越低，丢包率越高
+                packet_loss_rate = max(0, min(5, (20 - sinr) / 4))
+                packet_losses.append(packet_loss_rate)
+                self._communication_metrics['packet_losses'].append(packet_loss_rate)
+            else:
+                # 断连状态，设置高延迟和丢包率
+                packet_losses.append(100.0)  # 断连时丢包率 100%
+                self._communication_metrics['packet_losses'].append(100.0)
+            
+            # 计算 QoS 违规率
+            # 基于满意度：满意度低于 0.6 视为 QoS 违规
+            qos_violation_rate = 0.0 if uav.current_satisfaction >= 0.6 else 100.0
+            qos_violations.append(qos_violation_rate)
+            self._communication_metrics['qos_violations'].append(qos_violation_rate)
+
+        # ====== 3. 计算奖励 (V11: 连续信号 + 反事实比较) ======
+        # V11 相对 V9 的改进:
+        #   a. 核心信号从分段满意度→连续 rate_ratio，解决 advantage 趋零问题
+        #   b. 加入反事实比较: 切换后的表现 vs 同类 UAV 基线
+        #   c. 留守策略: 高负载下取消留守正信号，低 sat 留守加强惩罚
+        #   d. 切换奖励: 去除硬阈值，用连续的满意度增量
         rewards_raw = {}
         team_reward = 0.0
         # 诊断用组分统计
@@ -579,6 +702,14 @@ class QMixHandoverEnv:
         ep_connect_reward_sum = 0.0
         ep_good_switch = 0
         ep_bad_switch = 0
+        # 预计算同类 UAV 的平均 rate_ratio (用于反事实比较)
+        peer_rate_ratios = {}  # biz_type -> list of rate_ratio
+        for _uid in range(self.num_agents):
+            _uav = self.env.uavs[_uid]
+            _rr = _uav.current_allocated_rate / max(_uav.required_rate, 1e-6)
+            _bt = _uav.true_business_type.value
+            peer_rate_ratios.setdefault(_bt, []).append(_rr)
+        peer_avg_rr = {bt: np.mean(rrs) for bt, rrs in peer_rate_ratios.items()}
 
         for uid in range(self.num_agents):
             uav = self.env.uavs[uid]
@@ -589,65 +720,79 @@ class QMixHandoverEnv:
             action = actions.get(uid, 0)
             biz_type = uav.true_business_type.value
 
-            # a. 满意度变化 (核心信号) - 增加权重以强化学习信号
-            r_delta = 8.0 * delta_sat
+            # --- a. 连续速率比信号 (替代分段满意度) ---
+            # rate_ratio = allocated / ideal，连续且有自然梯度
+            # reward = 当前 rate_ratio - 旧 rate_ratio（增量式，消除常量）
+            old_rr = old_rate_ratios.get(uid, 0.5)  # 需在上方保存
+            new_rr = uav.current_allocated_rate / max(uav.required_rate, 1e-6)
+            delta_rr = new_rr - old_rr
+            r_delta = 5.0 * delta_rr  # 适度权重
             ep_delta_sum += r_delta
 
-            # b. 价值奖励：基于预测的未来满意度
-            predicted_sat = self.predict_future_satisfaction(uid)
-            r_value = 0.5 * (predicted_sat - 0.5)  # 目标满意度为0.5
-            ep_value_reward_sum += r_value
-
-            # c. 业务类型特定奖励 (连续化)
-            r_biz = 0.0
-            if biz_type == 0:  # 延迟敏感型，阈值0.8
-                r_biz = 2.0 * (new_sat - 0.8)
-            elif biz_type == 1:  # 吞吐量敏感型，阈值0.7
-                r_biz = 2.0 * (new_sat - 0.7)
-            elif biz_type == 2:  # 可靠性敏感型，阈值0.75
-                r_biz = 2.0 * (new_sat - 0.75)
-            ep_biz_reward_sum += r_biz
-
-            # d. 动作奖励
-            r_action = 0.0
-            # 判断是否发生切换 (通过 handover_count)
+            # --- b. 反事实比较信号 (方案3核心) ---
+            # 如果切换了，比较: 我的 rate_ratio vs 同类 UAV 平均 rate_ratio
+            # 正值 = 我比同类做得好（切换有效），负值 = 切换后反而更差
+            r_counterfactual = 0.0
             new_ho = uav.handover_count
             old_ho = self._last_handover_count.get(uid, 0)
             switched = (new_ho > old_ho)
-
             if switched:
-                if delta_sat > 0.05:
-                    r_action = 3.0   # 进一步增加成功切换奖励
+                avg_rr = peer_avg_rr.get(biz_type, new_rr)
+                relative_gain = new_rr - avg_rr  # >0 表示优于同类平均
+                r_counterfactual = 3.0 * relative_gain
+            ep_value_reward_sum += r_counterfactual
+
+            # --- c. 业务类型权重 ---
+            r_biz = 0.0
+            if abs(delta_sat) > 1e-4:
+                biz_weight = {0: 2.0, 1: 2.5, 2: 1.5}.get(biz_type, 2.0)
+                r_biz = biz_weight * delta_rr  # 用连续信号替代分段满意度
+            ep_biz_reward_sum += r_biz
+
+            # --- d. 动作奖励 (V13: 鼓励适度探索，防止保守策略坍缩) ---
+            r_action = 0.0
+            if switched:
+                # 降低切换成本：让"有益切换"(δsat>0.03)有正期望收益
+                r_action = 5.0 * delta_sat - 0.05  # 切换成本 -0.05 (原-0.15, 降幅66%)
+                if delta_sat > 0.03:
                     ep_good_switch += 1
                 elif delta_sat < -0.05:
-                    r_action = -0.3   # 减少失败切换惩罚
                     ep_bad_switch += 1
-                else:
-                    r_action = 0.8   # 进一步增加中性切换奖励
             elif action != 0:
-                # 尝试切换但未成功 (allocation 失败)
-                r_action = -0.1   # 减少尝试切换但失败的惩罚
+                # 尝试切换但未成功：轻微惩罚 (原-0.3太重，阻碍探索)
+                r_action = -0.10
             else:
-                # 留守：满意度高时给予小奖励（鼓励稳定连接）
-                r_action = 0.03 if new_sat > 0.7 else (-0.01 if new_sat > 0.4 else -0.02)
+                # 留守: 分层信号 (修复策略坍缩: 加重低sat惩罚,降低高sat奖励)
+                if new_sat < 0.4:
+                    r_action = -0.40   # 极低 sat 留守: 强惩罚 (原-0.25)
+                elif new_sat < 0.6:
+                    r_action = -0.20   # 低 sat 留守: 中等惩罚 (原-0.12)
+                elif new_sat < 0.8:
+                    r_action = 0.02    # 中等 sat: 轻微鼓励探索 (原0.04)
+                else:
+                    r_action = 0.03    # 高 sat 留守: 降低正信号 (原0.06)
             ep_action_reward_sum += r_action
 
-            # e. 连接状态奖励（强化连接稳定性信号）
+            # --- e. 连接状态奖励 (仅诊断，不参与个体 reward) ---
+            # 断连惩罚从个体 reward 中分离，避免结构性噪音淹没学习信号。
+            # 原因: 约 30% UAV 因容量不足始终断连，每步 r_connect=-2.5
+            # 导致 reward 方差的 90%+ 来自断连（与 action 无关），GAE 无法区分好坏动作。
+            # 改为 episode 级别团队惩罚（见下方 team_reward 调整）。
             is_connected = uav.connected_bs_id is not None
             was_connected = not self._last_disconnected.get(uid, False)
             if is_connected:
-                r_connect = 2.0 if new_sat > 0.5 else 1.0  # 基础奖励提升（之前1.0）
+                r_connect = 0.0
             else:
                 if was_connected:
-                    r_connect = -4.0  # 从连接→断连：重度惩罚
+                    r_connect = -4.0
                 else:
-                    r_connect = -2.5  # 持续断连：中度惩罚
+                    r_connect = -2.5
             ep_connect_reward_sum += r_connect
 
-            # 综合奖励
-            r_individual = r_delta + r_value + r_biz + r_action + r_connect
+            # 综合奖励 (不含 connect 惩罚，避免结构性噪音干扰 GAE)
+            r_individual = r_delta + r_counterfactual + r_biz + r_action
 
-            # 奖励平滑：限制奖励范围，减少极端值
+            # 奖励平滑：限制奖励范围
             r_individual = np.clip(r_individual, -10.0, 20.0)
 
             rewards_raw[uid] = r_individual
@@ -657,11 +802,22 @@ class QMixHandoverEnv:
             self._last_satisfaction[uid] = new_sat
             self._last_disconnected[uid] = not is_connected
             self._last_handover_count[uid] = new_ho
-            self._last_actions[uid] = action
+            self._last_actions[uid] = min(action, self.action_dim - 1)
             self._sat_history[uid].append(new_sat)
+
+        # 统一更新 rate_ratio 历史 (下一步的 old_rate_ratios)
+        for uid in range(self.num_agents):
+            uav = self.env.uavs[uid]
+            self._last_rate_ratios[uid] = uav.current_allocated_rate / max(uav.required_rate, 1e-6)
 
         # ====== 4. Reward 归一化 (EMA) ======
         rewards = self._reward_normalizer.normalize(rewards_raw)
+
+        # ====== 4.5 断连惩罚加入团队奖励 (episode-level, 不影响个体 GAE) ======
+        # 将平均 connect 惩罚作为团队级信号，让 Critic 感知断连影响
+        # 但个体 UAV 的 reward 不含此惩罚，避免结构性噪音淹没 per-agent 学习信号
+        avg_connect_penalty = ep_connect_reward_sum / max(self.num_agents, 1)
+        team_reward += avg_connect_penalty
 
         # ====== 5. 团队奖励归一化 ======
         team_reward /= max(self.num_agents, 1)
@@ -692,6 +848,12 @@ class QMixHandoverEnv:
                 'switch_rollback': ep_switch_rollback,
                 'switch_disconnect': ep_switch_disconnect,
             },
+            'communication_metrics': {
+                'handover_latency': float(np.mean(handover_latencies)) if handover_latencies else 0.0,
+                'ping_jitter': float(np.mean(ping_jitters)) if ping_jitters else 0.0,
+                'packet_loss_rate': float(np.mean(packet_losses)) if packet_losses else 0.0,
+                'qos_violation_rate': float(np.mean(qos_violations)) if qos_violations else 0.0,
+            },
         }
         # 统计 action 分布
         action_names = {0: 'stay', 1: 'best_sinr', 2: 'best_capacity'}
@@ -708,6 +870,37 @@ class QMixHandoverEnv:
     def reset_normalizer(self):
         """手动重置 reward normalizer（仅在训练重启时调用）"""
         self._reward_normalizer.reset()
+
+    def collect_step_metrics(self):
+        """
+        收集当前步的通信质量指标（Ping抖动、丢包率、QoS违规率）。
+        供基线算法评估时在 advance_env_only() 之后调用，
+        使基线算法与传统/增强算法的通信指标具有可比性。
+        """
+        for uid in range(self.num_agents):
+            uav = self.env.uavs[uid]
+            if uid not in self._communication_metrics['ping_times']:
+                self._communication_metrics['ping_times'][uid] = []
+
+            if uav.connected_bs_id is not None:
+                sinr = self.env.sinr_matrix[uid][uav.connected_bs_id]
+                base_ping = 20
+                sinr_factor = max(0.1, min(1.0, (sinr + 10) / 40))
+                ping_time = base_ping / sinr_factor + np.random.normal(0, 5)
+                self._communication_metrics['ping_times'][uid].append(ping_time)
+
+                if len(self._communication_metrics['ping_times'][uid]) >= 3:
+                    ping_history = list(self._communication_metrics['ping_times'][uid])[-3:]
+                    jitter_value = float(np.std(ping_history))
+                    self._communication_metrics['ping_jitters'].append(jitter_value)
+
+                packet_loss_rate = max(0, min(5, (20 - sinr) / 4))
+                self._communication_metrics['packet_losses'].append(packet_loss_rate)
+            else:
+                self._communication_metrics['packet_losses'].append(100.0)
+
+            qos_violation = 0.0 if uav.current_satisfaction >= 0.6 else 100.0
+            self._communication_metrics['qos_violations'].append(qos_violation)
 
     def advance_env_only(self):
         """
