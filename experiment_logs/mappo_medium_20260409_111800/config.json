@@ -1,0 +1,66 @@
+{
+  "hidden_dim": 128,
+  "critic_hidden_dim": 256,
+  "actor_lr": 3e-05,
+  "critic_lr": 0.0003,
+  "gamma": 0.99,
+  "gae_lambda": 0.99,
+  "clip_epsilon": 0.2,
+  "entropy_coef": 0.02,
+  "value_coef": 0.5,
+  "rollout_length": 150,
+  "num_epochs": 5,
+  "batch_size": 256,
+  "use_early_stopping": true,
+  "early_stop_patience": 100,
+  "min_delta": 0.001,
+  "train_sample_agents": 50,
+  "attention_sample_agents": 50,
+  "use_biz_heads": true,
+  "use_attention_critic": true,
+  "use_data_augmentation": true,
+  "reward_function": {
+    "version": "v2",
+    "sat_weight": 10.0,
+    "switch_penalty_base": 1.0,
+    "disconnect_penalty": 50.0,
+    "load_balance_weight": 0.1,
+    "use_biz_aware_penalty": true
+  },
+  "observation": {
+    "history_length": 5,
+    "use_relative_position": true,
+    "use_state_augmentation": true
+  },
+  "lr_schedule": {
+    "type": "cosine",
+    "T_max": 300,
+    "eta_min": 1e-06
+  },
+  "scenario": "medium",
+  "num_uav": 64,
+  "bs_capacity_range": [
+    600,
+    1000
+  ],
+  "train_episodes": 300,
+  "eval_episodes": 3,
+  "eval_interval": 10,
+  "save_interval": 50,
+  "map_size": 1000,
+  "num_bs": 3,
+  "seed": 42,
+  "visualization": {
+    "satisfaction_ylim_margin": 0.15,
+    "use_smoothing": true,
+    "smoothing_window": 10,
+    "create_comprehensive_plots": true
+  },
+  "data_logging": {
+    "log_level": "detailed",
+    "save_episode_data": true,
+    "save_network_stats": true,
+    "save_communication_metrics": true,
+    "log_dir": "./experiment_logs"
+  }
+}

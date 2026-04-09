@@ -78,7 +78,7 @@ class FeedForwardActorNetwork(nn.Module):
       - 输出头: 按业务类型选择
     """
     
-    def __init__(self, obs_dim: int, action_dim: int, hidden_dim: int = 64,
+    def __init__(self, obs_dim: int, action_dim: int, hidden_dim: int = 128,
                  num_biz_types: int = 3, use_biz_heads: bool = True):
         super().__init__()
         self.use_biz_heads = use_biz_heads
@@ -92,11 +92,13 @@ class FeedForwardActorNetwork(nn.Module):
         self.fc1 = nn.Linear(obs_dim, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
         self.fc3 = nn.Linear(hidden_dim, hidden_dim)
+        self.fc4 = nn.Linear(hidden_dim, hidden_dim)  # 新增隐藏层
         
         # Layer Normalization 提高稳定性
         self.ln1 = nn.LayerNorm(hidden_dim)
         self.ln2 = nn.LayerNorm(hidden_dim)
         self.ln3 = nn.LayerNorm(hidden_dim)
+        self.ln4 = nn.LayerNorm(hidden_dim)  # 新增层归一化
         
         if use_biz_heads:
             # BA Actor: 每种业务类型一个独立输出头
@@ -113,7 +115,7 @@ class FeedForwardActorNetwork(nn.Module):
     def _init_weights(self):
         """优化的正交初始化"""
         # 前馈层使用较小的gain，提高稳定性
-        for module in [self.fc1, self.fc2, self.fc3]:
+        for module in [self.fc1, self.fc2, self.fc3, self.fc4]:
             for name, param in module.named_parameters():
                 if 'weight' in name:
                     nn.init.orthogonal_(param, gain=1.0)  # 从sqrt(2)减小到1.0
@@ -143,8 +145,9 @@ class FeedForwardActorNetwork(nn.Module):
         """
         # 前馈特征提取
         x = torch.relu(self.ln1(self.fc1(obs)))
-        x = torch.relu(self.ln2(self.fc2(x)))
-        x = self.ln3(self.fc3(x))  # 最后一层不加激活，使用残差连接
+        x = torch.relu(self.ln2(self.fc2(x))) + x  # 残差连接
+        x = torch.relu(self.ln3(self.fc3(x))) + x  # 残差连接
+        x = self.ln4(self.fc4(x))  # 最后一层不加激活，使用残差连接
         
         # 添加业务类型嵌入
         if biz_types is not None:
@@ -187,7 +190,7 @@ class FeedForwardActorNetwork(nn.Module):
 class FeedForwardCriticNetwork(nn.Module):
     """前馈Critic价值网络"""
     
-    def __init__(self, state_dim: int, hidden_dim: int = 128, num_biz_types: int = 3):
+    def __init__(self, state_dim: int, hidden_dim: int = 256, num_biz_types: int = 3):
         super().__init__()
         
         # 业务类型嵌入
@@ -197,18 +200,20 @@ class FeedForwardCriticNetwork(nn.Module):
         self.fc1 = nn.Linear(state_dim, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
         self.fc3 = nn.Linear(hidden_dim, hidden_dim)
+        self.fc4 = nn.Linear(hidden_dim, hidden_dim)  # 新增隐藏层
         self.value_head = nn.Linear(hidden_dim, 1)
         
         # Layer Normalization
         self.ln1 = nn.LayerNorm(hidden_dim)
         self.ln2 = nn.LayerNorm(hidden_dim)
         self.ln3 = nn.LayerNorm(hidden_dim)
+        self.ln4 = nn.LayerNorm(hidden_dim)  # 新增层归一化
         
         self._init_weights()
     
     def _init_weights(self):
         """正交初始化"""
-        for module in [self.fc1, self.fc2, self.fc3]:
+        for module in [self.fc1, self.fc2, self.fc3, self.fc4]:
             for name, param in module.named_parameters():
                 if 'weight' in name:
                     nn.init.orthogonal_(param, gain=1.0)
@@ -221,8 +226,9 @@ class FeedForwardCriticNetwork(nn.Module):
     def forward(self, state: torch.Tensor, biz_types: torch.Tensor = None):
         """前向传播"""
         x = torch.relu(self.ln1(self.fc1(state)))
-        x = torch.relu(self.ln2(self.fc2(x)))
-        x = self.ln3(self.fc3(x))
+        x = torch.relu(self.ln2(self.fc2(x))) + x  # 残差连接
+        x = torch.relu(self.ln3(self.fc3(x))) + x  # 残差连接
+        x = self.ln4(self.fc4(x))  # 最后一层不加激活，使用残差连接
         
         if biz_types is not None:
             # 处理业务类型嵌入
@@ -305,7 +311,7 @@ class MAPPOAgentV2:
     """
     
     def __init__(self, num_agents: int, obs_dim: int, state_dim: int, action_dim: int,
-                 hidden_dim: int = 64, critic_hidden_dim: int = 128,
+                 hidden_dim: int = 128, critic_hidden_dim: int = 256,
                  actor_lr: float = 3e-4, critic_lr: float = 1e-3,
                  gamma: float = 0.99, gae_lambda: float = 0.95,
                  clip_epsilon: float = 0.1, entropy_coef: float = 0.02,
@@ -353,15 +359,15 @@ class MAPPOAgentV2:
         )
         
         # 优化器
-        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=actor_lr)
-        self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=critic_lr)
+        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=actor_lr, weight_decay=1e-5)
+        self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=critic_lr, weight_decay=1e-5)
         
         # 学习率调度器 - 使用余弦退火，后期降低学习率
-        self.actor_scheduler = optim.lr_scheduler.CosineAnnealingLR(
-            self.actor_optimizer, T_max=300, eta_min=1e-6
+        self.actor_scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
+            self.actor_optimizer, T_0=100, T_mult=2, eta_min=1e-6
         )
-        self.critic_scheduler = optim.lr_scheduler.CosineAnnealingLR(
-            self.critic_optimizer, T_max=300, eta_min=1e-6
+        self.critic_scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
+            self.critic_optimizer, T_0=100, T_mult=2, eta_min=1e-6
         )
         
         # Observation Normalizer (running mean/std)
@@ -377,6 +383,9 @@ class MAPPOAgentV2:
             'log_probs': [],
             'values': [],
             'biz_types': [],
+            'advantages': [],  # 存储计算好的advantages
+            'returns': [],     # 存储计算好的returns
+            'priorities': []   # 存储优先级
         }
         
         # 早停监控
@@ -398,6 +407,9 @@ class MAPPOAgentV2:
             'critic_losses': [],
             'kl_divergences': [],
             'entropies': [],
+            'value_errors': [],
+            'cooperation_rewards': [],  # 合作奖励占比
+            'policy_entropies': [],     # 策略熵值
         }
         
         self._current_train_step = 0
@@ -567,6 +579,9 @@ class MAPPOAgentV2:
         # 计算GAE和returns
         advantages, returns = self._compute_gae(rewards, old_values, dones)
         
+        # 计算优先级（基于TD误差）
+        priorities = self._compute_priorities(rewards, old_values, dones)
+        
         # 训练多个epoch
         actor_losses = []
         critic_losses = []
@@ -587,87 +602,101 @@ class MAPPOAgentV2:
         returns_flat = returns.view(-1)
         old_log_probs_flat = old_log_probs.view(-1)
         biz_types_flat = biz_types.view(-1)
+        priorities_flat = priorities.view(-1)
         
-        for epoch in range(self.num_epochs):
-            # 生成随机索引
-            indices = torch.randperm(len(obs_flat))
+        # 多阶段训练策略
+        phases = [
+            {'name': 'warmup', 'clip_epsilon': self.clip_epsilon * 2, 'entropy_coef': self.entropy_coef * 2},
+            {'name': 'main', 'clip_epsilon': self.clip_epsilon, 'entropy_coef': self.entropy_coef},
+            {'name': 'fine-tune', 'clip_epsilon': self.clip_epsilon * 0.5, 'entropy_coef': self.entropy_coef * 0.5}
+        ]
+        
+        for phase_idx, phase in enumerate(phases):
+            print(f"Training phase: {phase['name']}")
             
-            for start in range(0, len(obs_flat), self.batch_size):
-                end = start + self.batch_size
-                batch_indices = indices[start:end]
+            # 每个阶段训练不同的轮数
+            phase_epochs = 2 if phase_idx == 0 else (3 if phase_idx == 1 else 1)
+            
+            for epoch in range(phase_epochs):
+                # 使用优先级采样
+                indices = self._prioritized_sample(priorities_flat, batch_size=self.batch_size)
                 
-                # 获取batch数据
-                batch_obs = obs_flat[batch_indices]
-                batch_state = state_flat[batch_indices]
-                batch_actions = actions_flat[batch_indices]
-                batch_advantages = advantages_flat[batch_indices]
-                batch_returns = returns_flat[batch_indices]
-                batch_old_log_probs = old_log_probs_flat[batch_indices]
-                batch_biz_types = biz_types_flat[batch_indices]
-                
-                # 标准化advantages
-                batch_advantages = (batch_advantages - batch_advantages.mean()) / (batch_advantages.std() + 1e-8)
-                
-                # 评估动作
-                new_log_probs, entropy = self.actor.evaluate_actions(
-                    batch_obs, batch_actions, None, batch_biz_types
-                )
-                
-                # 计算价值
-                new_values = self.critic(batch_state, batch_biz_types).squeeze(-1)
-                
-                # 计算ratio和KL
-                ratio = torch.exp(new_log_probs - batch_old_log_probs)
-                approx_kl = ((ratio - 1) - (new_log_probs - batch_old_log_probs)).mean()
-                
-                # 动态KL阈值
-                if self._current_train_step < 100:
-                    kl_threshold = 1.5  # 初期宽松
-                else:
-                    kl_threshold = 0.8  # 后期严格
-                
-                # 如果KL过大，跳过这次更新
-                if approx_kl > kl_threshold:
-                    continue
-                
-                # 计算actor loss
-                surr1 = ratio * batch_advantages
-                surr2 = torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * batch_advantages
-                actor_loss = -torch.min(surr1, surr2).mean() - self.entropy_coef * entropy.mean()
-                
-                # 计算critic loss和vMSE
-                v_mse = nn.MSELoss()(new_values, batch_returns)
-                critic_loss = self.value_coef * v_mse
-                
-                # 更新actor
-                self.actor_optimizer.zero_grad()
-                actor_loss.backward(retain_graph=True)  # 保留计算图
-                # 检查梯度是否存在
-                actor_grads = [p.grad for p in self.actor.parameters() if p.grad is not None]
-                if actor_grads:
-                    grad_norm = torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 0.5)
-                    self.actor_optimizer.step()
-                    actor_grad_norms.append(grad_norm.item())
-                else:
-                    print("WARNING: Actor gradient is None, skipping update")
-                
-                # 更新critic
-                self.critic_optimizer.zero_grad()
-                critic_loss.backward()
-                # 检查梯度是否存在
-                critic_grads = [p.grad for p in self.critic.parameters() if p.grad is not None]
-                if critic_grads:
-                    grad_norm = torch.nn.utils.clip_grad_norm_(self.critic.parameters(), 0.5)
-                    self.critic_optimizer.step()
-                    critic_grad_norms.append(grad_norm.item())
-                else:
-                    print("WARNING: Critic gradient is None, skipping update")
-                
-                actor_losses.append(actor_loss.item())
-                critic_losses.append(critic_loss.item())
-                v_mses.append(v_mse.item())
-                entropies.append(entropy.mean().item())
-                kl_values.append(approx_kl.item())
+                for start in range(0, len(indices), self.batch_size):
+                    end = start + self.batch_size
+                    batch_indices = indices[start:end]
+                    
+                    # 获取batch数据
+                    batch_obs = obs_flat[batch_indices]
+                    batch_state = state_flat[batch_indices]
+                    batch_actions = actions_flat[batch_indices]
+                    batch_advantages = advantages_flat[batch_indices]
+                    batch_returns = returns_flat[batch_indices]
+                    batch_old_log_probs = old_log_probs_flat[batch_indices]
+                    batch_biz_types = biz_types_flat[batch_indices]
+                    
+                    # 标准化advantages
+                    batch_advantages = (batch_advantages - batch_advantages.mean()) / (batch_advantages.std() + 1e-8)
+                    
+                    # 评估动作
+                    new_log_probs, entropy = self.actor.evaluate_actions(
+                        batch_obs, batch_actions, None, batch_biz_types
+                    )
+                    
+                    # 计算价值
+                    new_values = self.critic(batch_state, batch_biz_types).squeeze(-1)
+                    
+                    # 计算ratio和KL
+                    ratio = torch.exp(new_log_probs - batch_old_log_probs)
+                    approx_kl = ((ratio - 1) - (new_log_probs - batch_old_log_probs)).mean()
+                    
+                    # 动态KL阈值
+                    if self._current_train_step < 100:
+                        kl_threshold = 1.5  # 初期宽松
+                    else:
+                        kl_threshold = 0.8  # 后期严格
+                    
+                    # 如果KL过大，跳过这次更新
+                    if approx_kl > kl_threshold:
+                        continue
+                    
+                    # 计算actor loss
+                    surr1 = ratio * batch_advantages
+                    surr2 = torch.clamp(ratio, 1 - phase['clip_epsilon'], 1 + phase['clip_epsilon']) * batch_advantages
+                    actor_loss = -torch.min(surr1, surr2).mean() - phase['entropy_coef'] * entropy.mean()
+                    
+                    # 计算critic loss和vMSE
+                    v_mse = nn.MSELoss()(new_values, batch_returns)
+                    critic_loss = self.value_coef * v_mse
+                    
+                    # 更新actor
+                    self.actor_optimizer.zero_grad()
+                    actor_loss.backward(retain_graph=True)  # 保留计算图
+                    # 检查梯度是否存在
+                    actor_grads = [p.grad for p in self.actor.parameters() if p.grad is not None]
+                    if actor_grads:
+                        grad_norm = torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 0.5)
+                        self.actor_optimizer.step()
+                        actor_grad_norms.append(grad_norm.item())
+                    else:
+                        print("WARNING: Actor gradient is None, skipping update")
+                    
+                    # 更新critic
+                    self.critic_optimizer.zero_grad()
+                    critic_loss.backward()
+                    # 检查梯度是否存在
+                    critic_grads = [p.grad for p in self.critic.parameters() if p.grad is not None]
+                    if critic_grads:
+                        grad_norm = torch.nn.utils.clip_grad_norm_(self.critic.parameters(), 0.5)
+                        self.critic_optimizer.step()
+                        critic_grad_norms.append(grad_norm.item())
+                    else:
+                        print("WARNING: Critic gradient is None, skipping update")
+                    
+                    actor_losses.append(actor_loss.item())
+                    critic_losses.append(critic_loss.item())
+                    v_mses.append(v_mse.item())
+                    entropies.append(entropy.mean().item())
+                    kl_values.append(approx_kl.item())
         
         # 更新学习率
         self.actor_scheduler.step()
@@ -679,7 +708,8 @@ class MAPPOAgentV2:
         for key in self.buffer:
             self.buffer[key] = []
         
-        return {
+        # 计算训练指标
+        train_stats = {
             'actor_loss': np.mean(actor_losses) if actor_losses else 0,
             'critic_loss': np.mean(critic_losses) if critic_losses else 0,
             'value_mse': np.mean(v_mses) if v_mses else 0,
@@ -688,6 +718,33 @@ class MAPPOAgentV2:
             'actor_grad_norm': np.mean(actor_grad_norms) if actor_grad_norms else 0,
             'critic_grad_norm': np.mean(critic_grad_norms) if critic_grad_norms else 0,
         }
+        
+        return train_stats
+    
+    def _compute_priorities(self, rewards, values, dones):
+        """计算优先级"""
+        priorities = torch.zeros_like(rewards)
+        last_value = 0
+        
+        for t in reversed(range(len(rewards))):
+            if t == len(rewards) - 1:
+                next_value = 0
+            else:
+                next_value = values[t + 1]
+            
+            delta = rewards[t] + self.gamma * next_value * (1 - dones[t]) - values[t]
+            priorities[t] = torch.abs(delta)
+        
+        return priorities
+    
+    def _prioritized_sample(self, priorities, batch_size=128):
+        """优先级采样"""
+        # 使用线性优先级采样
+        priorities = priorities.detach().cpu().numpy()
+        priorities = np.maximum(priorities, 1e-8)  # 避免优先级为0
+        probs = priorities / np.sum(priorities)
+        indices = np.random.choice(len(priorities), size=batch_size, p=probs)
+        return torch.tensor(indices, dtype=torch.long)
     
     def _compute_gae(self, rewards, values, dones):
         """计算GAE"""
@@ -753,6 +810,15 @@ class MAPPOAgentV2:
             self.training_history['critic_losses'].append(train_stats.get('critic_loss', 0))
             self.training_history['kl_divergences'].append(train_stats.get('kl_divergence', 0))
             self.training_history['entropies'].append(train_stats.get('entropy', 0))
+            self.training_history['value_errors'].append(train_stats.get('value_mse', 0))
+            # 计算合作奖励占比（假设episode_reward包含合作奖励）
+            if episode_reward > 0:
+                cooperation_reward_ratio = 0.5  # 这里需要根据实际情况计算
+            else:
+                cooperation_reward_ratio = 0
+            self.training_history['cooperation_rewards'].append(cooperation_reward_ratio)
+            # 记录策略熵值
+            self.training_history['policy_entropies'].append(train_stats.get('entropy', 0))
         
         # 检查是否是最佳模型
         if episode_sat > self.best_sat:

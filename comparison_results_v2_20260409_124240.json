@@ -1,0 +1,38 @@
+[
+  {
+    "name": "\u4f20\u7edf\u7b97\u6cd5(3GPP)",
+    "avg_satisfaction": 0.9779665380006438,
+    "std_satisfaction": 0.004283134008037488,
+    "avg_reward": 24.431903523791565,
+    "std_reward": 0.06946068307054032,
+    "avg_latency": 18.995538265451547,
+    "avg_rate": 14.179704861111112,
+    "avg_sinr": 24.041478090423567,
+    "handover_success_rate": 0.9242744723630608,
+    "connected_ratio": 0.9928993055555555
+  },
+  {
+    "name": "\u589e\u5f3a\u7b97\u6cd5",
+    "avg_satisfaction": 0.9771616638805297,
+    "std_satisfaction": 0.0017797998448993405,
+    "avg_reward": 24.97068326987335,
+    "std_reward": 0.9489248044792705,
+    "avg_latency": 21.749194500184444,
+    "avg_rate": 14.441014756944446,
+    "avg_sinr": 23.32921024465831,
+    "handover_success_rate": 0.9773880089617822,
+    "connected_ratio": 0.9983333333333334
+  },
+  {
+    "name": "\u4f18\u5316MAPPO",
+    "avg_satisfaction": 0.9139428039993875,
+    "std_satisfaction": 0.007866302833691337,
+    "avg_reward": 21.00861051521977,
+    "std_reward": 3.903338416550484,
+    "avg_latency": 34.441896326052344,
+    "avg_rate": 12.522569444444443,
+    "avg_sinr": 18.515262868290318,
+    "handover_success_rate": 0.9979454926624737,
+    "connected_ratio": 0.9600868055555556
+  }
+]

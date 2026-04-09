@@ -220,13 +220,15 @@ class EnhancedHandoverAlgorithm:
         self.weight_config = weight_config  # 保存配置类型
         # 效用函数默认权重
         self.w_sinr, self.w_load, self.w_rate = 0.45, 0.25, 0.30
-        # 切换阈值参数
-        self.base_threshold = -0.002
+        # 切换阈值参数 - 使用调优后的最佳参数
+        self.base_threshold = 0.01
         self.confidence_factor_coeff = 0.002
         self.mobility_factor_coeff = 0.003
         self.priority_factor_control = 0.003
         self.threshold_lower_bound = 0.005
-        self.epsilon = 0.05  # epsilon-greedy探索率
+        self.epsilon = 0.01  # epsilon-greedy探索率 - 使用调优后的最佳参数
+        self.handover_cooldown = 5  # 切换冷却时间 - 使用调优后的最佳参数
+        self.use_load_mode = True  # 负载模式 - 使用调优后的最佳参数
         # 紧急切换阈值
         self.emergency_sinr_threshold = -5
         self.emergency_satisfaction_threshold = 0.7
@@ -270,8 +272,14 @@ class EnhancedHandoverAlgorithm:
         self.disconnect_timer = {}
         self.emergency_count = 0
         self.current_step_emergency = 0
+        # 切换冷却时间记录
+        self.handover_cooldown_timer = {}
         # 按业务类型统计切换成功/失败
         self.handover_by_business = {bt: {'attempts': 0, 'successes': 0} for bt in BusinessType}
+        # 动态冷却时间调整相关
+        self.cooling_history = []
+        self.cooling_effect_analysis = {}
+        self.optimal_cooling_times = {bt: 5 for bt in BusinessType}  # 初始最佳冷却时间
 
     # ==================== 效用函数 ====================
 
@@ -395,8 +403,135 @@ class EnhancedHandoverAlgorithm:
         if total_capacity == 0:
             return False
         load_ratio = used_capacity / total_capacity
-        self._current_load_ratio = load_ratio
-        return load_ratio > 0.80
+        return load_ratio > 0.85
+
+    def calculate_dynamic_cooling_time(self, uav) -> int:
+        """
+        计算动态冷却时间
+        
+        根据系统负载、网络状态和任务优先级自动调节冷却时长
+        
+        Args:
+            uav: UAV实体
+            
+        Returns:
+            冷却时间（步数）
+        """
+        # 基础冷却时间
+        base_cooling = self.handover_cooldown
+        
+        # 1. 根据业务优先级调整
+        priority_factor = uav.qos_profile.priority
+        priority_adjustment = int((1 - priority_factor) * 3)  # 高优先级业务冷却时间更短
+        
+        # 2. 根据系统负载调整
+        avg_load = np.mean([bs.load_ratio for bs in self.env.base_stations.values()])
+        if avg_load > 0.8:
+            load_adjustment = 2  # 高负载时增加冷却时间
+        elif avg_load < 0.4:
+            load_adjustment = -1  # 低负载时减少冷却时间
+        else:
+            load_adjustment = 0
+        
+        # 3. 根据网络状态调整
+        sinr = self.env.sinr_matrix[uav.uav_id, uav.connected_bs_id] if uav.connected_bs_id is not None else -10
+        if sinr < -5:
+            sinr_adjustment = -1  # 信号质量差时减少冷却时间
+        elif sinr > 15:
+            sinr_adjustment = 1  # 信号质量好时增加冷却时间
+        else:
+            sinr_adjustment = 0
+        
+        # 4. 根据业务类型调整
+        biz_type = uav.true_business_type
+        business_adjustment = {
+            BusinessType.CONTROL_SIGNAL: -2,  # 控制信令需要更快的响应
+            BusinessType.VIDEO_STREAMING: 1,  # 视频回传可以容忍更长的冷却时间
+            BusinessType.ENVIRONMENT_MONITORING: 0,  # 环境监测保持默认
+        }.get(biz_type, 0)
+        
+        # 计算最终冷却时间
+        cooling_time = base_cooling + priority_adjustment + load_adjustment + sinr_adjustment + business_adjustment
+        
+        # 确保冷却时间在合理范围内
+        cooling_time = max(1, min(10, cooling_time))
+        
+        # 记录冷却时间历史
+        self.cooling_history.append({
+            'uav_id': uav.uav_id,
+            'business_type': biz_type.name,
+            'cooling_time': cooling_time,
+            'load': avg_load,
+            'sinr': sinr,
+            'priority': priority_factor,
+            'step': self.env.current_step
+        })
+        
+        return cooling_time
+
+    def _check_cooling_period(self, uav_id: int) -> bool:
+        """
+        检查UAV是否处于冷却期
+        
+        Args:
+            uav_id: UAV ID
+            
+        Returns:
+            是否处于冷却期
+        """
+        if uav_id in self.handover_cooldown_timer:
+            cooling_end = self.handover_cooldown_timer[uav_id]
+            if self.env.current_step < cooling_end:
+                return True
+            else:
+                del self.handover_cooldown_timer[uav_id]
+        return False
+
+    def evaluate_cooling_effect(self) -> Dict:
+        """
+        评估冷却效果
+        
+        Returns:
+            冷却效果分析结果
+        """
+        if not self.cooling_history:
+            return {}
+        
+        # 按业务类型分析
+        biz_analysis = {}
+        for biz_type in BusinessType:
+            biz_history = [h for h in self.cooling_history if h['business_type'] == biz_type.name]
+            if biz_history:
+                avg_cooling = np.mean([h['cooling_time'] for h in biz_history])
+                success_rate = self.handover_by_business.get(biz_type, {'attempts': 1, 'successes': 0})['successes'] / \
+                    self.handover_by_business.get(biz_type, {'attempts': 1, 'successes': 0})['attempts']
+                
+                biz_analysis[biz_type.name] = {
+                    'avg_cooling_time': avg_cooling,
+                    'success_rate': success_rate,
+                    'sample_size': len(biz_history)
+                }
+        
+        # 按负载水平分析
+        load_analysis = {}
+        load_buckets = [0.0, 0.4, 0.6, 0.8, 1.0]
+        for i in range(len(load_buckets) - 1):
+            min_load, max_load = load_buckets[i], load_buckets[i+1]
+            load_history = [h for h in self.cooling_history if min_load <= h['load'] < max_load]
+            if load_history:
+                avg_cooling = np.mean([h['cooling_time'] for h in load_history])
+                load_analysis[f'{min_load:.1f}-{max_load:.1f}'] = {
+                    'avg_cooling_time': avg_cooling,
+                    'sample_size': len(load_history)
+                }
+        
+        self.cooling_effect_analysis = {
+            'business_analysis': biz_analysis,
+            'load_analysis': load_analysis,
+            'total_samples': len(self.cooling_history)
+        }
+        
+        return self.cooling_effect_analysis
 
     def _conservative_decision(self, uav_id: int, t_start: float) -> Optional[Tuple[int, float]]:
         """
@@ -459,6 +594,18 @@ class EnhancedHandoverAlgorithm:
         self.decision_calls += 1
         uav = self.env.uavs[uav_id]
         current_bs_id = uav.connected_bs_id
+
+        # 检查冷却期（紧急切换和重连除外）
+        if current_bs_id is not None:
+            if self._check_cooling_period(uav_id):
+                # 处于冷却期，记录决策
+                self.decision_log.append({
+                    'uav_id': uav.uav_id, 'step': self.env.current_step,
+                    'current_bs': current_bs_id, 'target_bs': None,
+                    'downgrade_ratio': 1.0, 'filter_reason': 'cooling_period'
+                })
+                self.decision_time_history.append((time() - t_start) * 1000)
+                return None
 
         # [新增] 负载感知自适应机制
         # 当系统负载过高时，退化为保守的类 A3 策略，避免过度切换导致断连
@@ -607,6 +754,10 @@ class EnhancedHandoverAlgorithm:
 
         # 2. 直接分配
         if target_bs.allocate(uav_id, required_rate):
+            # 计算并设置动态冷却时间
+            if not is_reconnect:
+                cooling_time = self.calculate_dynamic_cooling_time(uav)
+                self.handover_cooldown_timer[uav_id] = self.env.current_step + cooling_time
             return self._complete_handover(uav_id, target_bs_id, required_rate, is_reconnect, t_start)
 
         # 3. 抢占低优先级
@@ -614,6 +765,10 @@ class EnhancedHandoverAlgorithm:
         freed, kicked_ids = target_bs.kick_low_priority(uav, self.env.uavs)
         if freed >= required_rate and target_bs.allocate(uav_id, required_rate):
             self._soft_migrate_kicked_uavs(kicked_ids, target_bs_id)
+            # 计算并设置动态冷却时间
+            if not is_reconnect:
+                cooling_time = self.calculate_dynamic_cooling_time(uav)
+                self.handover_cooldown_timer[uav_id] = self.env.current_step + cooling_time
             return self._complete_handover(uav_id, target_bs_id, required_rate, is_reconnect, t_start)
 
         # 4. 回滚到旧基站

@@ -7,6 +7,7 @@
 
 import numpy as np
 from typing import Dict, Any, Optional
+from collections import deque
 from .business import BusinessType
 
 
@@ -272,12 +273,161 @@ class CompositeRewardFunction:
         return reward
 
 
+class CooperativeRewardFunction:
+    """
+    合作奖励函数 - 增强对长期合作行为的激励
+    
+    特点：
+    1. 团队合作奖励：基于整个网络的负载均衡
+    2. 长期满意度趋势奖励：奖励稳定或上升的满意度
+    3. 全局网络状态奖励：基于整个网络的性能指标
+    4. 业务感知的合作奖励：根据业务类型调整奖励策略
+    """
+    
+    def __init__(self, config: Optional[Dict] = None):
+        self.config = config or {
+            'satisfaction_weight': 10.0,
+            'switch_penalty': 1.0,
+            'disconnect_penalty': 50.0,
+            'team_cooperation_weight': 2.0,
+            'long_term_trend_weight': 1.5,
+            'global_network_weight': 2.0,
+            'throughput_weight': 0.5,
+            'latency_weight': 0.5,
+        }
+        
+        # 业务类型权重
+        self.biz_weights = {
+            BusinessType.CONTROL_SIGNAL: 1.5,
+            BusinessType.VIDEO_STREAMING: 1.0,
+            BusinessType.ENVIRONMENT_MONITORING: 0.8,
+        }
+        
+        # 历史记录
+        self.satisfaction_history = {}
+        self.team_performance_history = deque(maxlen=10)  # 团队性能历史
+    
+    def compute_reward(self, uav, env, action: int, info: Dict) -> float:
+        """计算合作奖励"""
+        uav_id = getattr(uav, 'id', 0)
+        biz_type = getattr(uav, 'business_type', BusinessType.ENVIRONMENT_MONITORING)
+        biz_weight = self.biz_weights.get(biz_type, 1.0)
+        
+        reward = 0.0
+        
+        # 1. 基础满意度奖励
+        satisfaction = getattr(uav, 'current_satisfaction', 0.5)
+        reward += satisfaction * self.config['satisfaction_weight'] * biz_weight
+        
+        # 2. 长期满意度趋势奖励
+        if uav_id not in self.satisfaction_history:
+            self.satisfaction_history[uav_id] = deque(maxlen=5)
+        
+        long_term_reward = 0.0
+        if len(self.satisfaction_history[uav_id]) >= 3:
+            # 计算满意度趋势
+            history = list(self.satisfaction_history[uav_id])
+            trend = np.polyfit(range(len(history)), history, 1)[0]
+            if trend > 0:  # 满意度上升趋势
+                long_term_reward = trend * 10 * self.config['long_term_trend_weight']
+            elif trend >= -0.01:  # 满意度稳定
+                long_term_reward = 0.5 * self.config['long_term_trend_weight']
+        reward += long_term_reward
+        
+        # 3. 切换惩罚
+        last_bs = getattr(uav, 'last_bs_id', None)
+        if action != 0 and last_bs is not None:
+            # 业务感知的切换惩罚
+            if biz_type == BusinessType.CONTROL_SIGNAL:
+                penalty = self.config['switch_penalty'] * 1.5
+            else:
+                penalty = self.config['switch_penalty']
+            reward -= penalty
+        
+        # 4. 断连惩罚
+        if not getattr(uav, 'is_connected', True):
+            reward -= self.config['disconnect_penalty'] * biz_weight
+        
+        # 5. 吞吐量和延迟奖励
+        throughput = getattr(uav, 'current_throughput', 0)
+        required_rate = getattr(uav, 'required_rate', 1)
+        throughput_ratio = min(throughput / required_rate, 2.0)
+        reward += throughput_ratio * self.config['throughput_weight']
+        
+        latency = getattr(uav, 'current_latency', 0)
+        latency_penalty = -latency / 100 * self.config['latency_weight']
+        reward += latency_penalty
+        
+        # 更新历史
+        self.satisfaction_history[uav_id].append(satisfaction)
+        
+        return reward
+    
+    def compute_team_reward(self, env, actions: Dict[int, int], info: Dict) -> float:
+        """
+        计算团队合作奖励
+        
+        基于整个网络的性能指标
+        """
+        # 计算平均满意度
+        avg_satisfaction = np.mean([getattr(uav, 'current_satisfaction', 0.5) for uav in env.uavs.values()])
+        
+        # 计算负载均衡度（负载方差的倒数）
+        if hasattr(env, 'base_stations'):
+            load_ratios = [bs.load_ratio for bs in env.base_stations.values()]
+            load_balance = 1.0 / (np.var(load_ratios) + 0.01) if load_ratios else 1.0
+        else:
+            load_balance = 1.0
+        
+        # 计算网络性能指标
+        if hasattr(env, 'uavs'):
+            avg_throughput = np.mean([getattr(uav, 'current_throughput', 0) for uav in env.uavs.values()])
+            avg_latency = np.mean([getattr(uav, 'current_latency', 0) for uav in env.uavs.values()])
+            avg_packet_loss = np.mean([getattr(uav, 'packet_loss_rate', 0) for uav in env.uavs.values()])
+        else:
+            avg_throughput = 0
+            avg_latency = 0
+            avg_packet_loss = 0
+        
+        # 计算团队奖励
+        team_reward = 0.0
+        
+        # 满意度奖励
+        team_reward += avg_satisfaction * 5.0
+        
+        # 负载均衡奖励
+        team_reward += load_balance * self.config['team_cooperation_weight']
+        
+        # 网络性能奖励
+        team_reward += (avg_throughput / 10) * 0.5  # 吞吐量奖励
+        team_reward -= (avg_latency / 100) * 0.5  # 延迟惩罚
+        team_reward -= avg_packet_loss * 10  # 丢包率惩罚
+        
+        # 记录团队性能
+        self.team_performance_history.append({
+            'avg_satisfaction': avg_satisfaction,
+            'load_balance': load_balance,
+            'avg_throughput': avg_throughput,
+            'avg_latency': avg_latency,
+            'avg_packet_loss': avg_packet_loss
+        })
+        
+        # 长期团队性能趋势奖励
+        if len(self.team_performance_history) >= 5:
+            histories = list(self.team_performance_history)
+            avg_sat_trend = np.polyfit(range(len(histories)), [h['avg_satisfaction'] for h in histories], 1)[0]
+            if avg_sat_trend > 0:
+                team_reward += avg_sat_trend * 10 * self.config['long_term_trend_weight']
+        
+        return team_reward
+
+
 def get_reward_function(version: str = 'v2', **kwargs):
     """
     获取指定版本的奖励函数
     
     Args:
-        version: 版本 ('v1', 'v2', 'v3', 'composite')
+        version: 版本 ('v1', 'v2', 'v3', 'composite', 'cooperative')
         **kwargs: 额外参数
         
     Returns:
@@ -289,5 +439,7 @@ def get_reward_function(version: str = 'v2', **kwargs):
         return RewardFunctionV3()
     elif version == 'composite':
         return CompositeRewardFunction(kwargs.get('config'))
+    elif version == 'cooperative':
+        return CooperativeRewardFunction(kwargs.get('config'))
     else:
         return RewardFunctionV2()  # 默认V2
