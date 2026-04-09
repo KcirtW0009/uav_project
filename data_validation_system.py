@@ -43,7 +43,7 @@ VALIDATION_CONFIG = {
     'expected_ranges': {
         'satisfaction': {'min': 0.4, 'max': 1.0},
         'reward': {'min': -20.0, 'max': 20.0},
-        'actor_loss': {'min': 0.0, 'max': 10.0},
+        'actor_loss': {'min': -1.0, 'max': 10.0},  # PPO actor loss可以为负
         'critic_loss': {'min': 0.0, 'max': 10.0},
         'entropy': {'min': 0.0, 'max': 2.0},
         'kl_divergence': {'min': 0.0, 'max': 1.0},

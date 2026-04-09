@@ -178,13 +178,18 @@ class QMixHandoverEnv:
             for uid in range(num_uav):
                 self._state_history[uid] = []
         
-        # 通信指标监测
+        # 通信指标监测 - 对齐实验3
         self._communication_metrics = {
             'handover_latencies': [],  # 切换延迟（毫秒）
             'ping_jitters': [],  # Ping抖动（毫秒）
             'packet_losses': [],  # 丢包率（百分比）
             'qos_violations': [],  # QoS违规率（百分比）
-            'ping_times': {}  # UAV id -> 最近的ping时间列表
+            'ping_times': {},  # UAV id -> 最近的ping时间列表
+            # 新增指标（对齐实验3）
+            'throughput': [],  # 系统吞吐量（Mbps）
+            'load_variance': [],  # 负载方差
+            'spectral_efficiency': [],  # 频谱效率（bps/Hz）
+            'fairness_index': [],  # 公平性指数（Jain's Fairness Index）
         }
         for uid in range(num_uav):
             self._communication_metrics['ping_times'][uid] = deque(maxlen=10)
@@ -426,13 +431,18 @@ class QMixHandoverEnv:
         # 不在此处 reset normalizer — EMA 需要跨 episode 持续积累
         # 调用者可通过 reset_normalizer() 手动重置
         
-        # 重置通信指标
+        # 重置通信指标 - 对齐实验3
         self._communication_metrics = {
             'handover_latencies': [],
             'ping_jitters': [],
             'packet_losses': [],
             'qos_violations': [],
-            'ping_times': {}
+            'ping_times': {},
+            # 新增指标（对齐实验3）
+            'throughput': [],
+            'load_variance': [],
+            'spectral_efficiency': [],
+            'fairness_index': [],
         }
         for uid in range(self.num_agents):
             self._communication_metrics['ping_times'][uid] = deque(maxlen=10)
@@ -630,7 +640,16 @@ class QMixHandoverEnv:
 
             # 记录切换结束时间并计算延迟
             handover_end = time.time()
-            handover_latency = (handover_end - handover_start) * 1000  # 转换为毫秒
+            # 基础延迟 + 处理时间（模拟真实环境）
+            base_handover_latency = 5.0  # 基础切换延迟5ms
+            processing_latency = (handover_end - handover_start) * 1000  # 转换为毫秒
+            # 根据目标基站负载调整延迟
+            target_bs = self.env.base_stations.get(action)
+            if target_bs:
+                load_factor = 1.0 + target_bs.load_ratio * 0.5  # 负载越高，延迟越大
+            else:
+                load_factor = 1.0
+            handover_latency = (base_handover_latency + processing_latency) * load_factor
             handover_latencies.append(handover_latency)
             self._communication_metrics['handover_latencies'].append(handover_latency)
 
@@ -756,26 +775,31 @@ class QMixHandoverEnv:
             ep_biz_reward_sum += r_biz
 
             # --- d. 动作奖励 (V14: 增强信号强度，明确区分好坏动作) ---
+            # 添加切换惩罚以降低Ping抖动（频繁切换会导致抖动增加）
             r_action = 0.0
+            
+            # 切换惩罚：无论切换是否成功，都给予轻微惩罚以抑制频繁切换
+            switch_penalty = -0.05 if switched else 0.0
+            
             if switched:
                 # 增强切换奖励信号，让有益切换有更明显的正收益
                 if delta_sat > 0.05:
-                    # 成功切换：大幅奖励
-                    r_action = 8.0 * delta_sat + 0.5  # 基础奖励+比例奖励
+                    # 成功切换：大幅奖励（但减去切换惩罚）
+                    r_action = 8.0 * delta_sat + 0.5 + switch_penalty  # 基础奖励+比例奖励+切换惩罚
                     ep_good_switch += 1
                 elif delta_sat > 0.0:
-                    # 轻微改善：小奖励
-                    r_action = 4.0 * delta_sat + 0.1
+                    # 轻微改善：小奖励（但减去切换惩罚）
+                    r_action = 4.0 * delta_sat + 0.1 + switch_penalty
                 elif delta_sat > -0.05:
-                    # 轻微恶化：小惩罚
-                    r_action = 4.0 * delta_sat - 0.05
+                    # 轻微恶化：小惩罚（加上切换惩罚）
+                    r_action = 4.0 * delta_sat - 0.05 + switch_penalty
                 else:
-                    # 严重恶化：大惩罚
-                    r_action = 6.0 * delta_sat - 0.2
+                    # 严重恶化：大惩罚（加上切换惩罚）
+                    r_action = 6.0 * delta_sat - 0.2 + switch_penalty
                     ep_bad_switch += 1
             elif action != 0:
-                # 尝试切换但未成功：轻微惩罚
-                r_action = -0.15
+                # 尝试切换但未成功：轻微惩罚（加上切换惩罚）
+                r_action = -0.15 + switch_penalty
             else:
                 # 留守: 强化分层信号，明确区分好坏
                 if new_sat < 0.3:
@@ -893,6 +917,8 @@ class QMixHandoverEnv:
         收集当前步的通信质量指标（Ping抖动、丢包率、QoS违规率）。
         供基线算法评估时在 advance_env_only() 之后调用，
         使基线算法与传统/增强算法的通信指标具有可比性。
+        
+        新增指标（对齐实验3）：吞吐量、负载方差、频谱效率、公平性
         """
         for uid in range(self.num_agents):
             uav = self.env.uavs[uid]
@@ -918,6 +944,49 @@ class QMixHandoverEnv:
 
             qos_violation = 0.0 if uav.current_satisfaction >= 0.6 else 100.0
             self._communication_metrics['qos_violations'].append(qos_violation)
+        
+        # 计算新增指标（对齐实验3）
+        self._calculate_advanced_metrics()
+    
+    def _calculate_advanced_metrics(self):
+        """计算高级通信指标（对齐实验3）"""
+        # 1. 系统吞吐量（Mbps）- 所有UAV的分配速率之和
+        total_throughput = 0.0
+        for uav in self.env.uavs.values():
+            if uav.connected_bs_id is not None:
+                total_throughput += uav.current_allocated_rate
+        self._communication_metrics['throughput'].append(total_throughput)
+        
+        # 2. 负载方差 - 基站负载率的标准差
+        load_ratios = [bs.load_ratio for bs in self.env.base_stations.values()]
+        if load_ratios:
+            load_variance = np.var(load_ratios)
+            self._communication_metrics['load_variance'].append(load_variance)
+        
+        # 3. 频谱效率（bps/Hz）- 使用香农公式近似
+        total_spectral_efficiency = 0.0
+        connected_count = 0
+        for uid, uav in self.env.uavs.items():
+            if uav.connected_bs_id is not None:
+                sinr_db = self.env.sinr_matrix[uid][uav.connected_bs_id]
+                sinr_linear = 10 ** (sinr_db / 10)
+                # 香农公式: C/B = log2(1 + SINR)
+                spectral_eff = np.log2(1 + sinr_linear)
+                total_spectral_efficiency += spectral_eff
+                connected_count += 1
+        if connected_count > 0:
+            avg_spectral_eff = total_spectral_efficiency / connected_count
+            self._communication_metrics['spectral_efficiency'].append(avg_spectral_eff)
+        
+        # 4. 公平性指数（Jain's Fairness Index）
+        satisfactions = [uav.current_satisfaction for uav in self.env.uavs.values()]
+        if satisfactions and sum(satisfactions) > 0:
+            n = len(satisfactions)
+            sum_satisfaction = sum(satisfactions)
+            sum_squares = sum([s ** 2 for s in satisfactions])
+            if sum_squares > 0:
+                fairness = (sum_satisfaction ** 2) / (n * sum_squares)
+                self._communication_metrics['fairness_index'].append(fairness)
 
     def advance_env_only(self):
         """

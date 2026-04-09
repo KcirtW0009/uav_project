@@ -217,6 +217,7 @@ class EnhancedHandoverAlgorithm:
 
     def __init__(self, env: NetworkEnvironmentWithRecognition, weight_config='optimized'):
         self.env = env
+        self.weight_config = weight_config  # 保存配置类型
         # 效用函数默认权重
         self.w_sinr, self.w_load, self.w_rate = 0.45, 0.25, 0.30
         # 切换阈值参数
@@ -231,11 +232,14 @@ class EnhancedHandoverAlgorithm:
         self.emergency_satisfaction_threshold = 0.7
         # 业务特化权重
         if weight_config == 'optimized':
-            # 优化的权重配置，用于MAPPO实验
+            # 方案A：进一步优化的权重配置，用于MAPPO实验
+            # 控制信令：进一步提高sinr权重到0.65，确保可靠性
+            # 视频回传：进一步提高rate权重到0.60，确保带宽需求
+            # 环境监测：降低sinr权重，提高rate权重，优化资源使用
             self.business_weights = {
-                BusinessType.CONTROL_SIGNAL: {'sinr': 0.55, 'load': 0.15, 'rate': 0.30},
-                BusinessType.VIDEO_STREAMING: {'sinr': 0.35, 'load': 0.20, 'rate': 0.45},
-                BusinessType.ENVIRONMENT_MONITORING: {'sinr': 0.30, 'load': 0.20, 'rate': 0.50}
+                BusinessType.CONTROL_SIGNAL: {'sinr': 0.65, 'load': 0.10, 'rate': 0.25},
+                BusinessType.VIDEO_STREAMING: {'sinr': 0.25, 'load': 0.15, 'rate': 0.60},
+                BusinessType.ENVIRONMENT_MONITORING: {'sinr': 0.25, 'load': 0.15, 'rate': 0.60}
             }
         else:
             # 默认权重配置，保持与原有实验一致
@@ -333,9 +337,25 @@ class EnhancedHandoverAlgorithm:
         # 优先级因子
         priority_factor = -self.priority_factor_control * 1.5 if uav.business_type == BusinessType.CONTROL_SIGNAL else 0
 
-        dynamic_threshold = base + adjustment + confidence_factor + mobility_factor + priority_factor
+        # 方案C：环境负载自适应 - 仅在optimized模式下启用
+        load_adaptive_factor = 0.0
+        if self.weight_config == 'optimized':
+            global_load = self._get_global_load_ratio()
+            if global_load > 0.85:  # 高负载时更保守（降低阈值从0.9到0.85）
+                load_adaptive_factor = -0.02  # 提高阈值，减少切换（增加因子从0.01到0.02）
+            elif global_load < 0.7:  # 低负载时更积极
+                load_adaptive_factor = 0.01  # 降低阈值，增加切换（增加因子从0.005到0.01）
+
+        dynamic_threshold = base + adjustment + confidence_factor + mobility_factor + priority_factor + load_adaptive_factor
         lower_bound = self.threshold_lower_bound * (0.5 if uav.business_type == BusinessType.CONTROL_SIGNAL else 1.0)
         return max(lower_bound, dynamic_threshold)
+
+    def _get_global_load_ratio(self) -> float:
+        """计算全局负载率"""
+        total_load = 0.0
+        for bs in self.env.base_stations.values():
+            total_load += bs.load_ratio
+        return total_load / len(self.env.base_stations) if self.env.base_stations else 0.0
 
     def predict_handover_success(self, uav, bs_id: int, downgrade_ratio: float) -> float:
         """预测切换成功概率（基于SINR和负载的联合模型）"""

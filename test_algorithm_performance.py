@@ -25,11 +25,11 @@ def test_algorithm_performance():
     # 设置种子
     set_global_seed(GLOBAL_SEED)
     
-    # 测试配置
+    # 测试配置 - 85%负载率
     test_configs = [
-        {'name': '小规模', 'num_uav': 150, 'num_bs': 3, 'num_steps': 50},
-        {'name': '标准规模', 'num_uav': 200, 'num_bs': 4, 'num_steps': 50},
-        {'name': '大规模', 'num_uav': 280, 'num_bs': 5, 'num_steps': 50},
+        {'name': '小规模', 'num_uav': 128, 'num_bs': 3, 'num_steps': 50},  # 128/3=85%
+        {'name': '标准规模', 'num_uav': 200, 'num_bs': 4, 'num_steps': 50},  # 200/4=85%
+        {'name': '大规模', 'num_uav': 280, 'num_bs': 5, 'num_steps': 50},  # 280/5=85%
     ]
     
     for config in test_configs:

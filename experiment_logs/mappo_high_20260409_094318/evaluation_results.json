@@ -1,0 +1,86 @@
+{
+  "handover_success_rate": {
+    "mean": 1.0,
+    "std": 0.0,
+    "min": 1.0,
+    "max": 1.0,
+    "count": 3
+  },
+  "avg_switching_latency_ms": {
+    "mean": 0.0,
+    "std": 0.0,
+    "min": 0.0,
+    "max": 0.0,
+    "count": 3
+  },
+  "max_switching_latency_ms": {
+    "mean": 0.0,
+    "std": 0.0,
+    "min": 0.0,
+    "max": 0.0,
+    "count": 3
+  },
+  "avg_decision_time_ms": {
+    "mean": 0.0,
+    "std": 0.0,
+    "min": 0.0,
+    "max": 0.0,
+    "count": 3
+  },
+  "missed_opportunity_rate": {
+    "mean": 0.0,
+    "std": 0.0,
+    "min": 0.0,
+    "max": 0.0,
+    "count": 3
+  },
+  "avg_satisfaction": {
+    "mean": 0.9530735142050593,
+    "std": 0.003856455557700319,
+    "min": 0.9496940491621736,
+    "max": 0.958470373136636,
+    "count": 3
+  },
+  "latency_satisfaction": {
+    "mean": 0.8166335002199699,
+    "std": 0.003648739648065551,
+    "min": 0.8115416167086549,
+    "max": 0.8199036610443122,
+    "count": 3
+  },
+  "rate_satisfaction": {
+    "mean": 0.0,
+    "std": 0.0,
+    "min": 0.0,
+    "max": 0.0,
+    "count": 3
+  },
+  "load_variance": {
+    "mean": 0.006395904916933019,
+    "std": 0.0022414595062259317,
+    "min": 0.0036412893666448415,
+    "max": 0.009131623879699919,
+    "count": 3
+  },
+  "avg_sinr": {
+    "mean": 0.0,
+    "std": 0.0,
+    "min": 0.0,
+    "max": 0.0,
+    "count": 3
+  },
+  "recognition_accuracy": {
+    "mean": 0.0,
+    "std": 0.0,
+    "min": 0.0,
+    "max": 0.0,
+    "count": 3
+  },
+  "connected_ratio": {
+    "mean": 1.0,
+    "std": 0.0,
+    "min": 1.0,
+    "max": 1.0,
+    "count": 3
+  }
+}

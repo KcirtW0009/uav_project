@@ -140,19 +140,19 @@ def _run_exp_mappo(load_models=False, phase='both', small_scale=False):
 
     环境配置: BS 容量 (500, 1000) Mbps, pos_range=1000m
     通过 UAV/BS 数量比控制负载率:
-      小规模: 150 UAV / 3 BS → 负载率 ~103%
-      大规模: 200 UAV / 4 BS → ~103%, 280 UAV / 5 BS → ~116%
+      小规模: 128 UAV / 3 BS → 负载率 ~85%
+      大规模: 200 UAV / 4 BS → ~85%, 280 UAV / 5 BS → ~95%
     """
     from uav_system.experiments_mappo import ExperimentBAMAPPO
     # 统一容量范围 (500, 1000) Mbps — 与实验2/3/4保持一致
-    # 负载率: 小规模 150UAV/3BS→~103%, 标准 200UAV/4BS→~103%, 280UAV/5BS→~116%
+    # 负载率: 小规模 128UAV/3BS→~85%, 标准 200UAV/4BS→~85%, 280UAV/5BS→~95%
     _cap = (500, 1000)
     if small_scale:
         return ExperimentBAMAPPO.run(
-            num_uav_list=(150,),
-            num_bs_list=(3,),       # 4→3，提高单基站负载
+            num_uav_list=(128,),     # 128 UAV / 3 BS = 85% 负载率
+            num_bs_list=(3,),
             num_steps=50,
-            train_episodes=200,
+            train_episodes=300,      # 延长到300 episodes确保充分收敛
             eval_episodes=3,
             bs_capacity_range=_cap,
             pos_range=1000,

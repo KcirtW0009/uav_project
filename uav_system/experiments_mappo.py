@@ -32,6 +32,7 @@ BA-MAPPO 多智能体强化学习实验
 """
 
 import numpy as np
+import torch
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -379,10 +380,10 @@ class ExperimentBAMAPPO:
     RESULT_FILE = os.path.join(RESULT_DIR, 'mappo_experiment_data.pkl')
 
     @staticmethod
-    def run(num_uav_list=(30, 80, 150),
+    def run(num_uav_list=(30, 80, 128),  # 128 UAV / 3 BS = 85% 负载率
             num_bs_list=(4, 6, 8),
             num_steps=150,
-            train_episodes=100, eval_episodes=5,
+            train_episodes=300, eval_episodes=5,  # 延长到300 episodes确保充分收敛
             bs_capacity_range=(500, 1000),
             pos_range=1000,
             load_models=False, phase='both',
@@ -596,11 +597,20 @@ class ExperimentBAMAPPO:
             agent.set_enhanced_algorithm(enhanced_algorithm)
             
             # 执行模仿学习预训练
+            pretrained_model_path = os.path.join(ExperimentBAMAPPO.MODEL_DIR, f'pretrained_actor_{num_uav}uav.pt')
             if agent.use_pretrain and not (load_models and os.path.exists(model_path)):
-                # 收集示范数据
-                demonstrations = agent.collect_demonstrations(simple_env, num_demos=1000)
-                # 预训练
-                agent.pretrain(demonstrations, epochs=50, batch_size=64)
+                # 检查是否存在预训练模型缓存
+                if os.path.exists(pretrained_model_path) and not os.environ.get('FORCE_RETRAIN'):
+                    print(f"  加载预训练模型缓存: {pretrained_model_path}")
+                    agent.actor.load_state_dict(torch.load(pretrained_model_path))
+                else:
+                    # 收集示范数据
+                    demonstrations = agent.collect_demonstrations(simple_env, num_demos=1000)
+                    # 预训练
+                    agent.pretrain(demonstrations, epochs=50, batch_size=64)
+                    # 保存预训练模型
+                    torch.save(agent.actor.state_dict(), pretrained_model_path)
+                    print(f"  预训练模型已保存: {pretrained_model_path}")
 
             if load_models and os.path.exists(model_path):
                 agent.load(model_path)
@@ -609,54 +619,74 @@ class ExperimentBAMAPPO:
                 continue
             
             # 方案2: 添加obs_normalizer预热
-            if verbose:
-                print(f"\n  [WARMUP] 开始obs_normalizer预热...")
+            warmup_cache_path = os.path.join(ExperimentBAMAPPO.MODEL_DIR, f'warmup_normalizer_{num_uav}uav.pkl')
             
-            warmup_episodes = 10
-            for warmup_ep in range(warmup_episodes):
-                obs_dict, global_state = env.reset()
-                agent.reset_hidden()
+            if os.path.exists(warmup_cache_path) and not os.environ.get('FORCE_RETRAIN'):
+                print(f"  加载预热状态缓存: {warmup_cache_path}")
+                with open(warmup_cache_path, 'rb') as f:
+                    warmup_state = pickle.load(f)
+                    agent.obs_normalizer.mean = warmup_state['mean']
+                    agent.obs_normalizer.var = warmup_state['var']
+                    agent.obs_normalizer.count = warmup_state['count']
+            else:
+                if verbose:
+                    print(f"\n  [WARMUP] 开始obs_normalizer预热...")
                 
-                for step in range(num_steps):
-                    # 获取业务类型
-                    biz_types = {}
-                    for uid in range(env.num_agents):
-                        uav = env.env.uavs[uid]
-                        biz_types[uid] = uav.true_business_type.value
+                warmup_episodes = 10
+                for warmup_ep in range(warmup_episodes):
+                    obs_dict, global_state = env.reset()
+                    agent.reset_hidden()
                     
-                    # 全部使用stay动作，避免影响模型
-                    actions = {uid: 0 for uid in range(env.num_agents)}
+                    for step in range(num_steps):
+                        # 获取业务类型
+                        biz_types = {}
+                        for uid in range(env.num_agents):
+                            uav = env.env.uavs[uid]
+                            biz_types[uid] = uav.true_business_type.value
+                        
+                        # 全部使用stay动作，避免影响模型
+                        actions = {uid: 0 for uid in range(env.num_agents)}
+                        
+                        # 执行动作
+                        next_obs, next_state, rewards, team_reward, done, info = env.step(actions)
+                        
+                        # 选择动作（仅用于获取log_probs和values，不执行）
+                        _, log_probs, values, pre_hidden, _ = agent.select_actions(
+                            obs_dict, global_state, biz_types, training=True, env=env
+                        )
+                        
+                        # 存储经验（仅用于更新normalizer）
+                        agent.insert_experience(
+                            step, obs_dict, global_state, actions,
+                            rewards, team_reward, done, log_probs, values,
+                            biz_types, pre_hidden
+                        )
+                        
+                        obs_dict = next_obs
+                        global_state = next_state
                     
-                    # 执行动作
-                    next_obs, next_state, rewards, team_reward, done, info = env.step(actions)
-                    
-                    # 选择动作（仅用于获取log_probs和values，不执行）
-                    _, log_probs, values, pre_hidden, _ = agent.select_actions(
-                        obs_dict, global_state, biz_types, training=True, env=env
-                    )
-                    
-                    # 存储经验（仅用于更新normalizer）
-                    agent.insert_experience(
-                        step, obs_dict, global_state, actions,
-                        rewards, team_reward, done, log_probs, values,
-                        biz_types, pre_hidden
-                    )
-                    
-                    obs_dict = next_obs
-                    global_state = next_state
+                    # 不进行训练，只更新normalizer
+                    if verbose and (warmup_ep + 1) % 5 == 0:
+                        print(f"  预热进度: {warmup_ep + 1}/{warmup_episodes}")
                 
-                # 不进行训练，只更新normalizer
-                if verbose and (warmup_ep + 1) % 5 == 0:
-                    print(f"  预热进度: {warmup_ep + 1}/{warmup_episodes}")
-            
-            if verbose:
-                print(f"  [WARMUP] 预热完成! Normalizer已适应数据分布")
-                # 打印normalizer状态
-                if hasattr(agent, 'obs_normalizer'):
-                    mean_sample = agent.obs_normalizer.mean[:5] if hasattr(agent.obs_normalizer, 'mean') else []
-                    var_sample = agent.obs_normalizer.var[:5] if hasattr(agent.obs_normalizer, 'var') else []
-                    print(f"  Normalizer mean (前5维): {mean_sample}")
-                    print(f"  Normalizer var (前5维): {var_sample}")
+                if verbose:
+                    print(f"  [WARMUP] 预热完成! Normalizer已适应数据分布")
+                    # 打印normalizer状态
+                    if hasattr(agent, 'obs_normalizer'):
+                        mean_sample = agent.obs_normalizer.mean[:5] if hasattr(agent.obs_normalizer, 'mean') else []
+                        var_sample = agent.obs_normalizer.var[:5] if hasattr(agent.obs_normalizer, 'var') else []
+                        print(f"  Normalizer mean (前5维): {mean_sample}")
+                        print(f"  Normalizer var (前5维): {var_sample}")
+                
+                # 保存预热状态
+                warmup_state = {
+                    'mean': agent.obs_normalizer.mean,
+                    'var': agent.obs_normalizer.var,
+                    'count': agent.obs_normalizer.count
+                }
+                with open(warmup_cache_path, 'wb') as f:
+                    pickle.dump(warmup_state, f)
+                print(f"  预热状态已保存: {warmup_cache_path}")
 
             # 清空 warmup 积累的经验，避免污染正式训练
             for key in agent.buffer:

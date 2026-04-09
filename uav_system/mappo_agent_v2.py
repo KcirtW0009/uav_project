@@ -22,6 +22,51 @@ from collections import deque
 import copy
 
 
+class ObsNormalizer:
+    """对观测值做 running z-score 归一化，加速 PPO 收敛"""
+
+    def __init__(self, obs_dim: int, decay: float = 0.999, clip_val: float = 5.0):
+        self.obs_dim = obs_dim
+        self.decay = decay
+        self.clip_val = clip_val
+        self.mean = np.zeros(obs_dim, dtype=np.float64)
+        self.var = np.ones(obs_dim, dtype=np.float64)
+        self.count = 0
+
+    def reset(self, new_obs_dim=None):
+        """Reset normalizer for new observation dimension (for transfer learning)"""
+        if new_obs_dim is not None:
+            self.obs_dim = new_obs_dim
+        self.mean = np.zeros(self.obs_dim, dtype=np.float64)
+        self.var = np.ones(self.obs_dim, dtype=np.float64)
+        self.count = 0
+
+    def update(self, obs: np.ndarray):
+        """更新 running stats (仅训练时调用)"""
+        self.count += 1
+        batch_mean = obs.mean(axis=0)
+        batch_var = obs.var(axis=0) if len(obs) > 1 else np.ones(self.obs_dim)
+        # 使用更稳定的更新方式
+        alpha = 1.0 / max(self.count, 1)
+        self.mean = (1 - alpha) * self.mean + alpha * batch_mean
+        self.var = (1 - alpha) * self.var + alpha * batch_var
+
+    def normalize(self, obs: np.ndarray) -> np.ndarray:
+        """归一化 obs 到 ~N(0,1)，clip 到 [-clip_val, clip_val]"""
+        std = np.sqrt(np.maximum(self.var, 1e-8))
+        normed = (obs - self.mean) / std
+        # 更激进的clip，减少极端值的影响
+        return np.clip(normed, -self.clip_val, self.clip_val)
+
+    def state_dict(self):
+        return {'mean': self.mean.copy(), 'var': self.var.copy(), 'count': self.count}
+
+    def load_state_dict(self, state):
+        self.mean = state['mean']
+        self.var = state['var']
+        self.count = state['count']
+
+
 class FeedForwardActorNetwork(nn.Module):
     """
     前馈Actor策略网络 (移除RNN，提高稳定性)
@@ -311,13 +356,16 @@ class MAPPOAgentV2:
         self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=actor_lr)
         self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=critic_lr)
         
-        # 学习率调度器
-        self.actor_scheduler = optim.lr_scheduler.StepLR(
-            self.actor_optimizer, step_size=100, gamma=0.9
+        # 学习率调度器 - 使用余弦退火，后期降低学习率
+        self.actor_scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            self.actor_optimizer, T_max=300, eta_min=1e-6
         )
-        self.critic_scheduler = optim.lr_scheduler.StepLR(
-            self.critic_optimizer, step_size=100, gamma=0.9
+        self.critic_scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            self.critic_optimizer, T_max=300, eta_min=1e-6
         )
+        
+        # Observation Normalizer (running mean/std)
+        self.obs_normalizer = ObsNormalizer(obs_dim, decay=0.999, clip_val=5.0)
         
         # 经验缓冲区
         self.buffer = {
@@ -522,6 +570,7 @@ class MAPPOAgentV2:
         # 训练多个epoch
         actor_losses = []
         critic_losses = []
+        v_mses = []
         entropies = []
         kl_values = []
         actor_grad_norms = []
@@ -586,8 +635,9 @@ class MAPPOAgentV2:
                 surr2 = torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * batch_advantages
                 actor_loss = -torch.min(surr1, surr2).mean() - self.entropy_coef * entropy.mean()
                 
-                # 计算critic loss
-                critic_loss = self.value_coef * nn.MSELoss()(new_values, batch_returns)
+                # 计算critic loss和vMSE
+                v_mse = nn.MSELoss()(new_values, batch_returns)
+                critic_loss = self.value_coef * v_mse
                 
                 # 更新actor
                 self.actor_optimizer.zero_grad()
@@ -615,6 +665,7 @@ class MAPPOAgentV2:
                 
                 actor_losses.append(actor_loss.item())
                 critic_losses.append(critic_loss.item())
+                v_mses.append(v_mse.item())
                 entropies.append(entropy.mean().item())
                 kl_values.append(approx_kl.item())
         
@@ -631,6 +682,7 @@ class MAPPOAgentV2:
         return {
             'actor_loss': np.mean(actor_losses) if actor_losses else 0,
             'critic_loss': np.mean(critic_losses) if critic_losses else 0,
+            'value_mse': np.mean(v_mses) if v_mses else 0,
             'entropy': np.mean(entropies) if entropies else 0,
             'kl_divergence': np.mean(kl_values) if kl_values else 0,
             'actor_grad_norm': np.mean(actor_grad_norms) if actor_grad_norms else 0,
@@ -662,6 +714,7 @@ class MAPPOAgentV2:
             'critic': self.critic.state_dict(),
             'actor_optimizer': self.actor_optimizer.state_dict(),
             'critic_optimizer': self.critic_optimizer.state_dict(),
+            'obs_normalizer': self.obs_normalizer.state_dict(),
         }, path)
     
     def load(self, path):
@@ -671,6 +724,8 @@ class MAPPOAgentV2:
         self.critic.load_state_dict(checkpoint['critic'])
         self.actor_optimizer.load_state_dict(checkpoint['actor_optimizer'])
         self.critic_optimizer.load_state_dict(checkpoint['critic_optimizer'])
+        if 'obs_normalizer' in checkpoint:
+            self.obs_normalizer.load_state_dict(checkpoint['obs_normalizer'])
     
     def save_best_model(self):
         """保存最佳模型状态到内存"""
