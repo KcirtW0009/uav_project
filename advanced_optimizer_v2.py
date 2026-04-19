@@ -39,7 +39,7 @@ warnings.filterwarnings('ignore')
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from uav_system.config import set_global_seed, GLOBAL_SEED
-from uav_system.qmix_environment import QMixHandoverEnv
+from uav_system.mappo_environment import MultiAgentHandoverEnv
 from uav_system.mappo_agent import MAPPOAgent
 from uav_system.satisfaction import HierarchicalSatisfactionMetric
 
@@ -547,7 +547,7 @@ def train_with_curriculum_and_adaptation(verbose=True):
     small_config = curriculum_mgr.get_stage_config('small')
     set_global_seed(GLOBAL_SEED)
 
-    small_env = QMixHandoverEnv(seed=GLOBAL_SEED, **small_config['env_config'])
+    small_env = MultiAgentHandoverEnv(seed=GLOBAL_SEED, **small_config['env_config'])
     small_features = adaptive_trainer.extract_scene_features(small_env)
     small_difficulty = adaptive_trainer.compute_difficulty_score(small_features)
     adaptive_trainer.difficulty_scores['small'] = small_difficulty
@@ -619,7 +619,7 @@ def train_with_curriculum_and_adaptation(verbose=True):
     medium_config = curriculum_mgr.get_stage_config('medium')
     set_global_seed(GLOBAL_SEED + 100)  # Different seed for variety
 
-    medium_env = QMixHandoverEnv(seed=GLOBAL_SEED + 100, **medium_config['env_config'])
+    medium_env = MultiAgentHandoverEnv(seed=GLOBAL_SEED + 100, **medium_config['env_config'])
     medium_features = adaptive_trainer.extract_scene_features(medium_env)
     medium_difficulty = adaptive_trainer.compute_difficulty_score(medium_features)
     adaptive_trainer.difficulty_scores['medium'] = medium_difficulty
@@ -712,7 +712,7 @@ def train_with_curriculum_and_adaptation(verbose=True):
     large_config = curriculum_mgr.get_stage_config('large')
     set_global_seed(GLOBAL_SEED + 200)
 
-    large_env = QMixHandoverEnv(seed=GLOBAL_SEED + 200, **large_config['env_config'])
+    large_env = MultiAgentHandoverEnv(seed=GLOBAL_SEED + 200, **large_config['env_config'])
     large_features = adaptive_trainer.extract_scene_features(large_env)
     large_difficulty = adaptive_trainer.compute_difficulty_score(large_features)
     adaptive_trainer.difficulty_scores['large'] = large_difficulty
@@ -790,7 +790,7 @@ def train_with_curriculum_and_adaptation(verbose=True):
         reward_fn = RewardFunctionV9(scene_scale=scenario_key)
 
         set_global_seed(GLOBAL_SEED + hash(scenario_key) % 1000)
-        eval_env = QMixHandoverEnv(seed=GLOBAL_SEED + hash(scenario_key) % 1000,
+        eval_env = MultiAgentHandoverEnv(seed=GLOBAL_SEED + hash(scenario_key) % 1000,
                                     **env_config)
 
         print(f"\n  Evaluating {scenario_key.upper()} scenario ({eval_episodes} episodes)...")

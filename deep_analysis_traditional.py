@@ -25,7 +25,7 @@ warnings.filterwarnings('ignore')
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from uav_system.config import set_global_seed
-from uav_system.qmix_environment import QMixHandoverEnv
+from uav_system.mappo_environment import MultiAgentHandoverEnv
 from uav_system.algorithms import IntegratedHandoverAlgorithm, EnhancedHandoverAlgorithm
 from uav_system.business import BusinessType
 
@@ -61,7 +61,7 @@ def analyze_traditional_algorithm_mechanism():
     print("\n5. 与主实验1234的关键差异:")
     print("   【重要发现】")
     print("   - 主实验1234使用的是 EnhancedNetworkEnvironment")
-    print("   - 当前对比实验使用的是 QMixHandoverEnv")
+    print("   - 当前对比实验使用的是 MultiAgentHandoverEnv")
     print("   - 两个环境的信道模型、资源分配机制可能不同！")
 
 
@@ -71,7 +71,7 @@ def compare_environments():
     print("环境对比分析")
     print("="*80)
     
-    print("\n当前实验环境：QMixHandoverEnv")
+    print("\n当前实验环境：MultiAgentHandoverEnv")
     print("  - UAV 数量：128")
     print("  - BS 数量：3")
     print("  - 区域范围：1000")
@@ -103,7 +103,7 @@ def analyze_current_experiment_detailed():
     seed = 42
     
     set_global_seed(seed)
-    env = QMixHandoverEnv(num_uav=num_uav, num_bs=num_bs, pos_range=1000, max_steps=150)
+    env = MultiAgentHandoverEnv(num_uav=num_uav, num_bs=num_bs, pos_range=1000, max_steps=150)
     
     # 分析初始状态
     obs_dict, global_state = env.reset()
@@ -281,7 +281,7 @@ def analyze_why_traditional_is_good(analysis_data):
     
     print("\n5. 【与主实验 1234 的差异】")
     print("   - 主实验使用 EnhancedNetworkEnvironment(8 个 BS)")
-    print("   - 当前实验使用 QMixHandoverEnv(3 个 BS)")
+    print("   - 当前实验使用 MultiAgentHandoverEnv(3 个 BS)")
     print("   - 两个环境的资源分配机制可能不同")
     print("   - 当前环境可能对纯 SINR 策略更友好")
     
@@ -394,7 +394,7 @@ def generate_deep_analysis_report(analysis_data):
 - 包含随机事件
 
 **当前实验**:
-- 使用 QMixHandoverEnv
+- 使用 MultiAgentHandoverEnv
 - 3 个 BS，128 架 UAV
 - 负载率~88%
 - 无随机事件
@@ -425,7 +425,7 @@ def generate_deep_analysis_report(analysis_data):
 
 ### 6.1 主要结论
 1. **传统算法表现优秀是真实的**，但可能受限于当前环境的特殊性
-2. **环境差异是关键因素**，QMixHandoverEnv 可能对纯 SINR 策略更友好
+2. **环境差异是关键因素**，MultiAgentHandoverEnv 可能对纯 SINR 策略更友好
 3. **增强算法的优势没有充分发挥**，可能需要针对当前环境调整参数
 4. **MAPPO 的过拟合问题导致性能下降**
 
@@ -438,7 +438,7 @@ def generate_deep_analysis_report(analysis_data):
 
 ### 6.3 下一步行动
 1. 在主实验环境 (EnhancedNetworkEnvironment) 中运行对比实验
-2. 在 QMixHandoverEnv 中测试不同负载率（低、中、高）
+2. 在 MultiAgentHandoverEnv 中测试不同负载率（低、中、高）
 3. 对比两种环境下传统算法的表现差异
 4. 分析增强算法在当前环境中的瓶颈
 
@@ -481,7 +481,7 @@ def main():
     
     # 4. 运行单轮次详细分析
     set_global_seed(42)
-    env = QMixHandoverEnv(num_uav=128, num_bs=3, pos_range=1000, max_steps=150)
+    env = MultiAgentHandoverEnv(num_uav=128, num_bs=3, pos_range=1000, max_steps=150)
     
     traditional_algo = IntegratedHandoverAlgorithm(env.env)
     enhanced_algo = EnhancedHandoverAlgorithm(env.env, weight_config='optimized')
@@ -506,7 +506,7 @@ def main():
     print("="*80)
     print("\n核心发现:")
     print("  1. 传统算法实现正确，表现优秀是真实的")
-    print("  2. 当前环境 (QMixHandoverEnv) 可能对纯 SINR 策略更友好")
+    print("  2. 当前环境 (MultiAgentHandoverEnv) 可能对纯 SINR 策略更友好")
     print("  3. 与主实验 1234 的环境差异是关键因素")
     print("  4. 建议在统一环境下进行公平对比")
 

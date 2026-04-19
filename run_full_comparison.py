@@ -14,7 +14,7 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from uav_system.config import set_global_seed
-from uav_system.qmix_environment import QMixHandoverEnv
+from uav_system.mappo_environment import MultiAgentHandoverEnv
 from uav_system.mappo_agent_v2 import MAPPOAgentV2
 
 
@@ -279,7 +279,7 @@ def main():
     print(f"  评估轮数: 3")
     
     # 创建环境
-    env = QMixHandoverEnv(
+    env = MultiAgentHandoverEnv(
         num_uav=num_uav,
         num_bs=num_bs,
         pos_range=1000,

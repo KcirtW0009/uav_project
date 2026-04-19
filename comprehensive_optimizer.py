@@ -40,7 +40,7 @@ warnings.filterwarnings('ignore')
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from uav_system.config import set_global_seed, GLOBAL_SEED
-from uav_system.qmix_environment import QMixHandoverEnv
+from uav_system.mappo_environment import MultiAgentHandoverEnv
 from uav_system.mappo_agent import MAPPOAgent
 from uav_system.satisfaction import HierarchicalSatisfactionMetric
 
@@ -291,7 +291,7 @@ def train_mappo_with_monitoring(env_config, scenario_key='medium', verbose=True)
     train_cfg = config['training']
 
     set_global_seed(GLOBAL_SEED)
-    env = QMixHandoverEnv(seed=GLOBAL_SEED, **env_config)
+    env = MultiAgentHandoverEnv(seed=GLOBAL_SEED, **env_config)
 
     agent = MAPPOAgent(
         num_agents=env.num_agents,
@@ -431,7 +431,7 @@ def evaluate_algorithm_fixed(algorithm_name, env_config, agent=None,
     4. No hardcoded fallbacks
     """
     set_global_seed(GLOBAL_SEED + hash(algorithm_name) % 1000)
-    env = QMixHandoverEnv(seed=GLOBAL_SEED + hash(algorithm_name) % 1000, **env_config)
+    env = MultiAgentHandoverEnv(seed=GLOBAL_SEED + hash(algorithm_name) % 1000, **env_config)
 
     all_metrics = []
 

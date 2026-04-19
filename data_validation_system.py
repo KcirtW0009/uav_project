@@ -42,10 +42,10 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 VALIDATION_CONFIG = {
     'expected_ranges': {
         'satisfaction': {'min': 0.4, 'max': 1.0},
-        'reward': {'min': -20.0, 'max': 20.0},
-        'actor_loss': {'min': -1.0, 'max': 10.0},  # PPO actor loss可以为负
-        'critic_loss': {'min': 0.0, 'max': 10.0},
-        'entropy': {'min': 0.0, 'max': 2.0},
+        'reward': {'min': 200.0, 'max': 400.0},  # BA-MAPPO团队奖励范围（300 UAV场景）
+        'actor_loss': {'min': -0.5, 'max': 0.5},  # PPO actor loss可以为负
+        'critic_loss': {'min': 15.0, 'max': 70.0},  # Critic MSE损失（初始较高后收敛）
+        'entropy': {'min': 0.8, 'max': 1.4},  # 策略熵（探索度）
         'kl_divergence': {'min': 0.0, 'max': 1.0},
         'handover_latency': {'min': 0.0, 'max': 50.0},
         'packet_loss_rate': {'min': 0.0, 'max': 10.0},

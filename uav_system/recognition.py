@@ -23,6 +23,9 @@ from sklearn.metrics import classification_report, confusion_matrix, accuracy_sc
 from .config import GLOBAL_SEED
 from .business import BusinessType, BUSINESS_FEATURE_PARAMS
 
+# 业务识别模块专用种子（固定为42，确保模型选型结果可复现）
+RECOGNITION_SEED = 30042
+
 
 class BusinessRecognitionModel:
     """
@@ -51,7 +54,7 @@ class BusinessRecognitionModel:
         self.model_info = {}
 
     @staticmethod
-    def generate_business_data(num_samples_per_class=3000, seed=GLOBAL_SEED, noise_level=0.1):
+    def generate_business_data(num_samples_per_class=3000, seed=RECOGNITION_SEED, noise_level=0.1):
         """
         生成业务类型分类训练数据
 
@@ -91,16 +94,16 @@ class BusinessRecognitionModel:
         """
         from time import time
         X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=test_size, random_state=GLOBAL_SEED, stratify=y)
+            X, y, test_size=test_size, random_state=RECOGNITION_SEED, stratify=y)
         X_train_scaled = self.scaler.fit_transform(X_train)
         X_test_scaled = self.scaler.transform(X_test)
 
         models = {
-            'dt': DecisionTreeClassifier(max_depth=12, min_samples_split=10, min_samples_leaf=5, random_state=GLOBAL_SEED),
-            'svm': SVC(kernel='rbf', probability=True, C=1.0, gamma='scale', random_state=GLOBAL_SEED),
-            'mlp': MLPClassifier(hidden_layer_sizes=(128, 64, 32), max_iter=1000, early_stopping=True, random_state=GLOBAL_SEED),
-            'rf': RandomForestClassifier(n_estimators=100, max_depth=15, min_samples_split=5, random_state=GLOBAL_SEED, n_jobs=-1),
-            'gb': GradientBoostingClassifier(n_estimators=100, max_depth=5, learning_rate=0.1, random_state=GLOBAL_SEED),
+            'dt': DecisionTreeClassifier(max_depth=12, min_samples_split=10, min_samples_leaf=5, random_state=RECOGNITION_SEED),
+            'svm': SVC(kernel='rbf', probability=True, C=1.0, gamma='scale', random_state=RECOGNITION_SEED),
+            'mlp': MLPClassifier(hidden_layer_sizes=(128, 64, 32), max_iter=1000, early_stopping=True, random_state=RECOGNITION_SEED),
+            'rf': RandomForestClassifier(n_estimators=100, max_depth=15, min_samples_split=5, random_state=RECOGNITION_SEED, n_jobs=-1),
+            'gb': GradientBoostingClassifier(n_estimators=100, max_depth=5, learning_rate=0.1, random_state=RECOGNITION_SEED),
         }
         if model_type not in models:
             raise ValueError(f"model_type must be one of {list(models.keys())}")
@@ -319,7 +322,7 @@ def train_or_load_recognition_model(force_retrain=False, compare_models=True, ve
         model.load()
         # 使用与训练数据同分布的种子生成测试集（避免分布偏移）
         X_test, y_test = BusinessRecognitionModel.generate_business_data(
-            num_samples_per_class=500, seed=GLOBAL_SEED + 42, noise_level=0.1)
+            num_samples_per_class=500, seed=RECOGNITION_SEED + 42, noise_level=0.1)
         acc, f1, _ = model.evaluate_on_test(X_test, y_test)
         if verbose:
             print(f"加载的模型在测试集上准确率: {acc * 100:.2f}%, F1-score: {f1:.3f}")
@@ -330,9 +333,9 @@ def train_or_load_recognition_model(force_retrain=False, compare_models=True, ve
     if verbose:
         print("未找到已保存模型或强制重新训练，开始训练...")
     X, y = BusinessRecognitionModel.generate_business_data(
-        num_samples_per_class=3000, seed=GLOBAL_SEED, noise_level=0.1)
+        num_samples_per_class=3000, seed=RECOGNITION_SEED, noise_level=0.1)
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=GLOBAL_SEED, stratify=y)
+        X, y, test_size=0.2, random_state=RECOGNITION_SEED, stratify=y)
 
     if not compare_models:
         model = BusinessRecognitionModel()

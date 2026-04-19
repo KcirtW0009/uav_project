@@ -15,7 +15,7 @@ import itertools
 import copy
 
 from uav_system.config import set_global_seed, RESULT_DIR
-from uav_system.qmix_environment import QMixHandoverEnv
+from uav_system.mappo_environment import MultiAgentHandoverEnv
 from uav_system.mappo_agent_v2 import MAPPOAgentV2
 
 
@@ -126,7 +126,7 @@ class MAPPOParameterSearch:
         set_global_seed(seed)
         
         # 创建环境
-        env = QMixHandoverEnv(
+        env = MultiAgentHandoverEnv(
             num_uav=self.num_uav,
             num_bs=self.num_bs,
             pos_range=1000,

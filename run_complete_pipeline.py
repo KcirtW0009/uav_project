@@ -26,7 +26,7 @@ from collections import defaultdict
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from uav_system.config import set_global_seed
-from uav_system.qmix_environment import QMixHandoverEnv
+from uav_system.mappo_environment import MultiAgentHandoverEnv
 from uav_system.mappo_agent_v2 import MAPPOAgentV2
 from uav_system.mappo_optimized_config import OPTIMIZED_MAPPO_CONFIG
 from uav_system.business import BusinessType
@@ -312,7 +312,7 @@ def main():
     
     config = OPTIMIZED_MAPPO_CONFIG.copy()
     set_global_seed(seed)
-    env = QMixHandoverEnv(num_uav=num_uav, num_bs=num_bs, pos_range=1000, max_steps=150)
+    env = MultiAgentHandoverEnv(num_uav=num_uav, num_bs=num_bs, pos_range=1000, max_steps=150)
     obs_dict, global_state = env.reset()
     obs_dim = len(obs_dict[0])
     state_dim = len(global_state)

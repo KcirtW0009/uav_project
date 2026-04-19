@@ -12,7 +12,7 @@ import os
 import sys
 import numpy as np
 from uav_system.config import set_global_seed, GLOBAL_SEED
-from uav_system.qmix_environment import QMixHandoverEnv
+from uav_system.mappo_environment import MultiAgentHandoverEnv
 from uav_system.mappo_agent_v2 import MAPPOAgentV2 as MAPPOAgent
 from uav_system.algorithms import EnhancedHandoverAlgorithm, IntegratedHandoverAlgorithm
 
@@ -37,7 +37,7 @@ def test_algorithm_performance():
         print("-"*60)
         
         # 创建环境
-        env = QMixHandoverEnv(
+        env = MultiAgentHandoverEnv(
             num_bs=config['num_bs'],
             num_uav=config['num_uav'],
             max_steps=config['num_steps'],

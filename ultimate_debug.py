@@ -10,7 +10,7 @@ import inspect
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from uav_system.config import set_global_seed, GLOBAL_SEED
-from uav_system.qmix_environment import QMixHandoverEnv
+from uav_system.mappo_environment import MultiAgentHandoverEnv
 # 强制重新导入
 if 'uav_system.mappo_agent' in sys.modules:
     del sys.modules['uav_system.mappo_agent']
@@ -35,7 +35,7 @@ def ultimate_debug():
 
     # 创建实例并测试
     set_global_seed(GLOBAL_SEED)
-    env = QMixHandoverEnv(num_bs=4, num_uav=10, max_steps=50, seed=GLOBAL_SEED, bs_capacity_range=(50, 100))
+    env = MultiAgentHandoverEnv(num_bs=4, num_uav=10, max_steps=50, seed=GLOBAL_SEED, bs_capacity_range=(50, 100))
     agent = MAPPOAgent(
         num_agents=env.num_agents,
         obs_dim=env.obs_dim,

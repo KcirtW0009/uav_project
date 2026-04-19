@@ -424,53 +424,145 @@ class MAPPOAgentV2:
         self.enhanced_algorithm = algorithm
     
     def collect_demonstrations(self, env, num_demos=1000):
-        """收集增强算法的示范数据用于模仿学习"""
+        """收集增强算法的示范数据用于模仿学习
+
+        关键修复: 动作空间为 6 种策略动作 (0=stay, 1=best_sinr, 2=best_capacity,
+        3=sinr_capacity, 4=predictive, 5=business_specific)，而非基站 ID (0~num_bs-1)。
+        收集示范时需要将增强算法的实际选择映射到对应的策略动作。
+        """
         if not self.enhanced_algorithm:
             return []
-        
+
         demonstrations = []
         steps = 0
-        
+
+        # 记录每个 UAV 上一步连接的 BS，用于判断 stay
+        last_connected = {}
+
         while steps < num_demos:
-            # 重置环境，获取初始观察值和状态
             obs_dict, state = env.reset()
             done = False
-            
+
+            # 初始化上一步连接状态
+            for uav_id in range(env.num_agents):
+                last_connected[uav_id] = env.env.uavs[uav_id].connected_bs_id
+
             while not done and steps < num_demos:
                 # 使用增强算法选择动作
                 self.enhanced_algorithm.run_step()
-                
-                # 获取当前状态和动作
+
+                # 获取当前状态
                 obs = np.array([obs_dict[uav_id] for uav_id in range(env.num_agents)])
-                
-                # 假设增强算法的动作存储在某个属性中
-                # 这里需要根据实际情况调整
+
+                # 将增强算法的选择映射到策略动作 (0~5)
                 actions = {}
                 for uav_id in range(env.num_agents):
-                    # 简单实现：选择当前最佳基站
-                    best_bs = env.env.uavs[uav_id].connected_bs_id
-                    actions[uav_id] = best_bs if best_bs is not None else 0
-                
+                    current_bs = env.env.uavs[uav_id].connected_bs_id
+                    prev_bs = last_connected.get(uav_id)
+
+                    if current_bs == prev_bs:
+                        # 没有切换 → stay
+                        actions[uav_id] = 0
+                    else:
+                        # 发生了切换 → 判断最匹配的策略动作
+                        actions[uav_id] = self._match_strategy_action(env, uav_id, current_bs)
+
+                    last_connected[uav_id] = current_bs
+
                 demonstrations.append((obs, state, actions))
                 steps += 1
-                
-                # 推进环境
-                # 由于我们使用增强算法直接操作环境，这里不需要传入动作
-                # 只需要推进环境即可
-                env.advance_env_only()
-                
-                # 检查是否完成
-                # QMixHandoverEnv没有get_done方法，我们需要自己判断
-                # 简单判断：如果所有UAV都连接到基站，则认为完成
-                done = all(uav.connected_bs_id is not None for uav in env.env.uavs.values())
-                
-                # 更新观察值和状态
-                # 注意：QMixHandoverEnv的step方法需要动作作为参数
-                # 这里我们使用一个空动作字典，因为增强算法已经完成了切换
+
+                # 推进环境（增强算法已执行切换，用空动作推进）
                 empty_actions = {uav_id: 0 for uav_id in range(env.num_agents)}
                 obs_dict, state, _, _, done, _ = env.step(empty_actions)
-        
+
         return demonstrations
+
+    def _match_strategy_action(self, env, uav_id, target_bs):
+        """根据增强算法实际选择的 BS，反推最匹配的策略动作 (1~5)
+
+        模拟环境 step() 中各策略的决策逻辑，找到与目标 BS 一致的策略。
+        如果没有精确匹配，返回 best_sinr(1) 作为默认。
+        """
+        uav = env.env.uavs[uav_id]
+        sinr_row = env.env.sinr_matrix[uav_id]
+        num_bs = env.num_bs
+        prev_bs = uav.connected_bs_id  # 当前已连接的（就是 target_bs）
+
+        # 模拟各策略，记录每个策略会选哪个 BS
+        strategy_targets = {}
+
+        # action 1: best_sinr
+        candidates = [(bs_id, sinr_row[bs_id]) for bs_id in range(num_bs)
+                      if bs_id != prev_bs]
+        if candidates:
+            strategy_targets[1] = max(candidates, key=lambda x: x[1])[0]
+
+        # action 2: best_capacity
+        candidates = []
+        for bs_id in range(num_bs):
+            if bs_id == prev_bs:
+                continue
+            bs = env.env.base_stations[bs_id]
+            if uav.required_rate > 0:
+                ratio = bs.available_capacity / uav.required_rate
+            else:
+                ratio = float('inf')
+            candidates.append((bs_id, ratio))
+        if candidates:
+            strategy_targets[2] = max(candidates, key=lambda x: x[1])[0]
+
+        # action 3: sinr_capacity (SINR 60% + 容量 40%)
+        candidates = []
+        for bs_id in range(num_bs):
+            if bs_id == prev_bs:
+                continue
+            bs = env.env.base_stations[bs_id]
+            sinr = sinr_row[bs_id]
+            if uav.required_rate > 0:
+                cap_ratio = bs.available_capacity / uav.required_rate
+            else:
+                cap_ratio = 1.0
+            score = 0.6 * sinr + 0.4 * cap_ratio
+            candidates.append((bs_id, score))
+        if candidates:
+            strategy_targets[3] = max(candidates, key=lambda x: x[1])[0]
+
+        # action 4: predictive (简化版 = best_sinr)
+        candidates = [(bs_id, sinr_row[bs_id]) for bs_id in range(num_bs)
+                      if bs_id != prev_bs]
+        if candidates:
+            strategy_targets[4] = max(candidates, key=lambda x: x[1])[0]
+
+        # action 5: business_specific
+        biz_type = uav.true_business_type.value
+        candidates = []
+        for bs_id in range(num_bs):
+            if bs_id == prev_bs:
+                continue
+            bs = env.env.base_stations[bs_id]
+            sinr = sinr_row[bs_id]
+            if uav.required_rate > 0:
+                cap_ratio = bs.available_capacity / uav.required_rate
+            else:
+                cap_ratio = 1.0
+            if biz_type == 0:      # 延迟敏感型
+                score = 0.8 * sinr + 0.2 * cap_ratio
+            elif biz_type == 1:    # 吞吐量敏感型
+                score = 0.3 * sinr + 0.7 * cap_ratio
+            else:                   # 可靠性敏感型
+                score = 0.5 * sinr + 0.5 * cap_ratio
+            candidates.append((bs_id, score))
+        if candidates:
+            strategy_targets[5] = max(candidates, key=lambda x: x[1])[0]
+
+        # 找精确匹配
+        for action_id, bs_id in strategy_targets.items():
+            if bs_id == target_bs:
+                return action_id
+
+        # 无精确匹配，返回 best_sinr 作为默认
+        return 1
     
     def imitate_learning(self, demonstrations, epochs=10):
         """模仿学习预训练"""
@@ -605,14 +697,19 @@ class MAPPOAgentV2:
         priorities_flat = priorities.view(-1)
         
         # 多阶段训练策略
+        # V17: 调整阶段策略 - 熵系数在整个训练期间维持较高水平，避免过早坍缩为确定性策略
         phases = [
-            {'name': 'warmup', 'clip_epsilon': self.clip_epsilon * 2, 'entropy_coef': self.entropy_coef * 2},
+            {'name': 'warmup', 'clip_epsilon': self.clip_epsilon * 2, 'entropy_coef': self.entropy_coef * 1.5},
             {'name': 'main', 'clip_epsilon': self.clip_epsilon, 'entropy_coef': self.entropy_coef},
-            {'name': 'fine-tune', 'clip_epsilon': self.clip_epsilon * 0.5, 'entropy_coef': self.entropy_coef * 0.5}
+            {'name': 'fine-tune', 'clip_epsilon': self.clip_epsilon * 0.6, 'entropy_coef': self.entropy_coef * 0.7}
         ]
         
+        # V17: Training phases信息只打印一次（修复每episode重复刷屏的问题）
+        if not getattr(self, '_phases_printed', False):
+            print(f"Training phases: warmup -> main -> fine-tune")
+            self._phases_printed = True
+
         for phase_idx, phase in enumerate(phases):
-            print(f"Training phase: {phase['name']}")
             
             # 每个阶段训练不同的轮数
             phase_epochs = 2 if phase_idx == 0 else (3 if phase_idx == 1 else 1)
@@ -670,7 +767,7 @@ class MAPPOAgentV2:
                     
                     # 更新actor
                     self.actor_optimizer.zero_grad()
-                    actor_loss.backward(retain_graph=True)  # 保留计算图
+                    actor_loss.backward()
                     # 检查梯度是否存在
                     actor_grads = [p.grad for p in self.actor.parameters() if p.grad is not None]
                     if actor_grads:

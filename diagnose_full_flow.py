@@ -10,7 +10,7 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'uav_system'))
 
-from uav_system.qmix_environment import QMixHandoverEnv
+from uav_system.mappo_environment import MultiAgentHandoverEnv
 from uav_system.mappo_agent import MAPPOAgent
 from uav_system.algorithms import EnhancedHandoverAlgorithm
 
@@ -26,7 +26,7 @@ def diagnose_full_training_flow():
     train_episodes = 5  # 只跑几个 episode
 
     # ---- 1. 创建环境 ----
-    env = QMixHandoverEnv(
+    env = MultiAgentHandoverEnv(
         num_bs=num_bs, num_uav=num_uav,
         max_steps=num_steps, seed=42,
         bs_capacity_range=(80, 180),

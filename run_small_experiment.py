@@ -29,7 +29,7 @@ from collections import defaultdict, deque
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from uav_system.config import set_global_seed, GLOBAL_SEED
-from uav_system.qmix_environment import QMixHandoverEnv
+from uav_system.mappo_environment import MultiAgentHandoverEnv
 from uav_system.mappo_agent import MAPPOAgent
 from uav_system.algorithms import EnhancedHandoverAlgorithm, IntegratedHandoverAlgorithm
 from uav_system.business import BusinessType
@@ -92,7 +92,7 @@ class SimplifiedSmallExperiment:
         set_global_seed(GLOBAL_SEED)
 
         # 创建环境
-        env = QMixHandoverEnv(
+        env = MultiAgentHandoverEnv(
             num_bs=config['num_bs'],
             num_uav=config['num_uav'],
             max_steps=config['num_steps'],
@@ -267,7 +267,7 @@ class SimplifiedSmallExperiment:
             mappo_model_path = os.path.join(self.output_dir, 'mappo_final.pt')
 
         # 创建环境
-        env = QMixHandoverEnv(
+        env = MultiAgentHandoverEnv(
             num_bs=config['num_bs'],
             num_uav=config['num_uav'],
             max_steps=config['num_steps'],

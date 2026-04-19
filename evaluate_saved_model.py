@@ -13,7 +13,7 @@ import argparse
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from uav_system.config import set_global_seed
-from uav_system.qmix_environment import QMixHandoverEnv
+from uav_system.mappo_environment import MultiAgentHandoverEnv
 from uav_system.mappo_agent_v2 import MAPPOAgentV2
 from uav_system.experiments_mappo import ExperimentBAMAPPO
 

@@ -16,7 +16,7 @@ import numpy as np
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from uav_system.config import set_global_seed, GLOBAL_SEED
-from uav_system.qmix_environment import QMixHandoverEnv
+from uav_system.mappo_environment import MultiAgentHandoverEnv
 from uav_system.algorithms import EnhancedHandoverAlgorithm, IntegratedHandoverAlgorithm
 
 
@@ -32,7 +32,7 @@ def test_action_index_fix():
     num_steps = 50
 
     # 创建环境
-    env = QMixHandoverEnv(
+    env = MultiAgentHandoverEnv(
         num_bs=num_bs,
         num_uav=num_uav,
         max_steps=num_steps,

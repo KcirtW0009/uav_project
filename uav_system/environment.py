@@ -69,14 +69,22 @@ class NetworkEnvironmentWithRecognition:
     # ==================== 初始化 ====================
 
     def _init_base_stations(self, scenario: str):
-        """根据场景初始化基站"""
+        """
+        根据场景初始化基站
+
+        基站部署参数参照 3GPP TR 38.901 / TR 36.777 标准及中国5G实际部署数据:
+        - 宏基站(Macro): 高度 25m(楼顶)或 35m(铁塔)，对应3GPP UMa模型 h_BS=25m
+        - 小基站(Small): 高度 6~10m(灯杆/墙面)，对应3GPP UMi模型 h_BS=10m
+        - 宏微比例: 城市密集区小基站占主体(60%~80%)，其他场景至少40%
+
+        UAV飞行高度: 低空域 60~300m（符合民航规章）
+        """
         if self.bs_capacity_range is not None:
             low, high = self.bs_capacity_range
         else:
             # 5G基站容量参考: 宏站100MHz带宽≈1Gbps, 微站≈500Mbps
             # 载波聚合/高阶MIMO可达2Gbps+
             # 容量按各场景UAV数量×业务比例×理想速率的 1/0.77 设计，保持~77%负载率
-            #   (与实验3默认场景一致，确保跨场景可比性)
             capacity_map = {
                 'urban': (400, 800), 'emergency': (700, 1000),
                 'agriculture': (600, 900), 'default': (500, 1000),
@@ -86,17 +94,76 @@ class NetworkEnvironmentWithRecognition:
                 'logistics_delivery': (1200, 2100),    # 500UAV×40%视频→10175Mbps需求→8×avg1650≈77%
             }
             low, high = capacity_map.get(scenario, capacity_map['default'])
-        pos_range_map = {'urban': 800, 'emergency': 1200, 'agriculture': 1500, 'default': 1000,
-                         'smart_city': 800, 'industrial_inspection': 600, 'emergency_rescue': 1200,
-                         'logistics_delivery': 1500}
-        pos_range = pos_range_map.get(scenario, 1000)
+
+        # 水平部署范围(m): x,y坐标的覆盖范围
+        pos_range_map = {
+            'urban': 800, 'emergency': 1200, 'agriculture': 1500, 'default': 1000,
+            'smart_city': 800, 'industrial_inspection': 600, 'emergency_rescue': 1200,
+            'logistics_delivery': 1500
+        }
+        self.pos_range_xy = pos_range_map.get(scenario, 1000)  # 实例变量，供UAV初始化使用
+
+        # ====== 基站高度配置（3GPP标准） ======
+        # 参考: 3GPP TR 38.901 Table 7.4.1-1
+        #   UMa (Urban Macro):   BS天线高度 h_BS = 25m (平均建筑高度/楼顶)
+        #   UMi (Urban Micro):    BS天线高度 h_BS = 10m (低于屋顶，街灯/杆)
+        #   RMa (Rural Macro):   BS天线高度 h_BS = 35m
+        macro_height = 25.0   # 宏基站: 楼顶部署
+        small_height = 8.0    # 小基站: 灯杆/墙面/室内
+        rural_macro_height = 35.0  # 农村宏基站可稍高
+
+        # 场景特定的高度配置
+        height_config = {
+            'macro': {'smart_city': macro_height, 'industrial_inspection': macro_height,
+                      'logistics_delivery': macro_height, 'emergency_rescue': macro_height},
+            'small': {'smart_city': small_height, 'industrial_inspection': small_height,
+                      'logistics_delivery': small_height, 'emergency_rescue': small_height}
+        }
+
+        # ====== 宏微比例配置（中国5G实际部署） ======
+        # 数据来源: 信通院2024-2025报告, 运营商集采公告
+        #   城市密集区: 小基站占比 60%~80%（补盲+室分+热点）
+        #   工业园区: 小基站占比 ~50%（厂区覆盖）
+        #   农业地区: 以宏基站为主, 小基站 ~30%
+        #   应急救援: 宏基站为主(可靠性优先), 小基站 ~25%
+        #   物流配送: 混合型, 小基站 ~45%
+        small_cell_ratios = {
+            'smart_city': 0.70,              # 城市监控: 70%小基站(密集商业区)
+            'industrial_inspection': 0.50,  # 工业巡检: 50%小基站(厂房内部署)
+            'agriculture': 0.30,             # 农业植保: 30%小基站(广域覆盖为主)
+            'emergency_rescue': 0.25,         # 应急救援: 25%小基站(可靠性优先)
+            'logistics_delivery': 0.45,       # 物流配送: 45%小基站(混合部署)
+            'urban': 0.70,                     # 默认城区
+            'default': 0.50,                   # 默认混合
+            'emergency': 0.40,
+        }
+        small_ratio = small_cell_ratios.get(scenario, 0.50)
 
         for i in range(self.num_bs):
             capacity = np.random.uniform(low, high)
-            bs_type = 'small' if scenario == 'urban' and np.random.rand() < 0.4 else 'macro'
+
+            # 确定基站类型（基于场景比例）
+            if np.random.rand() < small_ratio:
+                bs_type = 'small'
+                bs_h = height_config['small'].get(scenario, small_height)
+                # 小基站容量通常较低（微功率节点）
+                capacity *= np.random.uniform(0.4, 0.7)
+            else:
+                bs_type = 'macro'
+                bs_h = height_config['macro'].get(scenario, macro_height)
+                # 农村场景宏基站可能更高
+                if scenario == 'agriculture':
+                    bs_h = rural_macro_height
+
+            # 构建三维位置: x,y在水平范围随机, z为固定高度加微小偏移(±2m模拟不同楼层)
+            x = np.random.uniform(0, self.pos_range_xy)
+            y = np.random.uniform(0, self.pos_range_xy)
+            z = bs_h + np.random.uniform(-2, 2)  # 微小高度差异
+
+            position = np.array([x, y, z])
             self.base_stations[i] = BaseStation(
                 i, capacity=capacity,
-                position=np.random.rand(3) * pos_range, bs_type=bs_type)
+                position=position, bs_type=bs_type)
 
     def _init_uavs(self, scenario: str):
         """根据场景初始化UAV，分配业务类型"""
@@ -123,11 +190,39 @@ class NetworkEnvironmentWithRecognition:
         vel = vel_map.get(scenario, 20)
 
         business_types = [BusinessType.CONTROL_SIGNAL, BusinessType.VIDEO_STREAMING, BusinessType.ENVIRONMENT_MONITORING]
+
+        # ====== UAV飞行高度配置（低空域） ======
+        # 参考: 民航规章/3GPP TR 36.777 UAV-UE场景
+        #   民用无人机典型作业高度: 60~300m
+        #   城市监控/巡检: 80~150m
+        #   农业植保: 50~120m (低空喷洒)
+        #   应急救援/物流: 100~200m
+        uav_altitude_range = {
+            'smart_city': (80, 150),            # 城市监控: 中低空
+            'industrial_inspection': (80, 180), # 工业巡检: 厂区上空
+            'agriculture': (50, 120),           # 农业植保: 低空作业
+            'emergency_rescue': (100, 250),      # 应急救援: 中空
+            'logistics_delivery': (80, 200),       # 物流配送: 城市低空
+            'urban': (80, 180),
+            'default': (80, 200),
+            'emergency': (100, 250),
+        }
+        alt_min, alt_max = uav_altitude_range.get(scenario, (80, 200))
+
         for i in range(self.num_uav):
             rand = np.random.rand()
             biz_type = business_types[0] if rand < ratios[0] else (
                 business_types[1] if rand < ratios[0] + ratios[1] else business_types[2])
-            self.uavs[i] = UAV(i, business_type=biz_type, velocity=(np.random.rand(3) - 0.5) * vel)
+
+            # UAV位置: x,y在水平范围随机, z在低空域高度范围随机
+            x = np.random.uniform(0, self.pos_range_xy)
+            y = np.random.uniform(0, self.pos_range_xy)
+            z = np.random.uniform(alt_min, alt_max)  # 合理的低空域高度
+            position = np.array([x, y, z])
+
+            self.uavs[i] = UAV(i, business_type=biz_type,
+                             position=position,
+                             velocity=(np.random.rand(3) - 0.5) * vel)
 
     def _update_sinr_matrix(self):
         """更新SINR矩阵（基于距离相关的路径损耗模型）"""

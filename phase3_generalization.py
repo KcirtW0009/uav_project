@@ -28,7 +28,7 @@ from datetime import datetime
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from uav_system.config import set_global_seed, GLOBAL_SEED
-from uav_system.qmix_environment import QMixHandoverEnv
+from uav_system.mappo_environment import MultiAgentHandoverEnv
 from uav_system.mappo_agent import MAPPOAgent
 
 
@@ -138,7 +138,7 @@ class GeneralizationEvaluator:
         print(f"  Config: {source_config}")
 
         set_global_seed(GLOBAL_SEED)
-        env = QMixHandoverEnv(seed=GLOBAL_SEED, **source_config)
+        env = MultiAgentHandoverEnv(seed=GLOBAL_SEED, **source_config)
 
         # Adaptive hyperparameters based on scene complexity
         num_uav = source_config.get('num_uav', 10)
@@ -219,7 +219,7 @@ class GeneralizationEvaluator:
             raise ValueError("Source model not trained! Call train_source_model() first.")
 
         set_global_seed(GLOBAL_SEED + 999)
-        env = QMixHandoverEnv(seed=GLOBAL_SEED + 999, **target_config)
+        env = MultiAgentHandoverEnv(seed=GLOBAL_SEED + 999, **target_config)
 
         eval_agent = None
 

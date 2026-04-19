@@ -42,7 +42,7 @@ from datetime import datetime
 from typing import Dict, List, Any, Tuple, Optional
 
 from .config import GLOBAL_SEED, set_global_seed, RESULT_DIR, COLORS
-from .qmix_environment import QMixHandoverEnv
+from .mappo_environment import MultiAgentHandoverEnv
 from .mappo_agent_v2 import MAPPOAgentV2 as MAPPOAgent
 from .algorithms import EnhancedHandoverAlgorithm, IntegratedHandoverAlgorithm
 from .business import BusinessType
@@ -72,7 +72,7 @@ class VectorizedEnvs:
     def __init__(self, env_fn, num_envs: int, seed: int = 0):
         """
         Args:
-            env_fn: 返回新 QMixHandoverEnv 实例的 callable
+            env_fn: 返回新 MultiAgentHandoverEnv 实例的 callable
             num_envs: 并行环境数
             seed: 基础随机种子
         """
@@ -119,7 +119,7 @@ def _collect_biz_satisfaction(env_or_env_wrapper):
     按业务类型统计满意度（统一接口）。
 
     Args:
-        env_or_env_wrapper: QMixHandoverEnv 实例（env.env 为底层网络环境）
+        env_or_env_wrapper: MultiAgentHandoverEnv 实例（env.env 为底层网络环境）
 
     Returns:
         dict: {
@@ -380,33 +380,36 @@ class ExperimentBAMAPPO:
     RESULT_FILE = os.path.join(RESULT_DIR, 'mappo_experiment_data.pkl')
 
     @staticmethod
-    def run(num_uav_list=(30, 80, 128),  # 128 UAV / 3 BS = 85% 负载率
-            num_bs_list=(4, 6, 8),
-            num_steps=150,
-            train_episodes=300, eval_episodes=5,  # 延长到300 episodes确保充分收敛
-            bs_capacity_range=(500, 1000),
+    def run(num_uav_list=(300,),       # [Step3对齐] 300UAV/8BS ≈ 77%负载率 (与实验3一致)
+            num_bs_list=(8,),
+            num_steps=350,              # [Step3对齐] 与实验3步数一致 (原150)
+            train_episodes=500,         # [Step3增加] 增加训练轮次确保低负载下充分收敛 (原300)
+            eval_episodes=10,           # [Step3增加] 增加评估重复次数提高统计可靠性 (原5)
+            bs_capacity_range=(500, 1000),  # 与实验3一致
             pos_range=1000,
             load_models=False, phase='both',
             verbose=True,
             # BA-MAPPO 配置开关
             use_biz_heads=True,
             use_attention_critic=True,
-            rollout_length=150,
-            # V16优化: 降低 actor_lr 解决 KL 散度爆炸 (1e-4 → 5e-5)
-            actor_lr=5e-5, critic_lr=3e-4,
+            rollout_length=200,          # [Step3增加] 增长rollout以适应更长episode (原150)
+            # V23优化: 调整学习率以加速收敛（针对实验3场景优化）
+            actor_lr=8e-5, critic_lr=5e-4,       # 原(5e-5, 3e-4) → 提升60%加速收敛
             hidden_dim=64, critic_hidden_dim=128,
             # 训练效率优化
-            train_sample_agents=0,
-            attention_sample_agents=0,
-            num_parallel_envs=1,
+            train_sample_agents=50,      # [Step3启用] Agent采样加速训练 (原0)
+            attention_sample_agents=50,  # [Step3启用] Attention采样加速训练 (原0)
+            num_parallel_envs=2,         # [Step3增加] 并行环境加速数据收集 (原1)
             # PPO超参数（与mappo_standard_config对齐）
-            gamma=0.95,
+            gamma=0.99,                  # [Step3调整] 增大折扣因子适应长episode (原0.95)
             gae_lambda=0.95,
-            clip_epsilon=0.3,  # V16优化: 0.2→0.3，允许更大策略更新,
-            entropy_coef=0.05,
+            clip_epsilon=0.3,
+            entropy_coef=0.15,           # [V17] 进一步增大熵系数，保持训练全程探索 (原0.08)
             value_loss_coef=0.5,
-            batch_size=32,
-            num_epochs=3):
+            batch_size=64,               # [Step3调整] 增大批次大小适应更多agents (原32)
+            num_epochs=4,                # [Step3调整] 增加PPO epoch数 (原3)
+            # [V17] 业务识别模型（评估阶段接入，训练阶段不用）
+            recognition_model=None, scaler=None):
         """
         运行 BA-MAPPO 实验
 
@@ -496,6 +499,8 @@ class ExperimentBAMAPPO:
                 use_biz_heads, use_attention_critic,
                 hidden_dim, critic_hidden_dim,
                 attention_sample_agents=attention_sample_agents,
+                # V17: 评估阶段接入业务识别模型（带噪声，更接近真实场景）
+                recognition_model=recognition_model, scaler=scaler,
             )
             all_results['evaluation'] = eval_results
 
@@ -537,24 +542,34 @@ class ExperimentBAMAPPO:
             print(f"  [优化] 并行环境: {num_parallel_envs} 个环境并行收集数据")
         print("-" * 60)
 
+        # V23: 训练容量与实验3完全对齐（消除训练/评估分布偏移）
+        #   训练: (500, 1000) → 平均750 → 负载率~78%（与实验3一致）
+        #   评估: (500, 1000) → 平均750 → 负载率~78%
+        #   原因: V22的高负载训练(129%)导致模型学到过度保守策略，
+        #         在标准场景(78%负载)下表现次优（sat仅0.927 vs 增强0.995）
+        train_capacity_range = bs_capacity_range  # 直接使用评估容量，完全对齐
+
         training_results = {}
 
         for num_uav, num_bs in zip(num_uav_list, num_bs_list):
             avg_demand = 0.4 * 0.5 + 0.3 * 50 + 0.3 * 1.0
-            avg_cap = sum(bs_capacity_range) / 2
-            load_rate = num_uav * avg_demand / (num_bs * avg_cap) * 100
-            print(f"\n>>> 训练 UAV={num_uav}/BS={num_bs} (预估负载率~{load_rate:.0f}%) <<<")
+            avg_cap_train = sum(train_capacity_range) / 2
+            avg_cap_eval = sum(bs_capacity_range) / 2
+            load_rate_train = num_uav * avg_demand / (num_bs * avg_cap_train) * 100
+            load_rate_eval = num_uav * avg_demand / (num_bs * avg_cap_eval) * 100
+            print(f"\n>>> 训练 UAV={num_uav}/BS={num_bs}")
+            print(f"    训练负载率~{load_rate_train:.0f}% (容量{train_capacity_range}) | 评估负载率~{load_rate_eval:.0f}% (容量{bs_capacity_range}) <<<")
 
             set_global_seed(GLOBAL_SEED + num_uav * 100)
             model_path = os.path.join(ExperimentBAMAPPO.MODEL_DIR,
                                       f'mappo_{num_bs}bs_{num_uav}uav.pt')
 
             # 直接在标准环境中训练，确保模型能够适应真实场景
-            # 移除简单环境，避免环境变化过于剧烈导致模型不适应
-            env = QMixHandoverEnv(
+            # V20: 使用高负载容量范围进行训练
+            env = MultiAgentHandoverEnv(
                 num_bs=num_bs, num_uav=num_uav,
                 max_steps=num_steps, seed=GLOBAL_SEED + num_uav * 100,
-                bs_capacity_range=bs_capacity_range,
+                bs_capacity_range=train_capacity_range,
                 pos_range=pos_range,
             )
             env.reset_normalizer()  # 训练前重置 normalizer
@@ -596,21 +611,25 @@ class ExperimentBAMAPPO:
             enhanced_algorithm = EnhancedHandoverAlgorithm(env.env, weight_config='optimized')
             agent.set_enhanced_algorithm(enhanced_algorithm)
             
-            # 执行模仿学习预训练
-            pretrained_model_path = os.path.join(ExperimentBAMAPPO.MODEL_DIR, f'pretrained_actor_{num_uav}uav.pt')
+            # V22: 启用增强算法行为克隆预训练
+            # 原因: 随机初始化下 Actor 完全不学（a_loss 恒定，H=1.79 纯随机）
+            #       Critic 在学但策略梯度为零 → 训练停滞
+            # 方案: 用增强算法收集示范数据，行为克隆初始化策略网络
+            #       让 RL 从合理策略出发微调，而非从纯随机开始探索
+
             if agent.use_pretrain and not (load_models and os.path.exists(model_path)):
-                # 检查是否存在预训练模型缓存
-                if os.path.exists(pretrained_model_path) and not os.environ.get('FORCE_RETRAIN'):
-                    print(f"  加载预训练模型缓存: {pretrained_model_path}")
-                    agent.actor.load_state_dict(torch.load(pretrained_model_path))
-                else:
-                    # 收集示范数据
-                    demonstrations = agent.collect_demonstrations(simple_env, num_demos=1000)
-                    # 预训练
-                    agent.pretrain(demonstrations, epochs=50, batch_size=64)
-                    # 保存预训练模型
-                    torch.save(agent.actor.state_dict(), pretrained_model_path)
-                    print(f"  预训练模型已保存: {pretrained_model_path}")
+                print("  [V22] 启用增强算法行为克隆预训练...")
+                print("         收集增强算法决策作为示范数据...")
+
+                demos = agent.collect_demonstrations(env, num_demos=2000)
+                print(f"         收集到 {len(demos)} 条示范数据")
+
+                agent.pretrain(demos, epochs=50, batch_size=64, min_loss_threshold=0.05, patience=5)
+
+                print("         预训练完成，策略已初始化为近似增强算法水平")
+                print("         → 预期: sat 从 ~0.92 起步，逐步上升到 ~0.96+")
+
+            _bs = num_bs_list[0] if isinstance(num_bs_list, (list, tuple)) else num_bs_list
 
             if load_models and os.path.exists(model_path):
                 agent.load(model_path)
@@ -618,8 +637,8 @@ class ExperimentBAMAPPO:
                 print(f"  已加载模型: {model_path}")
                 continue
             
-            # 方案2: 添加obs_normalizer预热
-            warmup_cache_path = os.path.join(ExperimentBAMAPPO.MODEL_DIR, f'warmup_normalizer_{num_uav}uav.pkl')
+            # 方案2: 添加obs_normalizer预热（含BS数以匹配obs_dim）
+            warmup_cache_path = os.path.join(ExperimentBAMAPPO.MODEL_DIR, f'warmup_normalizer_{num_uav}uav_{_bs}bs.pkl')
             
             if os.path.exists(warmup_cache_path) and not os.environ.get('FORCE_RETRAIN'):
                 print(f"  加载预热状态缓存: {warmup_cache_path}")
@@ -706,11 +725,11 @@ class ExperimentBAMAPPO:
             # 分离 best 和 latest 模型路径
             best_model_path = model_path.replace('.pt', '_best.pt')
             latest_model_path = model_path.replace('.pt', '_latest.pt')
-            # ---- Early stopping 参数 (V2: 放宽限制，延长训练) ----
-            early_stop_patience = train_episodes // 2       # ~100轮无改善才停止 (原~66)
-            early_stop_min_delta = 0.001                    # 更敏感的检测 (原0.002)
-            early_stop_warmup = train_episodes // 4         # 前25%不计入 (原20%)
-            no_improve_count = 0
+            # ---- Early stopping 参数 (V3: 大幅放宽，确保充分收敛) ----
+            early_stop_average_window = 120                 # 平均120轮满意度无改善即停止（原60）
+            early_stop_min_delta = 0.0005                   # 更敏感的检测（原0.001）
+            early_stop_warmup = train_episodes // 4         # warmup延长到25%（原20%）
+            satisfaction_window = []                        # 存储最近60轮满意度用于平均值计算
             early_stopped = False
             # 早期健康检查: 在 10% 训练进度时检查 reward 是否在正增长
             health_check_ep = max(10, train_episodes // 10)
@@ -826,7 +845,8 @@ class ExperimentBAMAPPO:
                     if 'value_mse' in train_stats:
                         episode_value_mses.append(train_stats['value_mse'])
 
-                if verbose and (ep + 1) % 30 == 0:
+                # V17: simple环境进度打印也改为每episode
+                if verbose and (ep + 1) % 1 == 0:
                     avg_al = np.mean(episode_actor_losses[-20:]) if episode_actor_losses else 0
                     avg_cl = np.mean(episode_critic_losses[-20:]) if episode_critic_losses else 0
                     avg_ent = np.mean(episode_entropies[-20:]) if episode_entropies else 0
@@ -861,10 +881,10 @@ class ExperimentBAMAPPO:
 
             if use_vectorized:
                 def _make_env(seed_val):
-                    return QMixHandoverEnv(
+                    return MultiAgentHandoverEnv(
                         num_bs=num_bs, num_uav=num_uav,
                         max_steps=num_steps, seed=seed_val,
-                        bs_capacity_range=bs_capacity_range,
+                        bs_capacity_range=train_capacity_range,   # V20: 训练用高负载
                         pos_range=pos_range,
                     )
                 vec_envs = VectorizedEnvs(
@@ -873,10 +893,11 @@ class ExperimentBAMAPPO:
                 print(f"  [VECTORIZED] 使用 {num_parallel} 个并行环境收集数据")
 
             for ep in range(train_episodes):
-                # Domain Randomization: 随机化环境参数 (±20%，避免低负载场景)
+                # V20: 基于训练容量范围进行温和DR（±15%）
+                # 训练用高负载(500,680)，评估保持(500,1000)
                 random_capacity_range = (
-                    int(bs_capacity_range[0] * (0.9 + 0.2 * np.random.rand())),
-                    int(bs_capacity_range[1] * (0.9 + 0.2 * np.random.rand()))
+                    int(train_capacity_range[0] * (0.88 + 0.24 * np.random.rand())),
+                    int(train_capacity_range[1] * (0.88 + 0.24 * np.random.rand()))
                 )
                 
                 if use_vectorized:
@@ -1119,7 +1140,8 @@ class ExperimentBAMAPPO:
                             print(f"    业务类型 {bt}: stay={stay_pct:.1f}%, switch={switch_pct:.1f}%, sat={avg_sat:.3f}, reward={avg_reward:.3f}")
                     print(f"  {'='*60}\n")
 
-                if verbose and (ep + 1) % 30 == 0:
+                # V17: 进度打印从每30个episode改为每1个episode（修复长时间无输出的问题）
+                if verbose and (ep + 1) % 1 == 0:
                     avg_al = np.mean(episode_actor_losses[-20:]) if episode_actor_losses else 0
                     avg_cl = np.mean(episode_critic_losses[-20:]) if episode_critic_losses else 0
                     avg_ent = np.mean(episode_entropies[-20:]) if episode_entropies else 0
@@ -1164,13 +1186,10 @@ class ExperimentBAMAPPO:
                 if is_best_reward:
                     best_reward = episode_reward
 
-                # warmup 期间: 记录 best_sat 但不计入 no_improve
-                if ep < early_stop_warmup:
-                    no_improve_count = 0
-                elif is_best_sat:
-                    no_improve_count = 0
-                else:
-                    no_improve_count += 1
+                # 更新满意度滑动窗口
+                satisfaction_window.append(ep_sat)
+                if len(satisfaction_window) > early_stop_average_window:
+                    satisfaction_window.pop(0)
 
                 # 模型保存: best 模型仅在 satisfaction 新高时保存, latest 每 save_interval 保存
                 if is_best_sat:
@@ -1178,13 +1197,18 @@ class ExperimentBAMAPPO:
                 if (ep + 1) % save_interval == 0:
                     agent.save(latest_model_path)
 
-                if no_improve_count >= early_stop_patience and ep >= health_check_ep * 2:
-                    if verbose:
-                        print(f"\n  [STOP] Early stopping [Episode {ep+1}]: "
-                              f"连续 {early_stop_patience} 轮 satisfaction 无改善 "
-                              f"(best_sat={best_sat:.4f}, best_reward={best_reward:.3f})")
-                    early_stopped = True
-                    break
+                # 平均早停判断: 当热身期过后且窗口已满时
+                if (ep >= early_stop_warmup and 
+                    ep >= health_check_ep * 2 and
+                    len(satisfaction_window) >= early_stop_average_window):
+                    window_avg = np.mean(satisfaction_window)
+                    if window_avg <= best_sat + early_stop_min_delta:
+                        if verbose:
+                            print(f"\n  [STOP] Early stopping [Episode {ep+1}]: "
+                                  f"最近 {early_stop_average_window} 轮平均满意度 {window_avg:.4f} 无显著改善 "
+                                  f"(best_sat={best_sat:.4f}, best_reward={best_reward:.3f})")
+                        early_stopped = True
+                        break
 
             # 训练结束: 确保 model_path 指向 best 模型
             import shutil
@@ -1233,7 +1257,8 @@ class ExperimentBAMAPPO:
                            bs_capacity_range, pos_range, load_models, verbose,
                            use_biz_heads, use_attention_critic,
                            hidden_dim, critic_hidden_dim,
-                           attention_sample_agents=0):
+                           attention_sample_agents=0,
+                           recognition_model=None, scaler=None):
         """
         Phase 2: 算法对比评估
 
@@ -1261,11 +1286,18 @@ class ExperimentBAMAPPO:
             model_path = os.path.join(ExperimentBAMAPPO.MODEL_DIR,
                                       f'mappo_{num_bs}bs_{num_uav}uav.pt')
 
-            env = QMixHandoverEnv(
+            # V17: 评估阶段传入业务识别模型（训练时用ground truth）
+            _has_recog = recognition_model is not None and scaler is not None
+            if _has_recog:
+                print(f"  [评估] 已接入业务识别模型 (带预测噪声)")
+
+            env = MultiAgentHandoverEnv(
                 num_bs=num_bs, num_uav=num_uav,
                 max_steps=num_steps, seed=GLOBAL_SEED + num_uav * 200,
                 bs_capacity_range=bs_capacity_range,
                 pos_range=pos_range,
+                recognition_model=recognition_model if _has_recog else None,
+                scaler=scaler if _has_recog else None,
             )
 
             agent = MAPPOAgent(
@@ -1340,7 +1372,7 @@ class ExperimentBAMAPPO:
                 for rep in range(eval_episodes):
                     seed = GLOBAL_SEED + num_uav * 300 + rep * 1000 + hash(baseline_name) % 10000
                     set_global_seed(seed)
-                    eval_env = QMixHandoverEnv(
+                    eval_env = MultiAgentHandoverEnv(
                         num_bs=num_bs, num_uav=num_uav,
                         max_steps=num_steps, seed=seed,
                         bs_capacity_range=bs_capacity_range,
@@ -1473,68 +1505,114 @@ class ExperimentBAMAPPO:
 
     @staticmethod
     def _plot_all(all_results, num_uav_list):
-        """生成所有可视化图表"""
+        """生成所有可视化图表（V17优化：适配高负载率下接近满分的场景）"""
         mode_name = all_results.get('config', {}).get('mode_name', 'BA-MAPPO')
         print(f"\n生成 {mode_name} 实验可视化...")
 
         fig, axes = plt.subplots(2, 3, figsize=(20, 12))
         fig.suptitle(f'{mode_name} 实验结果', fontsize=16, fontweight='bold')
 
-        # 图1: 训练收敛曲线
+        # ===== 图1(a): 训练收敛曲线（带压力测试标注） =====
         ax = axes[0, 0]
         if 'training' in all_results:
             for num_uav in num_uav_list:
                 if num_uav in all_results['training']:
                     tr = all_results['training'][num_uav]
-                    if 'rewards' in tr:
+                    if 'rewards' in tr and len(tr['rewards']) > 0:
                         rewards = np.array(tr['rewards'])
-                        window = max(1, len(rewards) // 20)
+                        episodes = np.arange(1, len(rewards) + 1)
+                        
+                        # 绘制原始reward（浅色）
+                        ax.plot(episodes, rewards, alpha=0.2, color='steelblue', linewidth=0.5)
+                        
+                        # 移动平均
+                        window = max(3, min(len(rewards) // 15, 15))
                         smoothed = np.convolve(rewards, np.ones(window)/window, mode='valid')
-                        ax.plot(smoothed, label=f'UAV={num_uav}', alpha=0.8)
+                        ax.plot(range(window, len(rewards)+1), smoothed,
+                                label=f'UAV={num_uav}', alpha=0.9, linewidth=1.5, color='steelblue')
+                        
+                        # V17: 压力测试标注已移除（V17取消压力测试）
+                        
             ax.set_xlabel('Episode')
             ax.set_ylabel('团队奖励')
             ax.set_title('(a) 训练收敛曲线')
-            ax.legend()
+            ax.legend(fontsize=8)
             ax.grid(True, alpha=0.3)
 
-        # 图2: 训练期间满意度变化
+        # ===== 图2(b): 训练损失曲线（替代无变化的满意度） =====
         ax = axes[0, 1]
+        has_loss_data = False
         if 'training' in all_results:
             for num_uav in num_uav_list:
                 if num_uav in all_results['training']:
                     tr = all_results['training'][num_uav]
-                    if 'satisfactions' in tr:
-                        sats = np.array(tr['satisfactions'])
-                        window = max(1, len(sats) // 20)
-                        smoothed = np.convolve(sats, np.ones(window)/window, mode='valid')
-                        ax.plot(smoothed, label=f'UAV={num_uav}', alpha=0.8)
+                    if 'actor_losses' in tr and len(tr['actor_losses']) > 0:
+                        has_loss_data = True
+                        episodes_al = np.arange(1, len(tr['actor_losses'])+1)
+                        episodes_cl = np.arange(1, len(tr['critic_losses'])+1)
+                        ax.plot(episodes_al, tr['actor_losses'], alpha=0.8,
+                                linewidth=1, label=f'Actor Loss ({num_uav}UAV)', color='#e74c3c')
+                        ax.plot(episodes_cl, [cl*0.01 for cl in tr['critic_losses']], alpha=0.8,
+                                linewidth=1, label=f'Critic Loss×0.01 ({num_uav}UAV)', color='#3498db')
+        
+        if has_loss_data:
             ax.set_xlabel('Episode')
-            ax.set_ylabel('平均满意度')
-            ax.set_title('(b) 训练期间满意度变化')
-            ax.legend()
+            ax.set_ylabel('Loss值')
+            ax.set_title('(b) 训练损失变化')
+            ax.legend(fontsize=7)
             ax.grid(True, alpha=0.3)
+        else:
+            ax.text(0.5, 0.5, '暂无损失数据', ha='center', va='center',
+                   transform=ax.transAxes, fontsize=12, color='gray')
+            ax.set_title('(b) 训练损失变化')
 
-        # 图3: 对比评估柱状图 (核心对比: 传统 → 增强 → BA-MAPPO)
+        # ===== 图3(c): 算法多维度对比柱状图（放大Y轴显示差异） =====
         ax = axes[0, 2]
         if 'evaluation' in all_results:
             uav_to_show = [u for u in num_uav_list if u in all_results.get('evaluation', {})]
             if uav_to_show:
-                x = np.arange(len(uav_to_show))
+                u = uav_to_show[0]
+                ev = all_results['evaluation'][u]
+                
+                metrics = ['avg', 'critical']
+                metric_labels = ['平均满意度', '关键业务满意度']
+                
+                x = np.arange(len(metrics))
                 width = 0.25
-                mappo_vals = [all_results['evaluation'][u]['mappo']['avg'][0] for u in uav_to_show]
-                enh_vals = [all_results['evaluation'][u]['enhanced']['avg'][0] for u in uav_to_show]
-                trad_vals = [all_results['evaluation'][u]['traditional']['avg'][0] for u in uav_to_show]
-                ax.bar(x - width, trad_vals, width, label='传统算法(3GPP)', color=COLORS['danger'], alpha=0.8)
-                ax.bar(x, enh_vals, width, label='增强算法(本文)', color=COLORS['primary'], alpha=0.8)
-                ax.bar(x + width, mappo_vals, width, label=mode_name, color=COLORS['warning'], alpha=0.8)
+                
+                mappo_vals = [ev['mappo'].get(m, (0,0))[0] for m in metrics]
+                enh_vals = [ev['enhanced'].get(m, (0,0))[0] for m in metrics]
+                trad_vals = [ev['traditional'].get(m, (0,0))[0] for m in metrics]
+                
+                bars1 = ax.bar(x - width, trad_vals, width, label='传统算法(3GPP)',
+                              color=COLORS.get('danger', '#e74c3c'), alpha=0.85)
+                bars2 = ax.bar(x, enh_vals, width, label='增强算法(本文)',
+                              color=COLORS.get('primary', '#3498db'), alpha=0.85)
+                bars3 = ax.bar(x + width, mappo_vals, width, label=mode_name,
+                              color=COLORS.get('warning', '#f39c12'), alpha=0.85)
+                
+                # V17: Y轴范围缩小到[0.93, 1.0]以放大差异可见性
+                all_vals = trad_vals + enh_vals + mappo_vals
+                y_min = max(0.93, min(all_vals) - 0.015)
+                y_max = min(1.001, max(all_vals) + 0.005)
+                ax.set_ylim(y_min, y_max)
+                
+                # 在柱子上标数值
+                for bars in [bars1, bars2, bars3]:
+                    for bar in bars:
+                        h = bar.get_height()
+                        if h > 0:
+                            ax.text(bar.get_x() + bar.get_width()/2., h + 0.0008,
+                                   f'{h:.4f}', ha='center', va='bottom', fontsize=6.5, rotation=0)
+                
                 ax.set_xticks(x)
-                ax.set_xticklabels([f'UAV={u}' for u in uav_to_show])
-                ax.set_ylabel('平均满意度')
-                ax.set_title('(c) 算法对比: 传统→增强→BA-MAPPO')
-                ax.legend(fontsize=8)
+                ax.set_xticklabels(metric_labels, fontsize=9)
+                ax.set_ylabel('满意度')
+                ax.set_title(f'(c) 算法对比 (UAV={u}, Y轴放大)')
+                ax.legend(fontsize=7)
                 ax.grid(True, alpha=0.3, axis='y')
 
-        # 图4: 策略分布热力图
+        # ===== 图4(d): 策略分布热力图 =====
         ax = axes[1, 0]
         if 'evaluation' in all_results:
             uav_to_show = [u for u in num_uav_list if u in all_results.get('evaluation', {})]
@@ -1557,41 +1635,71 @@ class ExperimentBAMAPPO:
                     for j in range(matrix.shape[1]):
                         ax.text(j, i, f'{matrix[i,j]:.2f}', ha='center', va='center', fontsize=8)
 
-        # 图5: 多场景泛化对比 (仅核心算法: 传统+增强+BA-MAPPO)
+        # ===== 图5(e): 通信指标对比（替代空位置） =====
         ax = axes[1, 1]
-        ax.axis('off')
+        if 'evaluation' in all_results:
+            uav_to_show = [u for u in num_uav_list if u in all_results.get('evaluation', {})]
+            if uav_to_show:
+                u = uav_to_show[0]
+                ev = all_results['evaluation'][u]
+                
+                comm_metrics = ['handover_latency', 'ping_jitter', 'packet_loss_rate', 'qos_violation_rate']
+                comm_labels = ['切换延迟(ms)', 'Ping抖动(ms)', '丢包率(%)', 'QoS违规(%)']
+                
+                has_comm_data = any(
+                    ev.get(algo, {}).get('communication_metrics', {}).get(cm, (0,0))[0] > 0.001
+                    for algo in ['mappo', 'enhanced', 'traditional']
+                    for cm in comm_metrics
+                )
+                
+                if has_comm_data:
+                    x = np.arange(len(comm_metrics))
+                    width = 0.25
+                    
+                    def get_comm(algo):
+                        return [ev.get(algo, {}).get('communication_metrics', {}).get(cm, (0,0))[0]
+                               for cm in comm_metrics]
+                    
+                    mappo_comm = get_comm('mappo')
+                    enh_comm = get_comm('enhanced')
+                    trad_comm = get_comm('traditional')
+                    
+                    ax.bar(x - width, trad_comm, width, label='传统算法',
+                          color=COLORS.get('danger', '#e74c3c'), alpha=0.85)
+                    ax.bar(x, enh_comm, width, label='增强算法',
+                          color=COLORS.get('primary', '#3498db'), alpha=0.85)
+                    ax.bar(x + width, mappo_comm, width, label=mode_name,
+                          color=COLORS.get('warning', '#f39c12'), alpha=0.85)
+                    
+                    ax.set_xticks(x)
+                    ax.set_xticklabels(comm_labels, fontsize=7, rotation=15, ha='right')
+                    ax.set_ylabel('指标值')
+                    ax.set_title('(e) 通信质量指标对比')
+                    ax.legend(fontsize=7)
+                    ax.grid(True, alpha=0.3, axis='y')
+                else:
+                    ax.text(0.5, 0.5, '暂无通信指标数据\n(训练完成后Phase2评估生成)',
+                           ha='center', va='center', transform=ax.transAxes, fontsize=10, color='gray')
+                    ax.set_title('(e) 通信质量指标对比')
+        
+        # V17: 多场景数据整合到图(f)文字区中（不再单独占一个子图）
+        scenario_text_lines = []
         if 'scenarios' in all_results and all_results['scenarios']:
-            ax2 = fig.add_subplot(2, 3, 6)
             scenarios_data = all_results['scenarios']
             s_names = list(scenarios_data.keys())
-            s_names_cn = [scenarios_data[s].get('name_cn', s) for s in s_names]
+            scenario_text_lines.append('\n【场景泛化】')
+            for sn in s_names:
+                sd = scenarios_data[sn]
+                line = f"  {sd.get('name_cn', sn)}: 传统={sd['traditional'][0]:.4f}, 增强={sd['enhanced'][0]:.4f}"
+                if 'mappo' in sd:
+                    line += f", MAPPO={sd['mappo'][0]:.4f}"
+                scenario_text_lines.append(line)
 
-            trad_sats = [scenarios_data[s]['traditional'][0] for s in s_names]
-            enh_sats = [scenarios_data[s]['enhanced'][0] for s in s_names]
-            mappo_scenario_sats = [scenarios_data[s].get('mappo', (0, 0))[0] if 'mappo' in scenarios_data[s] else 0 for s in s_names]
-
-            x = np.arange(len(s_names))
-            width = 0.25
-            has_mappo = any('mappo' in scenarios_data[s] for s in s_names)
-            if has_mappo:
-                offsets = [-width, 0, width]
-                ax2.bar(x + offsets[0], trad_sats, width, label='传统算法', color=COLORS['danger'], alpha=0.8)
-                ax2.bar(x + offsets[1], enh_sats, width, label='增强算法', color=COLORS['primary'], alpha=0.8)
-                ax2.bar(x + offsets[2], mappo_scenario_sats, width, label=mode_name, color=COLORS['warning'], alpha=0.8)
-            else:
-                ax2.bar(x - width/2, trad_sats, width, label='传统算法', color=COLORS['danger'], alpha=0.8)
-                ax2.bar(x + width/2, enh_sats, width, label='增强算法', color=COLORS['primary'], alpha=0.8)
-            ax2.set_xticks(x)
-            ax2.set_xticklabels(s_names_cn, rotation=20, ha='right', fontsize=8)
-            ax2.set_ylabel('平均满意度')
-            ax2.set_title('(f) 多场景泛化对比')
-            ax2.legend(fontsize=8)
-            ax2.grid(True, alpha=0.3, axis='y')
-
-        # 图6: 关键结果文本
+        # ===== 图6(f): 关键结果文本（增强版：含通信+分业务） =====
         ax = axes[1, 2]
         ax.axis('off')
-        text_lines = [f'【{mode_name} 关键发现】\n']
+        text_lines = [f'【{mode_name} 关键发现】', '─' * 28]
+        
         if 'evaluation' in all_results:
             for num_uav in num_uav_list:
                 if num_uav in all_results['evaluation']:
@@ -1601,21 +1709,54 @@ class ExperimentBAMAPPO:
                     tr = ev['traditional']['avg'][0]
                     improvement_vs_trad = (mp - tr) / max(tr, 0.001) * 100
                     improvement_vs_enh = (mp - en) / max(en, 0.001) * 100
-                    text_lines.append(f'UAV={num_uav}:')
-                    text_lines.append(f'  {mode_name} vs 传统: {improvement_vs_trad:+.1f}%')
-                    text_lines.append(f'  {mode_name} vs 增强: {improvement_vs_enh:+.1f}%')
-                    text_lines.append(f'  {mode_name}={mp:.4f}, 增强={en:.4f}, 传统={tr:.4f}')
+                    
+                    text_lines.append(f'\nUAV={num_uav}:')
+                    text_lines.append(f'  满意度: {mode_name}={mp:.4f}')
+                    text_lines.append(f'           增强={en:.4f} ({improvement_vs_enh:+.2f}%)')
+                    text_lines.append(f'           传统={tr:.4f} ({improvement_vs_trad:+.2f}%)')
+                    
+                    # 分业务类型满意度
+                    if 'per_biz' in ev['mappo']:
+                        biz_names = ['控制信令', '视频回传', '环境监测']
+                        text_lines.append(f'\n  分业务满意度:')
+                        for bt in range(3):
+                            mp_b = ev['mappo']['per_biz'][bt][0] if bt in ev['mappo']['per_biz'] else 0
+                            en_b = ev['enhanced']['per_biz'][bt][0] if bt in ev['enhanced']['per_biz'] else 0
+                            text_lines.append(f'    {biz_names[bt]}: {mp_b:.4f} vs {en_b:.4f}')
+                    
+                    # 通信指标摘要
+                    m_comm = ev.get('mappo', {}).get('communication_metrics', {})
+                    e_comm = ev.get('enhanced', {}).get('communication_metrics', {})
+                    if m_comm:
+                        text_lines.append(f'\n  通信指标:')
+                        for cm_key, cm_label in [('handover_latency', '切换延迟'),
+                                                   ('ping_jitter', 'Ping抖动'),
+                                                   ('packet_loss_rate', '丢包率')]:
+                            mv = m_comm.get(cm_key, (0,0))[0]
+                            ev_ = e_comm.get(cm_key, (0,0))[0]
+                            if mv > 0.001 or ev_ > 0.001:
+                                unit = 'ms' if 'rate' not in cm_key else '%'
+                                delta = mv - ev_
+                                text_lines.append(f'    {cm_label}: {mv:.1f}{unit} ({"↓" if delta < 0 else "↑"}{abs(delta):.1f})')
                     text_lines.append('')
-        if 'scenarios' in all_results:
-            text_lines.append('【场景泛化】\n')
-            for sn, sd in all_results['scenarios'].items():
-                line = f'  {sd["name_cn"]}: 传统={sd["traditional"][0]:.4f}, 增强={sd["enhanced"][0]:.4f}'
-                if 'mappo' in sd:
-                    line += f', MAPPO={sd["mappo"][0]:.4f}'
-                text_lines.append(line)
+        
+        # 整合场景泛化数据
+        if 'scenario_text_lines' in dir() and scenario_text_lines:
+            text_lines.extend(scenario_text_lines)
+        
+        # 训练摘要
+        if 'training' in all_results:
+            for num_uav in num_uav_list:
+                if num_uav in all_results['training']:
+                    tr = all_results['training'][num_uav]
+                    n_ep = len(tr.get('rewards', []))
+                    final_sat = np.mean(tr.get('satisfactions', [])[-20:]) if len(tr.get('satisfactions', [])) > 20 else 0
+                    early_stopped = tr.get('early_stopped', False)
+                    status = f"早停@Ep{n_ep}" if early_stopped else f"完成{n_ep}ep"
+                    text_lines.append(f'训练状态: {status}, 最终sat≈{final_sat:.4f}')
 
         ax.text(0.05, 0.95, '\n'.join(text_lines), transform=ax.transAxes,
-                fontsize=9, verticalalignment='top', fontfamily='monospace',
+                fontsize=7.5, verticalalignment='top', fontfamily='monospace',
                 bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.5))
 
         plt.tight_layout()

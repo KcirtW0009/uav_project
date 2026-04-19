@@ -39,8 +39,8 @@ for p in ppo_params:
 
 # 5. 检查环境创建
 print("\n[5] 环境创建检查:")
-from uav_system.qmix_environment import QMixHandoverEnv
-env = QMixHandoverEnv(num_bs=2, num_uav=10, max_steps=50)
+from uav_system.mappo_environment import MultiAgentHandoverEnv
+env = MultiAgentHandoverEnv(num_bs=2, num_uav=10, max_steps=50)
 print(f"    [OK] 环境创建成功")
 print(f"         Agent数量: {env.num_agents}")
 print(f"         观测维度: {env.obs_dim}")

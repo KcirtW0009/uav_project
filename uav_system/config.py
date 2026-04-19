@@ -10,7 +10,7 @@ import os
 from matplotlib.colors import LinearSegmentedColormap
 
 # ==================== 随机种子 ====================
-GLOBAL_SEED = 42
+GLOBAL_SEED = 30042  # 原始=42, 更换种子验证sat天花板非seed相关
 
 
 def set_global_seed(seed=GLOBAL_SEED):

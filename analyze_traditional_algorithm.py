@@ -25,7 +25,7 @@ warnings.filterwarnings('ignore')
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from uav_system.config import set_global_seed
-from uav_system.qmix_environment import QMixHandoverEnv
+from uav_system.mappo_environment import MultiAgentHandoverEnv
 from uav_system.algorithms import IntegratedHandoverAlgorithm, EnhancedHandoverAlgorithm
 
 
@@ -448,7 +448,7 @@ def main():
     seed = 42
     
     set_global_seed(seed)
-    env = QMixHandoverEnv(num_uav=num_uav, num_bs=num_bs, pos_range=1000, max_steps=150)
+    env = MultiAgentHandoverEnv(num_uav=num_uav, num_bs=num_bs, pos_range=1000, max_steps=150)
     
     # 分析信道模型
     channel_model_analysis = analyze_channel_model(env)

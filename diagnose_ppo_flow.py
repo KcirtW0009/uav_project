@@ -10,7 +10,7 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'uav_system'))
 
-from uav_system.qmix_environment import QMixHandoverEnv, RunningNormalizer
+from uav_system.mappo_environment import MultiAgentHandoverEnv, RunningNormalizer
 from uav_system.mappo_agent import MAPPOAgent, RolloutBuffer
 
 def diagnose_data_flow():
@@ -26,7 +26,7 @@ def diagnose_data_flow():
         'max_steps': 20,
         'seed': 42,
     }
-    env = QMixHandoverEnv(**env_config)
+    env = MultiAgentHandoverEnv(**env_config)
     obs, state = env.reset()
     print(f"\n[1] 环境创建: {env.num_agents} UAVs, {env.action_dim} actions")
 

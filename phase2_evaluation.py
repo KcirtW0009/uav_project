@@ -25,7 +25,7 @@ from copy import deepcopy
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from uav_system.config import set_global_seed, GLOBAL_SEED
-from uav_system.qmix_environment import QMixHandoverEnv
+from uav_system.mappo_environment import MultiAgentHandoverEnv
 from uav_system.mappo_agent import MAPPOAgent
 
 
@@ -100,7 +100,7 @@ class UnifiedAlgorithmEvaluator:
         """Run MAPPO algorithm with optimized parameters for given scenario"""
         set_global_seed(GLOBAL_SEED)
 
-        env = QMixHandoverEnv(seed=GLOBAL_SEED, **env_config)
+        env = MultiAgentHandoverEnv(seed=GLOBAL_SEED, **env_config)
 
         # Adaptive hyperparameters based on UAV count
         num_uav = env_config.get('num_uav', 10)
@@ -172,7 +172,7 @@ class UnifiedAlgorithmEvaluator:
         """Run enhanced heuristic algorithm with business-aware decision making"""
         set_global_seed(GLOBAL_SEED + 100)
 
-        env = QMixHandoverEnv(seed=GLOBAL_SEED + 100, **env_config)
+        env = MultiAgentHandoverEnv(seed=GLOBAL_SEED + 100, **env_config)
 
         all_metrics = []
         for ep in range(num_eval_episodes):
@@ -232,7 +232,7 @@ class UnifiedAlgorithmEvaluator:
         """Run traditional 3GPP A3 algorithm (baseline)"""
         set_global_seed(GLOBAL_SEED + 200)
 
-        env = QMixHandoverEnv(seed=GLOBAL_SEED + 200, **env_config)
+        env = MultiAgentHandoverEnv(seed=GLOBAL_SEED + 200, **env_config)
 
         all_metrics = []
         for ep in range(num_eval_episodes):

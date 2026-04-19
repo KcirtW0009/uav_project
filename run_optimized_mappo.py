@@ -20,7 +20,7 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from uav_system.config import set_global_seed, RESULT_DIR
-from uav_system.qmix_environment import QMixHandoverEnv
+from uav_system.mappo_environment import MultiAgentHandoverEnv
 from uav_system.mappo_agent_v2 import MAPPOAgentV2
 from uav_system.mappo_optimized_config import get_optimized_config, print_config
 from uav_system.reward_functions import get_reward_function, RewardNormalizer
@@ -72,7 +72,7 @@ class OptimizedMAPPOExperiment:
         set_global_seed(seed)
         
         # 创建环境
-        self.env = QMixHandoverEnv(
+        self.env = MultiAgentHandoverEnv(
             num_uav=self.config['num_uav'],
             num_bs=self.config['num_bs'],
             pos_range=self.config['map_size'],

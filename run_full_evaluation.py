@@ -14,7 +14,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from uav_system.config import set_global_seed
-from uav_system.qmix_environment import QMixHandoverEnv
+from uav_system.mappo_environment import MultiAgentHandoverEnv
 from uav_system.mappo_agent_v2 import MAPPOAgentV2
 from uav_system.experiments_mappo import ExperimentBAMAPPO
 
@@ -33,7 +33,7 @@ def load_and_evaluate_model(model_path, num_uav=128, num_bs=3, num_episodes=3, s
     set_global_seed(seed)
     
     # 创建环境
-    env = QMixHandoverEnv(
+    env = MultiAgentHandoverEnv(
         num_uav=num_uav,
         num_bs=num_bs,
         pos_range=1000,

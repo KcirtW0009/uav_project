@@ -194,7 +194,7 @@ def generate_comparison_report(results, timestamp):
     
     report += """
 
-## 4. 与QMixHandoverEnv对比
+## 4. 与MultiAgentHandoverEnv对比
 
 ### 4.1 关键差异
 - **环境复杂度**: EnhancedNetworkEnvironment 更复杂真实

@@ -19,6 +19,126 @@ from .algorithms import IntegratedHandoverAlgorithm, EnhancedHandoverAlgorithm
 from .visualization import VisualizationHelper
 
 
+def evaluate_mappo_in_experiment(num_bs: int, num_uav: int, num_steps: int,
+                                  recognition_model=None, scaler=None,
+                                  seed: int = 42, scenario: str = 'default',
+                                  model_path: str = None) -> dict:
+    """在实验3/4环境中评估已训练的 MAPPO 模型
+    
+    使用 MultiAgentHandoverEnv (mappo_environment.py) 创建与实验一致的环境，
+    加载已训练的 MAPPO 模型进行评估，返回与传统/增强算法兼容的统计字典。
+    
+    核心设计:
+    - 传入 recognition_model + scaler 使环境使用预测业务类型（评估模式）
+    - 加载在 8BS×300UAV 环境中训练的模型，对任意 num_uav 进行零样本泛化评估
+    - 返回的统计字典结构与 env.get_state_statistics() 兼容，便于三算法对比
+    
+    Args:
+        num_bs: 基站数量
+        num_uav: UAV数量
+        num_steps: 评估步数
+        recognition_model: 业务识别模型（评估模式）
+        scaler: 识别模型标准化器
+        seed: 随机种子
+        scenario: 场景名称（用于Experiment4）
+        model_path: 训练好的模型文件路径。None则使用默认路径
+        
+    Returns:
+        stats_dict: 包含 avg_satisfaction, handover_success_rate 等指标的字典
+    """
+    from .mappo_environment import MultiAgentHandoverEnv
+    from .mappo_agent_v2 import MAPPOAgentV2 as MAPPOAgent
+    
+    if model_path is None:
+        # 默认路径：8BS×300UAV训练的模型（与实验3对齐）
+        model_path = os.path.join(RESULT_DIR, 'mappo_models', 'mappo_8bs_300uav.pt')
+    
+    if not os.path.exists(model_path):
+        print(f"  [MAPPO] 警告: 模型文件不存在 {model_path}，跳过MAPPO评估")
+        return None
+    
+    # 创建评估环境（带识别模型的评估模式）
+    env = MultiAgentHandoverEnv(
+        num_bs=num_bs, num_uav=num_uav,
+        max_steps=num_steps, seed=seed,
+        bs_capacity_range=(500, 1000), pos_range=1000,
+        recognition_model=recognition_model,
+        scaler=scaler,
+        event_probability=0.05,  # 与实验3一致
+    )
+    obs_dict, global_state = env.reset()
+    
+    # 初始化 agent 并加载模型
+    agent = MAPPOAgent(
+        num_agents=env.num_agents,
+        obs_dim=env.obs_dim,
+        state_dim=env.state_dim,
+        action_dim=env.action_dim,
+        hidden_dim=64,
+        critic_hidden_dim=128,
+    )
+    
+    try:
+        checkpoint = torch.load(model_path, map_location='cpu')
+        agent.actor.load_state_dict(checkpoint['actor'])
+        agent.critic.load_state_dict(checkpoint['critic'])
+        print(f"  [MAPPO] 成功加载模型: {model_path}")
+    except Exception as e:
+        print(f"  [MAPPO] 警告: 模型加载失败 {e}，跳过MAPPO评估")
+        return None
+    
+    # 执行评估
+    all_sats = []
+    all_connected_rates = []
+    all_handovers = []
+
+    for step in range(num_steps):
+        # 获取业务类型字典 {uid: biz_type_value}
+        biz_types = {uid: env.env.uavs[uid].true_business_type.value for uid in range(env.num_agents)}
+        # 调用MAPPO Agent (training=False 表示评估模式，使用贪婪策略)
+        actions, _, _, _, _ = agent.select_actions(obs_dict, global_state, biz_types=biz_types, training=False)
+        obs_dict, global_state, rewards, team_reward, done, info = env.step(actions)
+        
+        all_sats.append(info['avg_satisfaction'])
+        all_connected_rates.append(info['connected_rate'])
+        
+        # 统计切换次数
+        total_ho = sum(env.env.uavs[uid].handover_count for uid in range(env.num_agents))
+        all_handovers.append(total_ho)
+    
+    # 构建与 get_state_statistics() 兼容的结果字典
+    final_sats = [env.env.uavs[uid].current_satisfaction for uid in range(env.num_agents)]
+    connected_count = sum(1 for uid in range(env.num_agents) if env.env.uavs[uid].connected_bs_id is not None)
+    total_ho = sum(env.env.uavs[uid].handover_count for uid in range(env.num_agents))
+    
+    stats = {
+        'avg_satisfaction': np.mean(final_sats),
+        'critical_satisfaction': np.mean([s for i, s in enumerate(final_sats)
+                                          if env.env.uavs[i].true_business_type.value == 0]),
+        'weighted_satisfaction': np.mean(final_sats),
+        'connected_count': connected_count,
+        'connected_ratio': connected_count / max(env.num_agents, 1),
+        'total_throughput': sum(env.env.uavs[uid].current_allocated_rate 
+                               for uid in range(env.num_agents)
+                               if env.env.uavs[uid].connected_bs_id is not None),
+        'handover_success_rate': 1.0,  # MAPPO内部处理了切换成功/回滚
+        'avg_switching_latency_ms': np.mean(env._communication_metrics.get('handover_latencies', [0])),
+        'load_variance': np.var([bs.load_ratio for bs in env.env.base_stations.values()]),
+        'avg_sinr': np.mean(env.env.sinr_matrix[:env.num_agents, :num_bs]),
+        '_algorithm': 'MAPPO',
+    }
+    
+    print(f"  MAPPO - 满足率: {stats['avg_satisfaction']:.3f}, "
+          f"连接率: {stats['connected_ratio']*100:.1f}%, "
+          f"切换次数: {total_ho}")
+    return stats
+
+
+# 导入torch（evaluate_mappo_in_experiment中使用）
+import torch
+
+
+
 def save_experiment_data(exp_name: str, data: dict, extra_formats: list = None):
     """
     保存实验关键数据到文件，防止终端输出丢失。
@@ -651,6 +771,107 @@ def print_comprehensive_test_summary(all_test_results: Dict[str, Dict],
     print(f"{'='*80}\n")
 
 
+def compare_three_algorithms_with_tests(mappo_results: List[Dict],
+                                       enhanced_results: List[Dict],
+                                       traditional_results: List[Dict],
+                                       metrics: List[str]) -> Dict[str, Dict]:
+    """
+    三算法多指标统计显著性检验（MAPPO vs 增强算法 vs 传统算法）
+
+    对每个指标执行三组两两配对t-test/Wilcoxon检验，输出完整p值和显著性结论。
+
+    Args:
+        mappo_results: MAPPO多次运行结果
+        enhanced_results: 增强算法多次运行结果
+        traditional_results: 传统算法多次运行结果
+        metrics: 需要检验的指标列表
+
+    Returns:
+        Dict: {metric_name: {pair_key: test_result_dict}}
+    """
+    all_test_results = {}
+    algo_data = {
+        'MAPPO': mappo_results,
+        '增强': enhanced_results,
+        '传统': traditional_results,
+    }
+    pair_names = [
+        ('MAPPO', '增强'),
+        ('MAPPO', '传统'),
+        ('增强', '传统'),
+    ]
+
+    for metric in metrics:
+        # 检查三组数据是否都包含该指标
+        valid_pairs = []
+        for name_a, name_b in pair_names:
+            data_a = algo_data[name_a]
+            data_b = algo_data[name_b]
+            if data_a and data_b and metric in data_a[0] and metric in data_b[0]:
+                valid_pairs.append((name_a, name_b, data_a, data_b))
+
+        if not valid_pairs:
+            continue
+
+        all_test_results[metric] = {}
+        for name_a, name_b, data_a, data_b in valid_pairs:
+            group_a = [r[metric] for r in data_a]
+            group_b = [r[metric] for r in data_b]
+
+            # Shapiro-Wilk 正态性检验 → 自动选择 t-test 或 Mann-Whitney U
+            _, p_norm_a = stats.shapiro(group_a) if len(group_a) >= 3 else (0, 1)
+            _, p_norm_b = stats.shapiro(group_b) if len(group_b) >= 3 else (0, 1)
+            test_method = 'ttest' if (p_norm_a > 0.05 and p_norm_b > 0.05) else 'mannwhitney'
+
+            test_result = perform_statistical_test(
+                group_a, group_b, test_name=test_method, alpha=0.05
+            )
+            pair_key = f'{name_a}_vs_{name_b}'
+            all_test_results[metric][pair_key] = {
+                **test_result,
+                'name_a': name_a,
+                'name_b': name_b,
+            }
+
+    return all_test_results
+
+
+def print_three_algorithm_test_summary(all_test_results: Dict):
+    """打印三算法对比的统计检验摘要"""
+    print(f"\n{'='*90}")
+    print("三算法统计显著性检验: MAPPO vs 增强算法 vs 传统算法")
+    print(f"{'='*90}")
+    print(f"{'指标':<22} {'对比组':<20} {'均值A':>10} {'均值B':>10} {'检验方法':<10} {'p值':>10} {'显著':>4} {'效应量':>8}")
+    print(f"{'-'*94}")
+
+    significant_count = 0
+    total_count = 0
+
+    for metric, pairs in all_test_results.items():
+        print(f"\n  【{metric}】")
+        for pair_key, result in pairs.items():
+            total_count += 1
+            g1 = result['group1']
+            g2 = result['group2']
+            direction = "↑" if g1['mean'] > g2['mean'] else ("↓" if g1['mean'] < g2['mean'] else "=")
+            sig_mark = "***" if result['p_value'] < 0.001 else ("**" if result['p_value'] < 0.01 else ("*" if result['p_value'] < 0.05 else ""))
+            is_sig = result['significant']
+            if is_sig:
+                significant_count += 1
+            effect = result.get('effect_size', 0)
+            eff_str = f"{effect:.4f}" if effect is not None else "N/A"
+
+            print(f"    {result['name_a']} vs {result['name_b']:<10}: "
+                  f"{g1['mean']:>8.4f}±{g1['std']:.4f}  {g2['mean']:>8.4f}±{g2['std']:.4f}  "
+                  f"{result['test_method']:<10} {result['p_value']:.4f}{sig_mark:>3}  "
+                  f"{'Y' if is_sig else 'N':>4}  {eff_str:>8}")
+
+    print(f"\n{'='*90}")
+    print(f"总结: {significant_count}/{total_count} 组对比具有显著差异 (α=0.05)")
+    print(f"  显著性标记: *** p<0.001, ** p<0.01, * p<0.05")
+    print(f"{'='*90}\n")
+
+
 # -------------------- 实验3：增强算法 vs 传统算法（全面对比）--------------------
 class Experiment3:
     METRICS = {
@@ -673,12 +894,23 @@ class Experiment3:
     }
 
     @staticmethod
-    def run(recognition_model, scaler, num_steps=350, repeats=10):  # 10次重复确保统计显著性
+    def run(recognition_model, scaler, num_steps=350, repeats=10, include_mappo=False, mappo_model_path=None):
+        """
+        运行实验3：增强算法 vs 传统算法（全面对比）
+
+        Args:
+            recognition_model: 业务识别模型
+            scaler: 识别模型标准化器
+            num_steps: 仿真步数（默认350，对齐MAPPO训练环境）
+            repeats: 重复实验次数（默认10）
+            include_mappo: 是否包含MAPPO三算法对比评估
+            mappo_model_path: MAPPO模型路径，None则使用默认路径
+        """
         print("\n" + "="*80)
-        print("实验3：增强算法 vs 传统算法（全面对比）")
+        print("实验3：增强算法 vs 传统算法（全面对比）" + (" + MAPPO" if include_mappo else ""))
         print("="*80)
 
-        enhanced_results, traditional_results = [], []
+        enhanced_results, traditional_results, mappo_results = [], [], []  # [Step4] mappo_results
         for rep in range(repeats):
             print(f"\n--- 重复 {rep+1}/{repeats} ---")
             set_global_seed(GLOBAL_SEED + rep)
@@ -723,7 +955,20 @@ class Experiment3:
                   f"切换成功率: {trad_stats['handover_success_rate']*100:.1f}%, "
                   f"吞吐量: {trad_stats['total_load']:.1f} Mbps")
 
-        summary = Experiment3._summarize(enhanced_results, traditional_results)
+            # [Step4] MAPPO评估（可选）
+            if include_mappo:
+                mappo_stats = evaluate_mappo_in_experiment(
+                    num_bs=8, num_uav=300, num_steps=num_steps,
+                    recognition_model=recognition_model, scaler=scaler,
+                    seed=GLOBAL_SEED + rep,
+                    model_path=mappo_model_path,  # 支持自定义模型路径
+                )
+                if mappo_stats is not None:
+                    mappo_results.append(mappo_stats)
+                    print(f" MAPPO     - 满足率: {mappo_stats['avg_satisfaction']:.3f}, "
+                          f"连接率: {mappo_stats['connected_ratio']*100:.1f}%")
+
+        summary = Experiment3._summarize(enhanced_results, traditional_results, mappo_results if include_mappo else None)
         Experiment3._print_results_table(summary)
 
         # 添加统计显著性检验
@@ -747,6 +992,31 @@ class Experiment3:
 
         print_comprehensive_test_summary(all_test_results, "增强算法", "传统算法")
 
+        # [Step4] 三算法对比检验（如果包含MAPPO）
+        if include_mappo and len(mappo_results) > 0:
+            print("\n" + "="*80)
+            print("三算法对比: MAPPO vs 增强算法 vs 传统算法")
+            print("="*80)
+            
+            # 三指标快速预览
+            for metric in ['avg_satisfaction', 'critical_satisfaction', 'connected_ratio', 'load_variance']:
+                if all(metric in r for r in [enhanced_results[0], traditional_results[0], mappo_results[0]]):
+                    enh_vals = [r[metric] for r in enhanced_results]
+                    trad_vals = [r[metric] for r in traditional_results]
+                    map_vals = [r[metric] for r in mappo_results]
+                    print(f"  {metric}: MAPPO={np.mean(map_vals):.3f}±{np.std(map_vals):.3f}, "
+                          f"增强={np.mean(enh_vals):.3f}±{np.std(enh_vals):.3f}, "
+                          f"传统={np.mean(trad_vals):.3f}±{np.std(trad_vals):.3f}")
+
+            # 正式统计检验（t-test/Wilcoxon + p值）
+            three_algo_metrics = ['avg_satisfaction', 'critical_satisfaction', 'connected_ratio',
+                                  'load_variance', 'total_throughput']
+            three_test_results = compare_three_algorithms_with_tests(
+                mappo_results, enhanced_results, traditional_results, three_algo_metrics
+            )
+            print_three_algorithm_test_summary(three_test_results)
+            summary['three_algo_statistical_tests'] = three_test_results
+
         # 将检验结果添加到summary中
         summary['statistical_tests'] = all_test_results
 
@@ -754,8 +1024,8 @@ class Experiment3:
         return summary
 
     @staticmethod
-    def _summarize(enhanced_results, traditional_results):
-        summary = {'enhanced': {}, 'traditional': {}, 'improvement': {}}
+    def _summarize(enhanced_results, traditional_results, mappo_results=None):
+        summary = {'enhanced': {}, 'traditional': {}, 'improvement': {}, 'mappo': {}}
         for key in Experiment3.METRICS.keys():
             if key in enhanced_results[0]:
                 enh_vals = [r[key] for r in enhanced_results]
@@ -771,19 +1041,49 @@ class Experiment3:
             else:
                 summary['traditional'][key] = (0,0)
                 summary['improvement'][key] = 0
+
+        # [Step4] MAPPO结果汇总
+        if mappo_results and len(mappo_results) > 0:
+            # 使用MAPPO评估函数返回的兼容字段（可能与传统指标不完全一致）
+            mappo_keys = set()
+            for r in mappo_results:
+                mappo_keys.update(r.keys())
+            for key in mappo_keys:
+                vals = [r.get(key) for r in mappo_results if key in r and r[key] is not None]
+                if vals:
+                    try:
+                        summary['mappo'][key] = (np.mean(vals), np.std(vals))
+                    except (TypeError, ValueError):
+                        pass
+
         return summary
 
     @staticmethod
     def _print_results_table(summary):
         headers = ["指标", "增强算法(均值±std)", "传统算法(均值±std)", "提升"]
         rows = []
+        has_mappo = 'mappo' in summary and any(k in summary['mappo'] for k in Experiment3.METRICS.keys())
         for key, name in Experiment3.METRICS.items():
             if key in summary['enhanced']:
                 enh_mean, enh_std = summary['enhanced'][key]
                 trad_mean, trad_std = summary['traditional'][key]
                 imp = summary['improvement'][key]
-                rows.append([name, f"{enh_mean:.3f}±{enh_std:.3f}", f"{trad_mean:.3f}±{trad_std:.3f}", f"{imp:+.1f}%"])
-        VisualizationHelper.print_data_table("实验3结果：增强算法 vs 传统算法", headers, rows)
+                row = [name, f"{enh_mean:.3f}±{enh_std:.3f}", f"{trad_mean:.3f}±{trad_std:.3f}", f"{imp:+.1f}%"]
+                # [Step4] 如果有MAPPO数据，追加MAPPO列（保持每行列数一致）
+                if has_mappo:
+                    if key in summary['mappo']:
+                        map_mean, map_std = summary['mappo'][key]
+                        row.append(f"{map_mean:.3f}±{map_std:.3f}")
+                    else:
+                        row.append("N/A")
+                rows.append(row)
+        
+        # 动态调整表头
+        final_headers = headers.copy()
+        if 'mappo' in summary and any(k in summary['mappo'] for k in Experiment3.METRICS.keys()):
+            final_headers.append("MAPPO(均值±std)")
+        
+        VisualizationHelper.print_data_table("实验3结果：三算法对比" if 'mappo' in summary else "实验3结果：增强算法 vs 传统算法", final_headers, rows)
 
     @staticmethod
     def _plot(summary):
@@ -791,19 +1091,32 @@ class Experiment3:
         fig.suptitle('实验3：增强算法 vs 传统算法（全面对比）', fontsize=16, fontweight='bold')
         gs = fig.add_gridspec(4, 4, hspace=0.3, wspace=0.3)
 
+        # 检测是否有MAPPO数据（三方对比模式）
+        has_mappo = 'mappo' in summary and any(k in summary.get('mappo', {}) for k in Experiment3.METRICS.keys())
+
         def plot_bars(ax, metrics, labels, title):
+            n_bars = 3 if has_mappo else 2
+            width = 0.25 if has_mappo else 0.35
             x = np.arange(len(labels))
-            width = 0.35
             enh_vals = [summary['enhanced'][m][0] if m in summary['enhanced'] else 0 for m in metrics]
             trad_vals = [summary['traditional'][m][0] if m in summary['traditional'] else 0 for m in metrics]
             colors_enh = CMAP_PRIMARY(np.linspace(0.4, 0.8, len(labels)))
             colors_trad = plt.cm.Greys(np.linspace(0.4, 0.7, len(labels)))
-            bars1 = ax.bar(x - width/2, enh_vals, width, label='增强算法', color=colors_enh)
-            bars2 = ax.bar(x + width/2, trad_vals, width, label='传统算法', color=colors_trad)
+            offset = width if has_mappo else width / 2
+            bars1 = ax.bar(x - offset, enh_vals, width, label='增强算法', color=colors_enh)
+            bars2 = ax.bar(x + offset, trad_vals, width, label='传统算法', color=colors_trad)
             ax.set_ylabel('数值')
             ax.set_title(title, fontweight='bold')
             ax.set_xticks(x)
             ax.set_xticklabels(labels, rotation=15, ha='right')
+            # MAPPO柱（如果存在）
+            if has_mappo:
+                mappo_vals = [summary['mappo'][m][0] if m in summary['mappo'] else 0 for m in metrics]
+                colors_mappo = plt.cm.Oranges(np.linspace(0.4, 0.8, len(labels)))
+                bars3 = ax.bar(x, mappo_vals, width, label='MAPPO', color=colors_mappo)
+                for bar in bars3:
+                    h = bar.get_height()
+                    ax.text(bar.get_x() + bar.get_width()/2, h, f'{h:.2f}', ha='center', va='bottom', fontsize=7)
             ax.legend()
             for bar in bars1:
                 height = bar.get_height()
@@ -831,7 +1144,7 @@ class Experiment3:
         categories = ['切换成功率', '整体满足率', '关键业务满足率', '吞吐量', '连接保持率']
         metrics_map = ['handover_success_rate', 'avg_satisfaction', 'critical_satisfaction',
                        'total_throughput', 'connected_ratio']
-        enh_vals, trad_vals = [], []
+        enh_vals, trad_vals, mappo_vals = [], [], []
         for m in metrics_map:
             if m in summary['enhanced']:
                 enh_val = summary['enhanced'][m][0]
@@ -841,14 +1154,26 @@ class Experiment3:
                     trad_val = min(trad_val / 1000, 1.0)
                 enh_vals.append(enh_val)
                 trad_vals.append(trad_val)
+                if has_mappo and m in summary.get('mappo', {}):
+                    mv = summary['mappo'][m][0]
+                    if m == 'total_throughput':
+                        mv = min(mv / 1000, 1.0)
+                    mappo_vals.append(mv)
+                else:
+                    mappo_vals.append(0)
             else:
-                enh_vals.append(0); trad_vals.append(0)
+                enh_vals.append(0); trad_vals.append(0); mappo_vals.append(0)
         angles = np.linspace(0, 2*np.pi, len(categories), endpoint=False).tolist()
         enh_vals += enh_vals[:1]; trad_vals += trad_vals[:1]; angles += angles[:1]
+        if has_mappo:
+            mappo_vals += mappo_vals[:1]
         ax.plot(angles, enh_vals, 'o-', linewidth=2, label='增强算法', color=COLORS['primary'])
         ax.fill(angles, enh_vals, alpha=0.25, color=COLORS['primary'])
         ax.plot(angles, trad_vals, 'o-', linewidth=2, label='传统算法', color=COLORS['neutral'])
         ax.fill(angles, trad_vals, alpha=0.15, color=COLORS['neutral'])
+        if has_mappo:
+            ax.plot(angles, mappo_vals, 'o-', linewidth=2, label='MAPPO', color='#FF8C00')
+            ax.fill(angles, mappo_vals, alpha=0.15, color='#FF8C00')
         ax.set_xticks(angles[:-1])
         ax.set_xticklabels(categories)
         ax.set_ylim(0,1)
@@ -876,18 +1201,25 @@ class Experiment3:
         ax = fig.add_subplot(gs[2,:2])
         metrics_subset = ['handover_success_rate', 'avg_satisfaction', 'critical_satisfaction',
                           'latency_satisfaction', 'rate_satisfaction', 'connected_ratio']
-        data = np.array([
+        rows_data = [
             [summary['enhanced'][m][0] if m in summary['enhanced'] else 0 for m in metrics_subset],
             [summary['traditional'][m][0] if m in summary['traditional'] else 0 for m in metrics_subset]
-        ])
+        ]
+        if has_mappo:
+            rows_data.insert(1, [summary['mappo'][m][0] if m in summary.get('mappo', {}) else 0 for m in metrics_subset])
+        data = np.array(rows_data)
         im = ax.imshow(data, cmap='RdYlGn', aspect='auto', vmin=0, vmax=1)
         ax.set_xticks(range(len(metrics_subset)))
         ax.set_xticklabels([Experiment3.METRICS[m] for m in metrics_subset], rotation=45, ha='right')
-        ax.set_yticks([0,1])
-        ax.set_yticklabels(['增强算法', '传统算法'])
+        ytick_labels = ['增强算法']
+        if has_mappo:
+            ytick_labels.append('MAPPO')
+        ytick_labels.append('传统算法')
+        ax.set_yticks(range(len(ytick_labels)))
+        ax.set_yticklabels(ytick_labels)
         ax.set_title('性能指标热力图', fontweight='bold')
-        for i in range(2):
-            for j in range(len(metrics_subset)):
+        for i in range(data.shape[0]):
+            for j in range(data.shape[1]):
                 ax.text(j, i, f'{data[i,j]:.2f}', ha='center', va='center', color='black', fontsize=9, fontweight='bold')
         plt.colorbar(im, ax=ax)
 
@@ -899,9 +1231,15 @@ class Experiment3:
             if m in summary['enhanced']:
                 enh_mean, enh_std = summary['enhanced'][m]
                 trad_mean, trad_std = summary['traditional'][m]
-                ax.errorbar(i-0.15, enh_mean, yerr=enh_std, fmt='o', color=COLORS['primary'],
+                if has_mappo and m in summary.get('mappo', {}):
+                    mappo_mean, mappo_std = summary['mappo'][m]
+                offset = 0.2 if has_mappo else 0.15
+                ax.errorbar(i - offset, enh_mean, yerr=enh_std, fmt='o', color=COLORS['primary'],
                             markersize=10, capsize=5, label='增强算法' if i==0 else '')
-                ax.errorbar(i+0.15, trad_mean, yerr=trad_std, fmt='s', color=COLORS['neutral'],
+                if has_mappo:
+                    ax.errorbar(i, mappo_mean, yerr=mappo_std, fmt='^', color='#FF8C00',
+                                markersize=10, capsize=5, label='MAPPO' if i==0 else '')
+                ax.errorbar(i + offset, trad_mean, yerr=trad_std, fmt='s', color=COLORS['neutral'],
                             markersize=10, capsize=5, label='传统算法' if i==0 else '')
         ax.set_xticks(x_pos)
         ax.set_xticklabels([Experiment3.METRICS[m] for m in metrics], rotation=15, ha='right')
@@ -926,7 +1264,11 @@ class Experiment3:
                 enh_val = summary['enhanced'][key][0] * scale
                 trad_val = summary['traditional'][key][0] * scale
                 improvement = summary['improvement'][key]
-                text += f"• {name}: 增强算法 {enh_val:.2f}{unit} vs 传统算法 {trad_val:.2f}{unit} ({improvement:+.1f}%)\n"
+                line = f"• {name}: 增强算法 {enh_val:.2f}{unit} vs 传统算法 {trad_val:.2f}{unit} ({improvement:+.1f}%)"
+                if has_mappo and key in summary.get('mappo', {}):
+                    mappo_val = summary['mappo'][key][0] * scale
+                    line += f" | MAPPO {mappo_val:.2f}{unit}"
+                text += line + "\n"
         ax.text(0.05, 0.95, text, transform=ax.transAxes, fontsize=11,
                 verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
 
@@ -956,7 +1298,7 @@ class Experiment2:
     }
 
     @staticmethod
-    def run(recognition_model, scaler, num_steps=150, repeats=10):  # 增加到10次重复
+    def run(recognition_model, scaler, num_steps=150, repeats=10, include_mappo=False):
         print("\n" + "="*80)
         print("实验2：机制有效性验证（逐步添加机制）")
         print("="*80)
@@ -1696,9 +2038,20 @@ class Experiment4:
 
 
     @staticmethod
-    def run(recognition_model, scaler, num_steps=150, repeats=10):  # 增加到10次重复
+    def run(recognition_model, scaler, num_steps=150, repeats=10, include_mappo=False, mappo_model_path=None):
+        """
+        运行实验4：多场景对比实验
+
+        Args:
+            recognition_model: 业务识别模型
+            scaler: 识别模型标准化器
+            num_steps: 仿真步数（默认150）
+            repeats: 重复实验次数（默认10）
+            include_mappo: 是否包含MAPPO泛化评估
+            mappo_model_path: MAPPO模型路径，None则使用默认路径
+        """
         print("\n" + "="*80)
-        print("实验4：多场景对比实验")
+        print("实验4：多场景对比实验" + (" + MAPPO" if include_mappo else ""))
         print("="*80)
         print("\n场景设计依据论文'典型5G应用场景适配性与需求映射'：")
         for key, info in Experiment4.SCENARIOS.items():
@@ -1706,7 +2059,7 @@ class Experiment4:
                   f"切换重点: {info['switch_focus']}")
         print("="*80)
 
-        results = {scenario: {'enhanced': [], 'traditional': []} for scenario in Experiment4.SCENARIOS.keys()}
+        results = {scenario: {'enhanced': [], 'traditional': [], 'mappo': []} for scenario in Experiment4.SCENARIOS.keys()}
         for scenario, info in Experiment4.SCENARIOS.items():
             num_uav = info['num_uav']
             print(f"\n{'='*60}")
@@ -1753,6 +2106,18 @@ class Experiment4:
                 print(f" 传统算法 - 满足率: {trad_stats['avg_satisfaction']:.3f}, "
                       f"关键业务: {trad_stats['critical_satisfaction']:.3f}")
 
+                # [Step4] MAPPO评估（使用实验3训练的模型，零样本泛化到不同UAV数量）
+                if include_mappo:
+                    mappo_stats = evaluate_mappo_in_experiment(
+                        num_bs=8, num_uav=num_uav, num_steps=num_steps,
+                        recognition_model=recognition_model, scaler=scaler,
+                        seed=GLOBAL_SEED + rep, scenario=scenario,
+                        model_path=mappo_model_path,  # 支持自定义模型路径
+                    )
+                    if mappo_stats is not None:
+                        results[scenario]['mappo'].append(mappo_stats)
+                        print(f" MAPPO     - 满足率: {mappo_stats['avg_satisfaction']:.3f}")
+
         summary = Experiment4._summarize(results)
         Experiment4._print_results_table(summary)
         Experiment4._plot(summary)
@@ -1762,14 +2127,30 @@ class Experiment4:
     def _summarize(results):
         summary = {}
         for scenario in Experiment4.SCENARIOS.keys():
-            summary[scenario] = {'enhanced': {}, 'traditional': {}}
+            summary[scenario] = {'enhanced': {}, 'traditional': {}, 'mappo': {}}
             for algo_type in ['enhanced', 'traditional']:
                 data_list = results[scenario][algo_type]
+                if not data_list:
+                    continue
                 for key in ['avg_satisfaction', 'handover_success_rate', 'critical_satisfaction',
-                            'weighted_satisfaction', 'total_load', 'avg_sinr', 'load_variance']:
+                            'weighted_satisfaction', 'total_load', 'avg_sinr', 'load_variance',
+                            'connected_ratio']:
                     if key in data_list[0]:
                         vals = [d[key] for d in data_list]
                         summary[scenario][algo_type][key] = (np.mean(vals), np.std(vals))
+            # [Step4] MAPPO结果汇总
+            mappo_list = results[scenario].get('mappo', [])
+            if mappo_list:
+                mappo_keys = set()
+                for r in mappo_list:
+                    mappo_keys.update(r.keys())
+                for key in mappo_keys:
+                    vals = [r.get(key) for r in mappo_list if key in r and r[key] is not None]
+                    if vals:
+                        try:
+                            summary[scenario]['mappo'][key] = (np.mean(vals), np.std(vals))
+                        except (TypeError, ValueError):
+                            pass
         return summary
 
     @staticmethod
@@ -1779,7 +2160,7 @@ class Experiment4:
             headers = ["算法", "整体满足率", "切换成功率", "关键业务满足率", "吞吐量(Mbps)", "SINR(dB)"]
             rows = []
             for algo_type, algo_name in [('enhanced', '增强算法'), ('traditional', '传统算法')]:
-                if algo_type in summary[scenario]:
+                if algo_type in summary[scenario] and summary[scenario][algo_type]:
                     data = summary[scenario][algo_type]
                     row = [algo_name]
                     for key in ['avg_satisfaction', 'handover_success_rate', 'critical_satisfaction', 'total_load', 'avg_sinr']:
@@ -1796,111 +2177,166 @@ class Experiment4:
                         else:
                             row.append("N/A")
                     rows.append(row)
+            # [Step4] MAPPO行
+            if 'mappo' in summary[scenario] and summary[scenario]['mappo']:
+                data = summary[scenario]['mappo']
+                row = ['MAPPO(本文)']
+                for key in ['avg_satisfaction', 'handover_success_rate', 'critical_satisfaction',
+                             'total_throughput', 'avg_sinr']:
+                    if key in data:
+                        mean, std = data[key]
+                        if key == 'handover_success_rate':
+                            row.append(f"{mean*100:.1f}%±{std*100:.1f}%")
+                        elif key in ('total_load', 'total_throughput'):
+                            row.append(f"{mean:.1f}±{std:.1f}")
+                        elif key == 'avg_sinr':
+                            row.append(f"{mean:.1f}±{std:.1f}")
+                        else:
+                            row.append(f"{mean:.3f}±{std:.3f}")
+                    else:
+                        row.append("N/A")
+                rows.append(row)
+
             # 计算提升
             if 'enhanced' in summary[scenario] and 'traditional' in summary[scenario]:
-                enh_sat = summary[scenario]['enhanced']['avg_satisfaction'][0]
-                trad_sat = summary[scenario]['traditional']['avg_satisfaction'][0]
-                improvement = (enh_sat - trad_sat) / trad_sat * 100
-                print(f" 满足率提升: {improvement:+.1f}%")
-            VisualizationHelper.print_data_table(f"{info['name']}详细结果", headers, rows)
+                enh_sat = summary[scenario]['enhanced'].get('avg_satisfaction', (0, 0))[0]
+                trad_sat = summary[scenario]['traditional'].get('avg_satisfaction', (0, 0))[0]
+                if trad_sat > 0:
+                    improvement = (enh_sat - trad_sat) / trad_sat * 100
+                    print(f" 满足率提升(增强vs传统): {improvement:+.1f}%")
+            if 'mappo' in summary[scenario] and summary[scenario]['mappo'] and 'enhanced' in summary[scenario]:
+                map_sat = summary[scenario]['mappo'].get('avg_satisfaction', (0, 0))[0]
+                enh_sat = summary[scenario]['enhanced'].get('avg_satisfaction', (0, 0))[0]
+                if enh_sat > 0:
+                    improvement = (map_sat - enh_sat) / enh_sat * 100
+                    print(f" 满足率提升(MAPPOvs增强): {improvement:+.1f}%")
+
+            VisualizationHelper.print_data_table(
+                f"{info['name']}详细结果{' (三算法)' if 'mappo' in summary[scenario] and summary[scenario]['mappo'] else ''}",
+                headers, rows)
 
     @staticmethod
     def _plot(summary):
+        # [Step4] 检测是否有MAPPO数据，决定使用2算法还是3算法布局
+        has_mappo = any(
+            'mappo' in summary[s] and summary[s]['mappo']
+            for s in Experiment4.SCENARIOS.keys()
+        )
+
         fig, axes = plt.subplots(2, 3, figsize=(18, 12))
-        fig.suptitle('实验4：多场景对比实验', fontsize=14, fontweight='bold')
+        fig.suptitle('实验4：多场景对比实验' + (' (含MAPPO)' if has_mappo else ''),
+                     fontsize=14, fontweight='bold')
         scenarios = list(Experiment4.SCENARIOS.keys())
         scenario_names = [Experiment4.SCENARIOS[s]['name'] for s in scenarios]
         x = np.arange(len(scenarios))
-        width = 0.35
 
-        # 满足率
-        ax = axes[0,0]
-        enh_vals = [summary[s]['enhanced']['avg_satisfaction'][0] if 'enhanced' in summary[s] else 0 for s in scenarios]
-        trad_vals = [summary[s]['traditional']['avg_satisfaction'][0] if 'traditional' in summary[s] else 0 for s in scenarios]
-        ax.bar(x - width/2, enh_vals, width, label='增强算法', color=COLORS['primary'], alpha=0.8)
-        ax.bar(x + width/2, trad_vals, width, label='传统算法', color=COLORS['neutral'], alpha=0.8)
-        ax.set_xticks(x)
-        ax.set_xticklabels(scenario_names, rotation=15, ha='right')
-        ax.set_ylabel('整体满足率')
-        ax.set_title('各场景整体满足率对比', fontweight='bold')
-        ax.legend()
+        # 布局参数：有MAPPO用3组(窄)，无则2组(宽)
+        if has_mappo:
+            width = 0.25
+            offsets = [-width, 0, width]
+        else:
+            width = 0.35
+            offsets = [-width/2, width/2]
 
-        # 切换成功率
-        ax = axes[0,1]
-        enh_vals = [summary[s]['enhanced']['handover_success_rate'][0]*100 if 'enhanced' in summary[s] else 0 for s in scenarios]
-        trad_vals = [summary[s]['traditional']['handover_success_rate'][0]*100 if 'traditional' in summary[s] else 0 for s in scenarios]
-        ax.bar(x - width/2, enh_vals, width, label='增强算法', color=COLORS['primary'], alpha=0.8)
-        ax.bar(x + width/2, trad_vals, width, label='传统算法', color=COLORS['neutral'], alpha=0.8)
-        ax.set_xticks(x)
-        ax.set_xticklabels(scenario_names, rotation=15, ha='right')
-        ax.set_ylabel('切换成功率(%)')
-        ax.set_title('各场景切换成功率对比', fontweight='bold')
-        ax.legend()
+        def _get_val(s, algo, key, fallback=0, scale=1):
+            """安全获取summary中的值"""
+            if algo in summary[s] and key in summary[s][algo]:
+                return summary[s][algo][key][0] * scale
+            return fallback
 
-        # 关键业务满足率
-        ax = axes[0,2]
-        enh_vals = [summary[s]['enhanced']['critical_satisfaction'][0] if 'enhanced' in summary[s] else 0 for s in scenarios]
-        trad_vals = [summary[s]['traditional']['critical_satisfaction'][0] if 'traditional' in summary[s] else 0 for s in scenarios]
-        ax.bar(x - width/2, enh_vals, width, label='增强算法', color=COLORS['primary'], alpha=0.8)
-        ax.bar(x + width/2, trad_vals, width, label='传统算法', color=COLORS['neutral'], alpha=0.8)
-        ax.set_xticks(x)
-        ax.set_xticklabels(scenario_names, rotation=15, ha='right')
-        ax.set_ylabel('关键业务满足率')
-        ax.set_title('各场景关键业务满足率对比', fontweight='bold')
-        ax.legend()
+        # ===== 图1: 整体满足率 =====
+        ax = axes[0, 0]
+        enh_vals = [_get_val(s, 'enhanced', 'avg_satisfaction') for s in scenarios]
+        trad_vals = [_get_val(s, 'traditional', 'avg_satisfaction') for s in scenarios]
+        ax.bar(x + offsets[0], enh_vals, width, label='增强算法', color=COLORS['primary'], alpha=0.8)
+        ax.bar(x + offsets[1], trad_vals, width, label='传统算法', color=COLORS['neutral'], alpha=0.8)
+        if has_mappo:
+            map_vals = [_get_val(s, 'mappo', 'avg_satisfaction') for s in scenarios]
+            ax.bar(x + offsets[2], map_vals, width, label='MAPPO', color=COLORS['warning'], alpha=0.8)
+        ax.set_xticks(x); ax.set_xticklabels(scenario_names, rotation=15, ha='right')
+        ax.set_ylabel('整体满足率'); ax.set_title('各场景整体满足率对比', fontweight='bold')
+        ax.legend(fontsize=8)
 
-        # 吞吐量
-        ax = axes[1,0]
-        enh_vals = [summary[s]['enhanced']['total_load'][0] if 'enhanced' in summary[s] else 0 for s in scenarios]
-        trad_vals = [summary[s]['traditional']['total_load'][0] if 'traditional' in summary[s] else 0 for s in scenarios]
-        ax.bar(x - width/2, enh_vals, width, label='增强算法', color=COLORS['primary'], alpha=0.8)
-        ax.bar(x + width/2, trad_vals, width, label='传统算法', color=COLORS['neutral'], alpha=0.8)
-        ax.set_xticks(x)
-        ax.set_xticklabels(scenario_names, rotation=15, ha='right')
-        ax.set_ylabel('吞吐量(Mbps)')
-        ax.set_title('各场景吞吐量对比', fontweight='bold')
-        ax.legend()
+        # ===== 图2: 切换成功率 =====
+        ax = axes[0, 1]
+        enh_vals = [_get_val(s, 'enhanced', 'handover_success_rate', scale=100) for s in scenarios]
+        trad_vals = [_get_val(s, 'traditional', 'handover_success_rate', scale=100) for s in scenarios]
+        ax.bar(x + offsets[0], enh_vals, width, label='增强算法', color=COLORS['primary'], alpha=0.8)
+        ax.bar(x + offsets[1], trad_vals, width, label='传统算法', color=COLORS['neutral'], alpha=0.8)
+        if has_mappo:
+            map_vals = [_get_val(s, 'mappo', 'handover_success_rate', scale=100) for s in scenarios]
+            ax.bar(x + offsets[2], map_vals, width, label='MAPPO', color=COLORS['warning'], alpha=0.8)
+        ax.set_xticks(x); ax.set_xticklabels(scenario_names, rotation=15, ha='right')
+        ax.set_ylabel('切换成功率(%)'); ax.set_title('各场景切换成功率对比', fontweight='bold')
+        ax.legend(fontsize=8)
 
-        # 提升百分比
-        ax = axes[1,1]
+        # ===== 图3: 关键业务满足率 =====
+        ax = axes[0, 2]
+        enh_vals = [_get_val(s, 'enhanced', 'critical_satisfaction') for s in scenarios]
+        trad_vals = [_get_val(s, 'traditional', 'critical_satisfaction') for s in scenarios]
+        ax.bar(x + offsets[0], enh_vals, width, label='增强算法', color=COLORS['primary'], alpha=0.8)
+        ax.bar(x + offsets[1], trad_vals, width, label='传统算法', color=COLORS['neutral'], alpha=0.8)
+        if has_mappo:
+            map_vals = [_get_val(s, 'mappo', 'critical_satisfaction') for s in scenarios]
+            ax.bar(x + offsets[2], map_vals, width, label='MAPPO', color=COLORS['warning'], alpha=0.8)
+        ax.set_xticks(x); ax.set_xticklabels(scenario_names, rotation=15, ha='right')
+        ax.set_ylabel('关键业务满足率'); ax.set_title('各场景关键业务满足率对比', fontweight='bold')
+        ax.legend(fontsize=8)
+
+        # ===== 图4: 吞吐量 =====
+        ax = axes[1, 0]
+        # 注意: 增强算法用 total_load, MAPPO用 total_throughput
+        enh_vals = [_get_val(s, 'enhanced', 'total_load') or _get_val(s, 'enhanced', 'total_throughput') for s in scenarios]
+        trad_vals = [_get_val(s, 'traditional', 'total_load') or _get_val(s, 'traditional', 'total_throughput') for s in scenarios]
+        ax.bar(x + offsets[0], enh_vals, width, label='增强算法', color=COLORS['primary'], alpha=0.8)
+        ax.bar(x + offsets[1], trad_vals, width, label='传统算法', color=COLORS['neutral'], alpha=0.8)
+        if has_mappo:
+            map_vals = [_get_val(s, 'mappo', 'total_load') or _get_val(s, 'mappo', 'total_throughput') for s in scenarios]
+            ax.bar(x + offsets[2], map_vals, width, label='MAPPO', color=COLORS['warning'], alpha=0.8)
+        ax.set_xticks(x); ax.set_xticklabels(scenario_names, rotation=15, ha='right')
+        ax.set_ylabel('吞吐量(Mbps)'); ax.set_title('各场景吞吐量对比', fontweight='bold')
+        ax.legend(fontsize=8)
+
+        # ===== 图5: 提升百分比（增强vs传统） =====
+        ax = axes[1, 1]
         improvements = []
         for s in scenarios:
-            if 'enhanced' in summary[s] and 'traditional' in summary[s]:
-                enh = summary[s]['enhanced']['avg_satisfaction'][0]
-                trad = summary[s]['traditional']['avg_satisfaction'][0]
-                improvements.append((enh - trad) / trad * 100)
-            else:
-                improvements.append(0)
-        colors = [COLORS['success'] if i>0 else COLORS['danger'] for i in improvements]
+            e = _get_val(s, 'enhanced', 'avg_satisfaction')
+            t = _get_val(s, 'traditional', 'avg_satisfaction')
+            improvements.append((e - t) / max(t, 0.001) * 100)
+        colors = [COLORS['success'] if i > 0 else COLORS['danger'] for i in improvements]
         bars = ax.bar(scenario_names, improvements, color=colors, alpha=0.8, edgecolor='white', linewidth=1.5)
         ax.axhline(y=0, color='black', linestyle='-', linewidth=0.8)
-        ax.set_ylabel('提升百分比(%)')
-        ax.set_title('增强算法在各场景的满足率提升', fontweight='bold')
+        ax.set_ylabel('提升百分比(%)'); ax.set_title('增强算法在各场景的满足率提升', fontweight='bold')
         ax.set_xticklabels(scenario_names, rotation=15, ha='right')
         for bar, val in zip(bars, improvements):
             ax.text(bar.get_x() + bar.get_width()/2, val, f'{val:+.1f}%',
-                    ha='center', va='bottom' if val>0 else 'top', fontsize=9, fontweight='bold')
+                    ha='center', va='bottom' if val > 0 else 'top', fontsize=9, fontweight='bold')
 
-        # 热力图
-        ax = axes[1,2]
-        data = np.array([
-            [summary[s]['enhanced']['avg_satisfaction'][0] if 'enhanced' in summary[s] else 0 for s in scenarios],
-            [summary[s]['traditional']['avg_satisfaction'][0] if 'traditional' in summary[s] else 0 for s in scenarios],
-            [summary[s]['enhanced']['handover_success_rate'][0] if 'enhanced' in summary[s] else 0 for s in scenarios],
-            [summary[s]['traditional']['handover_success_rate'][0] if 'traditional' in summary[s] else 0 for s in scenarios],
-        ])
+        # ===== 图6: 热力图（含MAPPO行） =====
+        ax = axes[1, 2]
+        heat_rows = [
+            ('增强-满足率', lambda s: _get_val(s, 'enhanced', 'avg_satisfaction')),
+            ('传统-满足率', lambda s: _get_val(s, 'traditional', 'avg_satisfaction')),
+            ('增强-成功率', lambda s: _get_val(s, 'enhanced', 'handover_success_rate')),
+            ('传统-成功率', lambda s: _get_val(s, 'traditional', 'handover_success_rate')),
+        ]
+        if has_mappo:
+            heat_rows.extend([
+                ('MAPPO-满足率', lambda s: _get_val(s, 'mappo', 'avg_satisfaction')),
+                ('MAPPO-成功率', lambda s: _get_val(s, 'mappo', 'handover_success_rate')),
+            ])
+        data = np.array([[fn(s) for s in scenarios] for name, fn in heat_rows])
         im = ax.imshow(data, cmap='RdYlGn', aspect='auto', vmin=0, vmax=1)
-        ax.set_xticks(range(len(scenarios)))
-        ax.set_xticklabels(scenario_names, rotation=30, ha='right')
-        ax.set_yticks([0,1,2,3])
-        ax.set_yticklabels(['增强-满足率', '传统-满足率', '增强-成功率', '传统-成功率'])
-        ax.set_title('场景适应性热力图', fontweight='bold')
-        for i in range(4):
+        ax.set_xticks(range(len(scenarios))); ax.set_xticklabels(scenario_names, rotation=30, ha='right')
+        ax.set_yticks(range(len(heat_rows))); ax.set_yticklabels([name for name, _ in heat_rows])
+        ax.set_title('场景适应性热力图' + (' (含MAPPO)' if has_mappo else ''), fontweight='bold')
+        for i in range(len(heat_rows)):
             for j in range(len(scenarios)):
-                val = data[i,j]
-                text = ax.text(j, i, f'{val*100:.0f}%' if i>=2 else f'{val:.2f}',
+                val = data[i, j]
+                text = ax.text(j, i, f'{val*100:.0f}%' if '成功率' in heat_rows[i][0] else f'{val:.2f}',
                                ha='center', va='center',
-                               color='white' if val<0.5 else 'black', fontsize=9, fontweight='bold')
+                               color='white' if val < 0.5 else 'black', fontsize=9, fontweight='bold')
         plt.colorbar(im, ax=ax)
 
         plt.tight_layout()

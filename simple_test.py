@@ -7,11 +7,11 @@ if 'uav_system.mappo_agent' in sys.modules:
     del sys.modules['uav_system.mappo_agent']
 
 from uav_system.config import set_global_seed, GLOBAL_SEED
-from uav_system.qmix_environment import QMixHandoverEnv
+from uav_system.mappo_environment import MultiAgentHandoverEnv
 from uav_system.mappo_agent import MAPPOAgent
 
 set_global_seed(GLOBAL_SEED)
-env = QMixHandoverEnv(num_bs=4, num_uav=10, max_steps=20, seed=GLOBAL_SEED, bs_capacity_range=(50, 100))
+env = MultiAgentHandoverEnv(num_bs=4, num_uav=10, max_steps=20, seed=GLOBAL_SEED, bs_capacity_range=(50, 100))
 agent = MAPPOAgent(num_agents=10, obs_dim=env.obs_dim, state_dim=env.state_dim, action_dim=env.action_dim, use_hierarchical=True)
 
 obs_dict, global_state = env.reset()
