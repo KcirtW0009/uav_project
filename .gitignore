@@ -1,0 +1,61 @@
+# ==================== 无人机切换决策系统 - Git Ignore ====================
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+ENV/
+pip-wheel-metadata/
+*.egg-info/
+*.egg
+dist/
+build/
+
+# ---- Jupyter Notebook ----
+.ipynb_checkpoints/
+
+# ---- 虚拟环境 (保留 venv/) ----
+# venv/  已在仓库中，不忽略
+pyvenv.cfg
+
+# ---- 模型文件 (大体积) ----
+*.pkl
+*.pt
+*.pth
+*.onnx
+
+# ---- 实验结果/输出 (可重新生成) ----
+experiment_results/
+experiment_logs/
+figures/
+archive/
+
+# ---- IDE ----
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
+desktop.ini
+*.log
+
+# ---- 环境变量/敏感信息 ----
+.env
+.env.local
+*.secret
+
+# ---- 临时文件 ----
+*.tmp
+*.bak
+*.temp
+ch4_temp.txt
+demo_output_*.txt
