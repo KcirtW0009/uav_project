@@ -1,0 +1,67 @@
+{
+  "timestamp": "20260420_100027",
+  "best_config": {
+    "business_weights": {
+      "control": {
+        "sinr": 0.695,
+        "load": 0.05,
+        "rate": 0.255
+      },
+      "video": {
+        "sinr": 0.15,
+        "load": 0.183,
+        "rate": 0.667
+      },
+      "monitor": {
+        "sinr": 0.45,
+        "load": 0.307,
+        "rate": 0.243
+      }
+    },
+    "switch_params": {
+      "base_threshold": 0.0345,
+      "epsilon": 0.0607,
+      "handover_cooldown": 5
+    }
+  },
+  "performance": {
+    "enhanced_mean": 0.9754107538669856,
+    "traditional_mean": 0.9553257280627253,
+    "gap": 0.020085025804260304,
+    "enhanced_hosr": 0.9196471366419063,
+    "enhanced_std": 0.02385360695990261,
+    "objective": -0.47275251203724267,
+    "penalty": 0.0,
+    "raw_enhanced": [
+      0.9888320030573022,
+      0.9880058533041614,
+      0.9837969818037317,
+      0.9885748151562977,
+      0.9278441160134351
+    ],
+    "raw_traditional": [
+      0.9768278016324596,
+      0.9598699050107503,
+      0.9586434796145806,
+      0.9829409017868989,
+      0.8983465522689374
+    ]
+  },
+  "search_space": [
+    "ctrl_sinr",
+    "ctrl_load",
+    "video_sinr",
+    "video_load",
+    "monitor_sinr",
+    "monitor_load",
+    "base_threshold",
+    "epsilon"
+  ],
+  "optimization_settings": {
+    "eval_rounds": 2,
+    "sim_steps": 80,
+    "num_uav": 300,
+    "num_bs": 8,
+    "total_evaluations": 20
+  }
+}

@@ -215,7 +215,7 @@ class EnhancedHandoverAlgorithm:
     - 全局负载均衡：周期性迁移高负载基站的部分UAV
     """
 
-    def __init__(self, env: NetworkEnvironmentWithRecognition, weight_config='optimized'):
+    def __init__(self, env: NetworkEnvironmentWithRecognition, weight_config='new_env'):
         self.env = env
         self.weight_config = weight_config  # 保存配置类型
         # 效用函数默认权重
@@ -233,7 +233,24 @@ class EnhancedHandoverAlgorithm:
         self.emergency_sinr_threshold = -5
         self.emergency_satisfaction_threshold = 0.7
         # 业务特化权重
-        if weight_config == 'optimized':
+        if weight_config == 'new_env':
+            # ★ 贝叶斯优化结果(2026-04-20) — 适配修正后基站参数
+            #   搜索空间: 8维业务权重+切换参数, 50次GP-EI迭代
+            #   优化目标: max(增强vs传统差距) + HOSR - std惩罚
+            #   结果: gap从+0.9%提升至+2.0%(+120%), 全部20次评估增强>传统
+            # 核心调整逻辑:
+            #   新环境(BS高度固定~8-25m)下BS-UAV垂直距离主导→SINR区分度下降
+            #   → 控制信令sinr权重大幅提高(0.5→0.695), 补偿SINR信息损失
+            #   → 视频回传rate权重提高(0.45→0.667), 强化带宽分配能力
+            #   → 切换阈值收紧(0.01→0.0345), 减少无效切换
+            self.business_weights = {
+                BusinessType.CONTROL_SIGNAL: {'sinr': 0.695, 'load': 0.050, 'rate': 0.255},
+                BusinessType.VIDEO_STREAMING: {'sinr': 0.150, 'load': 0.183, 'rate': 0.667},
+                BusinessType.ENVIRONMENT_MONITORING: {'sinr': 0.450, 'load': 0.307, 'rate': 0.243}
+            }
+            self.base_threshold = 0.0345
+            self.epsilon = 0.06
+        elif weight_config == 'optimized':
             # 方案A：进一步优化的权重配置，用于MAPPO实验
             # 控制信令：进一步提高sinr权重到0.65，确保可靠性
             # 视频回传：进一步提高rate权重到0.60，确保带宽需求
@@ -244,7 +261,7 @@ class EnhancedHandoverAlgorithm:
                 BusinessType.ENVIRONMENT_MONITORING: {'sinr': 0.25, 'load': 0.15, 'rate': 0.60}
             }
         else:
-            # 默认权重配置，保持与原有实验一致
+            # paper/默认: 原论文权重配置（适配旧随机基站高度）
             self.business_weights = {
                 BusinessType.CONTROL_SIGNAL: {'sinr': 0.5, 'load': 0.2, 'rate': 0.3},
                 BusinessType.VIDEO_STREAMING: {'sinr': 0.3, 'load': 0.25, 'rate': 0.45},

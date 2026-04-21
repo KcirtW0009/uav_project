@@ -12,7 +12,7 @@
 BA-MAPPO 训练:
     .\venv\Scripts\python.exe main.py --exp mappo              训练MAPPO (8BSx300UAV, 对齐实验3)
     .\venv\Scripts\python.exe main.py --exp mappo --rl-load     加载模型，仅评估
-    .\venv\Scripts\python.exe main.py --exp mappo --rl-phase phase1  仅训练阶段
+    .\venv\Scripts\python.exe main.py --exp mappo --rl-phase phase  仅训练阶段
     .\venv\Scripts\python.exe main.py --exp mappo --small        小规模调试 (128UAV/3BS)
 
 参数说明:
@@ -241,4 +241,3 @@ if __name__ == "__main__":
 # .\venv\Scripts\python.exe main.py --exp 4 --include-mappo         实验4 + MAPPO泛化
 # .\venv\Scripts\python.exe main.py --exp mappo                    训练MAPPO(8BSx300UAV)
 #     --mappo-model results/mappo_models/custom_model.pt           指定自定义模型
-# .\venv\Scripts\python.exe rerun_model_comparison.py
