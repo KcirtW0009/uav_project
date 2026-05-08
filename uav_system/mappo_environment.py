@@ -108,7 +108,8 @@ class MultiAgentHandoverEnv:
                  bs_capacity_range: tuple = (500, 1000), pos_range: int = 1000,
                  use_state_smoothing: bool = True, use_env_simplification: bool = False,
                  recognition_model=None, scaler=None,
-                 event_probability: float = 0.05):
+                 event_probability: float = 0.05,
+                 scenario: str = 'default'):  # ✅ 新增：场景ID（用于设置业务混合比例）
         """
         初始化 MAPPO 切换环境
 
@@ -124,6 +125,7 @@ class MultiAgentHandoverEnv:
             recognition_model: 业务识别模型（评估模式传入，训练模式为None）
             scaler: 识别模型的标准化器（与recognition_model配套）
             event_probability: 随机事件概率（对齐实验3，默认0=无事件）
+            scenario: 场景ID（用于设置业务混合比例和基站容量，如'industrial_inspection'等）
         """
         self.num_bs = num_bs
         self.num_uav = num_uav
@@ -136,6 +138,7 @@ class MultiAgentHandoverEnv:
         self.recognition_model = recognition_model
         self.scaler = scaler
         self.event_probability = event_probability
+        self.scenario = scenario  # ✅ 保存场景ID
 
         # 创建底层网络环境
         # V19: 使用 EnhancedNetworkEnvironment（含随机事件机制，与实验3一致）
@@ -149,6 +152,7 @@ class MultiAgentHandoverEnv:
             seed=seed,
             bs_capacity_range=bs_capacity_range,
             event_probability=event_probability,  # 默认5%，对齐实验3
+            scenario=scenario,  # ✅ 关键：传递场景ID以启用正确的业务混合比例！
         )
 
         # 禁用自适应识别更新器（MAPPO 不需要在线更新识别结果）
