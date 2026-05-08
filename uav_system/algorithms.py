@@ -164,12 +164,15 @@ class IntegratedHandoverAlgorithm:
         normal_attempts = max(self.handover_attempts - self.reconnect_attempts, 1)
         normal_success_rate = (self.handover_successes - self.reconnect_successes) / normal_attempts
         reconnect_success_rate = self.reconnect_successes / max(self.reconnect_attempts, 1)
+        # 总切换成功率（包含所有切换尝试：正常切换+重连）
+        total_handover_success_rate = self.handover_successes / max(self.handover_attempts, 1)
         return {
             'avg_decision_time_ms': np.mean(self.decision_time_history) if self.decision_time_history else 0,
             'avg_switching_latency_ms': np.mean(self.switching_latency_history) if self.switching_latency_history else 0,
             'max_switching_latency_ms': max(self.switching_latency_history) if self.switching_latency_history else 0,
             'failure_reasons': dict(self.failure_reasons),
-            'handover_success_rate': normal_success_rate,
+            'handover_success_rate': total_handover_success_rate,  # 使用总切换成功率
+            'normal_handover_success_rate': normal_success_rate,  # 保留正常切换成功率（不含重连）
             'reconnect_success_rate': reconnect_success_rate,
             'reconnect_attempts': self.reconnect_attempts,
             'reconnect_successes': self.reconnect_successes,
@@ -944,13 +947,16 @@ class EnhancedHandoverAlgorithm:
         normal_attempts = max(self.handover_attempts - self.reconnect_attempts, 1)
         normal_success_rate = (self.handover_successes - self.reconnect_successes) / normal_attempts
         reconnect_success_rate = self.reconnect_successes / max(self.reconnect_attempts, 1)
+        # 总切换成功率（包含所有切换尝试：正常切换+重连）
+        total_handover_success_rate = self.handover_successes / max(self.handover_attempts, 1)
         return {
             'avg_decision_time_ms': np.mean(self.decision_time_history) if self.decision_time_history else 0,
             'max_decision_time_ms': max(self.decision_time_history) if self.decision_time_history else 0,
             'avg_switching_latency_ms': np.mean(self.switching_latency_history) if self.switching_latency_history else 0,
             'max_switching_latency_ms': max(self.switching_latency_history) if self.switching_latency_history else 0,
             'failure_reasons': dict(self.failure_reasons),
-            'handover_success_rate': normal_success_rate,
+            'handover_success_rate': total_handover_success_rate,  # 使用总切换成功率
+            'normal_handover_success_rate': normal_success_rate,  # 保留正常切换成功率（不含重连）
             'reconnect_success_rate': reconnect_success_rate,
             'reconnect_attempts': self.reconnect_attempts,
             'reconnect_successes': self.reconnect_successes,

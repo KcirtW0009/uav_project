@@ -2110,15 +2110,11 @@ class Experiment4:
                 if include_mappo:
                     mappo_stats = evaluate_mappo_in_experiment(
                         num_bs=8, num_uav=num_uav, num_steps=num_steps,
-                        recognition_model=recognition_model, scaler=scaler,
-                        seed=GLOBAL_SEED + rep, scenario=scenario,
                         model_path=mappo_model_path,  # 支持自定义模型路径
                     )
                     if mappo_stats is not None:
                         results[scenario]['mappo'].append(mappo_stats)
                         print(f" MAPPO     - 满足率: {mappo_stats['avg_satisfaction']:.3f}")
-
-        summary = Experiment4._summarize(results)
         Experiment4._print_results_table(summary)
         Experiment4._plot(summary)
         return summary

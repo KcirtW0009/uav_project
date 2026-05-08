@@ -206,6 +206,32 @@ class BusinessRecognitionModel:
             if self.model_info.get('feature_importance'):
                 self.feature_importance = np.array(self.model_info['feature_importance'])
             self.accuracy = self.model_info.get('accuracy')
+            self.f1_score = self.model_info.get('f1_score')
+        else:
+            # 如果model_info.json不存在，使用测试集评估生成基本信息
+            X_test, y_test = self.generate_business_data(
+                num_samples_per_class=500, seed=RECOGNITION_SEED + 42, noise_level=0.1)
+            acc, f1, _ = self.evaluate_on_test(X_test, y_test)
+            self.accuracy = acc
+            self.f1_score = f1
+            # 推断模型类型
+            model_type_name = type(self.model).__name__
+            type_map = {
+                'DecisionTreeClassifier': 'dt',
+                'SVC': 'svm',
+                'MLPClassifier': 'mlp',
+                'RandomForestClassifier': 'rf',
+                'GradientBoostingClassifier': 'gb'
+            }
+            self.model_type = type_map.get(model_type_name, 'loaded')
+            # 构建基本的model_info
+            self.model_info = {
+                'version': '1.0 (loaded)',
+                'model_type': self.model_type,
+                'accuracy': float(acc),
+                'f1_score': float(f1),
+                'training_timestamp': 'N/A (loaded from saved model)'
+            }
 
     def print_model_info(self):
         """打印模型信息"""
