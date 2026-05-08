@@ -872,8 +872,14 @@ class MAPPOAgentV2:
         }, path)
     
     def load(self, path):
-        """加载模型"""
-        checkpoint = torch.load(path)
+        """加载模型 (兼容 PyTorch 2.6+)"""
+        # [FIX] PyTorch 2.6+ 兼容性: weights_only 默认值从 False 改为 True
+        try:
+            checkpoint = torch.load(path, weights_only=False)
+        except TypeError:
+            # 向后兼容: 旧版本 PyTorch 不支持 weights_only 参数
+            checkpoint = torch.load(path)
+        
         self.actor.load_state_dict(checkpoint['actor'])
         self.critic.load_state_dict(checkpoint['critic'])
         self.actor_optimizer.load_state_dict(checkpoint['actor_optimizer'])

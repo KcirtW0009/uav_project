@@ -540,31 +540,92 @@ class TrainingLogger:
             f.write(msg + "\n")
     
     def log_round_summary(self, round_num: int, result: Dict, iteration_total: int):
-        """[FINISH] 单轮总结 (增强版)"""
+        """[FINISH] 单轮总结 (企业级增强版)"""
+        
         lines = [
-            f"\n{'█' * 80}",
-            f"[FINISH] Round {round_num}/{iteration_total} 完成总结",
-            f"{'█' * 80}",
+            f"\n{'█' * 90}",
+            f"[FINISH] Round {round_num}/{iteration_total} 完成总结 (企业级报告)",
+            f"{'█' * 90}",
             f"",
             f"  [CHART] 核心指标:",
             f"     ├─ 微调前分数: {result.get('pre_score', 0):.4f}",
             f"     ├─ 微调后分数: {result.get('post_score', 0):.4f}",
             f"     ├─ 绝对提升:   {result.get('improvement', 0):+.4f}",
             f"     └─ 全局最优:   {result.get('best_score', 0):.4f}"
-                         f" {'🆕' if result.get('new_best') else ''}",
+                         f" {'[NEW]' if result.get('new_best') else ''}",
             f"",
             f"  ⏱️  时间统计:",
             f"     ├─ 本轮总耗时: {result.get('time', 0):.1f}s ({result.get('time', 0)/60:.1f}min)",
         ]
         
-        # Phase耗时分解
+        # Phase耗时分解 (增强版)
         phases = result.get('phases', [])
         if phases:
             lines.append("     └─ Phase分解:")
-            for phase in phases:
+            for i, phase in enumerate(phases):
                 name = phase.get('name', '?')
                 ep = phase.get('episodes', 0)
-                lines.append(f"        • {name}: {ep}episodes")
+                score = phase.get('avg_score', None)
+                improvement = phase.get('avg_improvement', None)
+                
+                if score is not None and improvement is not None:
+                    lines.append(f"        [{i+1}] {name}: {ep}ep | "
+                                f"score={score:.4f} | Δ={improvement:+.2%}")
+                else:
+                    lines.append(f"        [{i+1}] {name}: {ep}episodes")
+        
+        # [NEW] 场景级别性能分析
+        scenario_results = result.get('scenario_details', [])
+        if scenario_results:
+            lines.extend([
+                "",
+                f"  [SCENARIOS] 场景级性能分析:",
+                f"    {'场景':12s} | {'微调前':>7s} | {'微调后':>7s} | "
+                f"{'改进':>7s} | {'状态':6s}",
+                f"    {'-'*55}"
+            ])
+            
+            for sc in sorted(scenario_results, key=lambda x: x.get('post_score', 0), reverse=True):
+                name = sc.get('name', '?')
+                pre = sc.get('pre_score', 0)
+                post = sc.get('post_score', 0)
+                delta = post - pre
+                
+                # 状态判断
+                if delta > 0.02:
+                    status = "[UP]"
+                elif delta < -0.02:
+                    status = "[DN]"
+                else:
+                    status = "[-]"
+                
+                lines.append(
+                    f"    {name:12s} | {pre:7.4f} | {post:7.4f} | "
+                    f"{delta:+7.4f} | {status}"
+                )
+            
+            # 关键发现
+            best_scenario = max(scenario_results, key=lambda x: x.get('post_score', 0))
+            worst_scenario = min(scenario_results, key=lambda x: x.get('post_score', 0))
+            
+            lines.extend([
+                "",
+                f"  [FINDINGS] 关键发现:",
+                f"     ├─ 最佳场景: {best_scenario.get('name', '?')} "
+                f"(score={best_scenario.get('post_score', 0):.4f})",
+                f"     └─ 最弱场景: {worst_scenario.get('name', '?')} "
+                f"(score={worst_scenario.get('post_score', 0):.4f})",
+            ])
+            
+            # 弱场景警告
+            weak_scenarios = [sc for sc in scenario_results 
+                            if sc.get('post_score', 0) < 0.85]
+            if weak_scenarios:
+                lines.append("")
+                lines.append(f"     [WARN] 需要关注的弱场景 (< 0.85):")
+                for sc in weak_scenarios:
+                    lines.append(f"        • {sc.get('name', '?')}: "
+                                f"{sc.get('post_score', 0):.4f}")
         
         # 通过条件详情
         conditions = result.get('pass_conditions', {})
@@ -574,23 +635,51 @@ class TrainingLogger:
                 False: ('[FAIL]', '未通过'),
             }
             lines.append("")
-            lines.append(f"  [OK] 通过条件:")
+            lines.append("  [CHECK] 通过条件:")
             for cond_name, passed in conditions.items():
                 icon, text = cond_icons.get(passed, ('?', '?'))
                 lines.append(f"     {icon} {cond_name}: {text}")
         
-        # 趋势信息
+        # 趋势信息 (增强版)
         trend = result.get('absolute_trend', [])
         if trend:
             trend_str = " → ".join([f"{s:.4f}" for s in trend])
-            lines.append(f"", f"  [UP] 分数趋势: [{trend_str}]")
+            lines.append("", f"  [TREND] 分数趋势: [{trend_str}]")
+            
+            # 趋势分析
+            if len(trend) >= 2:
+                recent_trend = trend[-3:] if len(trend) >= 3 else trend
+                is_improving = all(recent_trend[i] <= recent_trend[i+1] 
+                                  for i in range(len(recent_trend)-1))
+                
+                if is_improving:
+                    lines.append(f"     └─ 趋势判断: 持续上升 ↑")
+                elif len(trend) >= 3 and trend[-1] > trend[-2] > trend[-3]:
+                    lines.append(f"     └─ 趋势判断: 加速改善 ↗")
+                else:
+                    lines.append(f"     └─ 趋势判断: 波动/平稳 →")
+        
+        # 错误统计
+        errors = result.get('total_errors', 0)
+        total_episodes = result.get('total_episodes', 0)
+        if total_episodes > 0 and errors > 0:
+            error_rate = errors / total_episodes * 100
+            lines.append("")
+            if error_rate > 10:
+                lines.append(f"  [WARN] 高错误率: {errors}/{total_episodes} ({error_rate:.1f}%)")
+                lines.append(f"     建议: 检查模型兼容性或降低学习率")
+            elif error_rate > 5:
+                lines.append(f"  [INFO] 中等错误率: {errors}/{total_episodes} ({error_rate:.1f}%)")
         
         passed = result.get('passed', False)
         status_icon = "[PARTY] PASS" if passed else "[WAIT] CONTINUE"
+        next_action = "可以结束微调" if passed else "准备下一轮迭代"
+        
         lines.extend([
             f"",
             f"  最终状态: {status_icon}",
-            f"{'█' * 80}"
+            f"  下一步: {next_action}",
+            f"{'█' * 90}"
         ])
         
         msg = "\n".join(lines)
@@ -1189,6 +1278,24 @@ class MultiScenarioFinetunerV2:
         }
         result['time'] = time.time() - iter_start
         
+        # [NEW] 添加场景级别详细信息用于日志
+        scenario_details = []
+        for sid, pre_data in pre_scores.items():
+            post_data = post_scores.get(sid, {})
+            scenario_details.append({
+                'id': sid,
+                'name': self.SCENARIOS[sid]['name'],
+                'pre_score': pre_data.get('score', 0),
+                'post_score': post_data.get('score', 0),
+            })
+        result['scenario_details'] = scenario_details
+        
+        # [NEW] 添加错误统计
+        total_errors = sum(len(phase.get('errors', [])) for phase in result.get('phases', []))
+        total_episodes = sum(phase.get('episodes', 0) for phase in result.get('phases', []))
+        result['total_errors'] = total_errors
+        result['total_episodes'] = total_episodes
+        
         self.iteration_history.append(result)
         
         print(f"\n  [CHART] Round {iteration+1} 总结:")
@@ -1280,7 +1387,10 @@ class MultiScenarioFinetunerV2:
         
         # 创建5个环境 (每个场景一个)
         envs = {}
-        print(f"    初始化{len(self.SCENARIOS)}个场景环境...")
+        print(f"\n    [ENV] 初始化{len(self.SCENARIOS)}个场景环境...")
+        print(f"       {'场景':12s} | {'UAV数':>5s} | {'Obs维度':>7s} | "
+              f"{'State维度':>9s} | {'业务混合':20s} | {'期望基线':>8s}")
+        print(f"       {'-'*70}")
         
         for sid, scenario in self.SCENARIOS.items():
             num_uav = scenario['num_uav']
@@ -1293,8 +1403,14 @@ class MultiScenarioFinetunerV2:
                 pos_range=1000,
             )
             
-            print(f"       ✓ {scenario['name']:12s} ({num_uav} UAVs) - "
-                  f"obs_dim={envs[sid].obs_dim}, state_dim={envs[sid].state_dim}")
+            # 格式化业务混合比例
+            biz_ratios = scenario.get('biz_ratios', [0, 0, 0])
+            biz_str = f"控制{biz_ratios[0]*100:.0f}% 视频{biz_ratios[1]*100:.0f}% 监测{biz_ratios[2]*100:.0f}%"
+            expected_sat = scenario.get('expected_sat', 0.9)
+            
+            print(f"       {scenario['name']:12s} | {num_uav:>5d} | "
+                  f"{envs[sid].obs_dim:>7d} | {envs[sid].state_dim:>9d} | "
+                  f"{biz_str:20s} | {expected_sat:>7.1%}")
         
         # [KEY] 关键: 只创建1个Agent (使用第一个环境的维度作为参考)
         # [FIX] P2: 从模型文件中检测正确的网络配置
@@ -1308,7 +1424,11 @@ class MultiScenarioFinetunerV2:
         
         try:
             # 尝试从模型文件中读取保存的配置
-            checkpoint = torch.load(base_model, map_location='cpu')
+            # [FIX] PyTorch 2.6+ 兼容性
+            try:
+                checkpoint = torch.load(base_model, map_location='cpu', weights_only=False)
+            except TypeError:
+                checkpoint = torch.load(base_model, map_location='cpu')
             
             if 'config' in checkpoint:
                 # 如果模型保存了配置信息
@@ -1382,7 +1502,11 @@ class MultiScenarioFinetunerV2:
             if "size mismatch" in str(load_error):
                 print(f"       [WARN] 模型维度不完全匹配，尝试非严格加载...")
                 try:
-                    checkpoint = torch.load(base_model, map_location='cpu')
+                    # [FIX] PyTorch 2.6+ 兼容性
+                    try:
+                        checkpoint = torch.load(base_model, map_location='cpu', weights_only=False)
+                    except TypeError:
+                        checkpoint = torch.load(base_model, map_location='cpu')
                     
                     # 手动加载actor (忽略不匹配的层)
                     actor_state = checkpoint.get('actor', {})
@@ -1424,9 +1548,24 @@ class MultiScenarioFinetunerV2:
             else:
                 raise  # 重新抛出非维度相关的错误
         
+        # [NEW] 模型架构信息仪表板
+        print(f"\n    [MODEL] 网络架构:")
+        print(f"       ├─ Actor: hidden_dim={model_hidden_dim}, "
+              f"layers={len([k for k in agent.actor.state_dict() if 'fc' in k])//2}")
+        print(f"       ├─ Critic: hidden_dim={model_critic_hidden_dim}, "
+              f"layers={len([k for k in agent.critic.state_dict() if 'fc' in k])//2}")
+        
+        # 计算模型参数量
+        actor_params = sum(p.numel() for p in agent.actor.parameters())
+        critic_params = sum(p.numel() for p in agent.critic.parameters())
+        total_params = actor_params + critic_params
+        
+        print(f"       ├─ 参数量: Actor={actor_params/1e3:.0f}K, "
+              f"Critic={critic_params/1e3:.0f}K, Total={total_params/1e6:.2f}M")
+        print(f"       └─ 设备: {'GPU (CUDA)' if torch.cuda.is_available() else 'CPU'}")
+        
         # [FAST] 性能优化: 预热normalizer (只需预热参考环境)
-        print(f"    预热Normalizer...")
-        self._warmup_normalizer(agent, ref_env, steps=50)
+        print(f"\n    [WARMUP] 预热Normalizer (50 steps)...")
         
         # [SEARCH] Phase开始日志
         phase_start_time = time.time()
@@ -1444,7 +1583,21 @@ class MultiScenarioFinetunerV2:
         last_trained_sid = None
         
         # [TARGET] 增强版训练循环 (带异常处理和加权采样)
-        print(f"\n    开始训练 {episodes} episodes...\n")
+        print(f"\n    {'='*70}")
+        print(f"    [*] 开始训练 {episodes} episodes (实时监控模式)")
+        print(f"       模式: 加权采样 | Debug: {'ON' if self.debug_mode else 'OFF'}")
+        print(f"{'='*70}")
+        
+        # [NEW] 实时指标收集器
+        real_time_metrics = {
+            'rewards': [],
+            'actor_losses': [],
+            'critic_losses': [],
+            'entropies': [],
+            'steps_per_ep': [],
+            'times_per_ep': [],
+            'updates_per_ep': [],
+        }
         
         for ep in range(episodes):
             ep_start_time = time.time()
@@ -1471,39 +1624,78 @@ class MultiScenarioFinetunerV2:
                 
                 ep_elapsed = time.time() - ep_start_time
                 
+                # [NEW] 收集实时指标
+                reward_val = train_result.get('total_reward', 0)
+                scaled_reward = train_result.get('scaled_reward', 0)
+                steps = train_result.get('steps', 0)
+                updates = train_result.get('update_count', 0)
+                actor_loss = train_result.get('actor_loss', 0)
+                critic_loss = train_result.get('critic_loss', 0)
+                entropy = train_result.get('entropy', 0)
+                
+                real_time_metrics['rewards'].append(scaled_reward)
+                real_time_metrics['actor_losses'].append(actor_loss)
+                real_time_metrics['critic_losses'].append(critic_loss)
+                real_time_metrics['entropies'].append(entropy)
+                real_time_metrics['steps_per_ep'].append(steps)
+                real_time_metrics['times_per_ep'].append(ep_elapsed)
+                real_time_metrics['updates_per_ep'].append(updates)
+                
                 # [NOTE] Episode日志 (每episode都输出!)
                 self.logger.log_episode_complete(
                     episode_num=ep,
                     total_episodes=episodes,
                     scenario_id=sid,
                     scenario_name=self.SCENARIOS[sid]['name'],
-                    reward=train_result.get('total_reward', 0),
-                    steps=train_result.get('steps', 0),
-                    scaled_reward=train_result.get('scaled_reward', 0),
+                    reward=reward_val,
+                    steps=steps,
+                    scaled_reward=scaled_reward,
                     elapsed=ep_elapsed,
-                    update_count=train_result.get('update_count', 0),
+                    update_count=updates,
                     extra_info={
-                        'actor_loss': train_result.get('actor_loss', 0),
-                        'critic_loss': train_result.get('critic_loss', 0),
-                        'entropy': train_result.get('entropy', 0),
+                        'actor_loss': actor_loss,
+                        'critic_loss': critic_loss,
+                        'entropy': entropy,
                         'reward_scale': self.reward_scales.get(sid, 1.0),
                     }
                 )
                 
                 # 收集统计
-                episode_rewards.append(train_result.get('scaled_reward', 0))
+                episode_rewards.append(scaled_reward)
                 
-                # 定期进度报告 (每25%进度)
-                progress_interval = max(1, episodes // 4)
-                if (ep + 1) % progress_interval == 0 or ep == episodes - 1:
-                    dist_str = ", ".join([f"{self.SCENARIOS[k]['name']}:{v}" 
-                                         for k, v in sorted(scenario_counts.items())])
-                    
-                    avg_reward = np.mean(episode_rewards[-progress_interval:]) if episode_rewards else 0
-                    
-                    print(f"    [{ep+1:3d}/{episodes}] 分布: [{dist_str}] | "
-                          f"近期均奖: {avg_reward:.1f} | "
-                          f"错误率: {episode_errors}/{ep+1} ({episode_errors/max(ep+1,1)*100:.0f}%)")
+                # [NEW] 实时进度仪表板 (每个episode都显示!)
+                progress_pct = (ep + 1) / episodes * 100
+                
+                # 计算移动平均 (最近5个episode)
+                window = min(5, len(real_time_metrics['rewards']))
+                avg_reward = np.mean(real_time_metrics['rewards'][-window:]) if window > 0 else 0
+                avg_actor_loss = np.mean(real_time_metrics['actor_losses'][-window:]) if window > 0 else 0
+                avg_critic_loss = np.mean(real_time_metrics['critic_losses'][-window:]) if window > 0 else 0
+                avg_entropy = np.mean(real_time_metrics['entropies'][-window:]) if window > 0 else 0
+                avg_steps = np.mean(real_time_metrics['steps_per_ep'][-window:]) if window > 0 else 0
+                avg_time = np.mean(real_time_metrics['times_per_ep'][-window:]) if window > 0 else 0
+                
+                # 计算趋势 (与上一个window比较)
+                if len(real_time_metrics['rewards']) >= 10:
+                    prev_avg = np.mean(real_time_metrics['rewards'][-10:-5])
+                    trend = "↑" if avg_reward > prev_avg else ("↓" if avg_reward < prev_avg else "→")
+                else:
+                    trend = "→"
+                
+                # 场景分布字符串
+                dist_str = ", ".join([f"{self.SCENARIOS[k]['name'][:4]}:{v}" 
+                                     for k, v in sorted(scenario_counts.items())])
+                
+                # 构建实时仪表板
+                print(f"\n    [{sid.upper()[:3]}] Ep {ep+1:3d}/{episodes} "
+                      f"({progress_pct:5.1f}%) | {self.SCENARIOS[sid]['name']:12s}")
+                print(f"       ├─ 奖励: {scaled_reward:8.2f} (avg={avg_reward:8.2f} {trend}) | "
+                      f"Steps: {steps:4d} (avg={avg_steps:.0f})")
+                print(f"       ├─ Losses: Actor={avg_actor_loss:7.4f} | "
+                      f"Critic={avg_critic_loss:7.4f} | Entropy={avg_entropy:6.4f}")
+                print(f"       ├─ Updates: {updates:3d}x | Time: {ep_elapsed:6.2f}s "
+                      f"(avg={avg_time:.1f}s) | Speed: {steps/max(ep_elapsed,0.1):.0f} step/s")
+                print(f"       └─ 场景分布: [{dist_str}]")
                     
             except Exception as e:
                 # [OK] P1: 详细的异常处理和告警
@@ -1537,13 +1729,65 @@ class MultiScenarioFinetunerV2:
                 # 尝试继续下一个episode (容错机制)
                 continue
         
-        # [CHART] 训练完成统计
+        # [CHART] 训练完成统计 (增强版)
         success_rate = (episodes - episode_errors) / episodes * 100
-        print(f"\n    ✓ 训练完成: {episodes-episode_errors}/{episodes} 成功 "
-              f"({success_rate:.1f}%)")
+        total_train_time = time.time() - phase_start_time
         
+        print(f"\n    {'='*70}")
+        print(f"    [COMPLETE] 训练阶段完成: {config['name']}")
+        print(f"{'='*70}")
+        
+        # 基本统计
+        print(f"\n    [STATS] 基本统计:")
+        print(f"       ├─ 成功率: {episodes-episode_errors}/{episodes} ({success_rate:.1f}%)")
         if episode_errors > 0:
-            print(f"    [WARN] 共 {episode_errors} 个episode出错 (已记录)")
+            print(f"       ├─ 错误数: {episode_errors} 个episode出错")
+        
+        # 计算总体指标
+        if real_time_metrics['rewards']:
+            avg_reward = np.mean(real_time_metrics['rewards'])
+            std_reward = np.std(real_time_metrics['rewards'])
+            min_reward = min(real_time_metrics['rewards'])
+            max_reward = max(real_time_metrics['rewards'])
+            
+            avg_actor_loss = np.mean(real_time_metrics['actor_losses']) if real_time_metrics['actor_losses'] else 0
+            avg_critic_loss = np.mean(real_time_metrics['critic_losses']) if real_time_metrics['critic_losses'] else 0
+            avg_entropy = np.mean(real_time_metrics['entropies']) if real_time_metrics['entropies'] else 0
+            
+            total_steps = sum(real_time_metrics['steps_per_ep'])
+            total_updates = sum(real_time_metrics['updates_per_ep'])
+            avg_time_per_ep = np.mean(real_time_metrics['times_per_ep']) if real_time_metrics['times_per_ep'] else 0
+            speed = total_steps / max(total_train_time, 0.1)
+            
+            print(f"       ├─ 总耗时: {total_train_time:.1f}s | "
+                  f"平均: {avg_time_per_ep:.1f}s/ep | "
+                  f"速度: {speed:.0f} steps/s")
+            
+            print(f"\n    [METRICS] 性能指标:")
+            print(f"       ├─ 奖励统计:")
+            print(f"       │   ├─ Mean: {avg_reward:8.2f} ± {std_reward:6.2f}")
+            print(f"       │   ├─ Min:  {min_reward:8.2f} | Max: {max_reward:8.2f}")
+            print(f"       │   └─ 范围: [{min_reward:.2f}, {max_reward:.2f}]")
+            
+            print(f"       ├─ 损失函数:")
+            print(f"       │   ├─ Actor Loss:  {avg_actor_loss:7.4f}")
+            print(f"       │   ├─ Critic Loss: {avg_critic_loss:7.4f}")
+            print(f"       │   └─ Entropy:     {avg_entropy:6.4f}")
+            
+            print(f"       └─ 训练量:")
+            print(f"           ├─ Total Steps: {total_steps:,d}")
+            print(f"           ├─ Total Updates: {total_updates:,d}")
+            print(f"           └─ Avg Steps/Ep: {total_steps/max(episodes,1):.0f}")
+        
+        # 场景分布统计
+        print(f"\n    [DISTRIB] 场景训练分布:")
+        for sid, count in sorted(scenario_counts.items()):
+            pct = count / episodes * 100
+            expected_pct = 100 / len(self.SCENARIOS)  # 理论平均
+            deviation = pct - expected_pct
+            indicator = "↑" if deviation > 5 else ("↓" if deviation < -5 else "≈")
+            print(f"       {self.SCENARIOS[sid]['name']:12s}: {count:3d}ep "
+                  f"({pct:5.1f}%){indicator}")
         
         # [SAVE] 保存模型 (只有1个Agent, 直接保存!)
         output_path = os.path.join(
@@ -1555,11 +1799,18 @@ class MultiScenarioFinetunerV2:
         agent.save(output_path)
         phase_result['output_model'] = output_path
         
-        # [CHART] 全场景评估
-        print(f"\n    评估所有场景...")
+        # [CHART] 全场景评估 (增强版)
+        print(f"\n    {'='*70}")
+        print(f"    [EVAL] 开始全场景评估...")
+        print(f"{'='*70}")
         eval_start = time.time()
         
+        # 评估结果收集
+        eval_results = []
+        
         for sid, scenario in self.SCENARIOS.items():
+            print(f"\n       评估: {scenario['name']} ({scenario['num_uav']} UAVs)...")
+            
             score = self._evaluate_single_scenario(
                 model_path=output_path,
                 num_uav=scenario['num_uav'],
@@ -1569,28 +1820,77 @@ class MultiScenarioFinetunerV2:
             
             baseline = self.scenario_baselines.get(sid, score)
             improvement = (score - baseline) / max(baseline, 1e-6)
+            abs_improvement = score - baseline
             
             phase_result['scores'][sid] = {
                 'score': score,
                 'baseline': baseline,
                 'relative_improvement': improvement,
+                'abs_improvement': abs_improvement,
                 'trained_count': scenario_counts[sid],
             }
             phase_result['scenarios_trained'][sid] = scenario_counts[sid]
+            
+            # 收集评估结果用于汇总
+            eval_results.append({
+                'sid': sid,
+                'name': scenario['name'],
+                'score': score,
+                'baseline': baseline,
+                'improvement': improvement,
+                'abs_improvement': abs_improvement,
+                'trained_count': scenario_counts[sid],
+            })
         
         eval_time = time.time() - eval_start
         
-        # [UP] 汇总统计
-        avg_score = np.mean([s['score'] for s in phase_result['scores'].values()])
-        avg_improvement = np.mean([s['relative_improvement'] 
-                                  for s in phase_result['scores'].values()])
+        # [NEW] 详细评估结果表格
+        print(f"\n    {'='*80}")
+        print(f"    [EVAL-RESULTS] 评估结果详情:")
+        print(f"{'='*80}")
+        print(f"    {'场景':12s} | {'得分':>7s} | {'基线':>7s} | "
+              f"{'绝对改进':>8s} | {'相对改进':>9s} | {'训练次数':>6s}")
+        print(f"    {'-'*78}")
+        
+        best_improvement = max(eval_results, key=lambda x: x['improvement'])
+        worst_improvement = min(eval_results, key=lambda x: x['improvement'])
+        
+        for result in sorted(eval_results, key=lambda x: x['score'], reverse=True):
+            # 标记最佳/最差改进
+            marker = ""
+            if result == best_improvement:
+                marker = " [BEST]"
+            elif result == worst_improvement:
+                marker = " [WORST]"
+            
+            # 改进指示器
+            if result['improvement'] > 0.01:
+                trend_indicator = "+"
+            elif result['improvement'] < -0.01:
+                trend_indicator = "-"
+            else:
+                trend_indicator = "≈"
+            
+            print(f"    {result['name']:12s} | {result['score']:7.4f} | "
+                  f"{result['baseline']:7.4f} | {result['abs_improvement']:+8.4f} | "
+                  f"{trend_indicator}{result['improvement']:8.2%}{marker:>6s} | "
+                  f"{result['trained_count']:6d}")
+        
+        # 汇总统计
+        avg_score = np.mean([r['score'] for r in eval_results])
+        avg_improvement = np.mean([r['improvement'] for r in eval_results])
+        improved_scenarios = sum(1 for r in eval_results if r['improvement'] > 0.01)
+        degraded_scenarios = sum(1 for r in eval_results if r['improvement'] < -0.01)
         
         total_train_time = time.time() - phase_start_time - eval_time
         
         print(f"\n    {'─'*60}")
-        print(f"    [CHART] {config['name']} 完成总结:")
+        print(f"    [SUMMARY] 阶段总结: {config['name']}")
         print(f"       ├─ 平均得分: {avg_score:.4f}")
         print(f"       ├─ 平均改进: {avg_improvement:+.2%}")
+        print(f"       ├─ 改进场景: {improved_scenarios}/{len(eval_results)}")
+        if degraded_scenarios > 0:
+            print(f"       ├─ [WARN] 退化场景: {degraded_scenarios}/{len(eval_results)}")
         print(f"       ├─ 训练耗时: {total_train_time:.1f}s")
         print(f"       ├─ 评估耗时: {eval_time:.1f}s")
         print(f"       └─ 成功率: {success_rate:.1f}%")
