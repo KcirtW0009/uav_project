@@ -2553,7 +2553,45 @@ class MultiScenarioFinetunerV2:
                     action_dim=env.action_dim,
                     hidden_dim=64, critic_hidden_dim=128,
                 )
-                agent.load(model_path)
+                
+                # [🔍 FIX] P0: 关键诊断 - 验证模型加载是否成功
+                if rep == 0 and tag:
+                    print(f"      [DEBUG] 评估Agent配置: hidden_dim=64, critic_hidden_dim=128")
+                    print(f"      [DEBUG] 加载模型: {os.path.basename(model_path)}")
+                    print(f"      [DEBUG] 模型大小: {os.path.getsize(model_path)/1024:.1f}KB")
+                
+                try:
+                    agent.load(model_path)
+                    
+                    # [🔍 FIX] P0: 验证权重是否真正加载
+                    if rep == 0 and tag:
+                        # 检查actor第一层权重是否为零（未初始化）
+                        first_layer = None
+                        for name, param in agent.actor.named_parameters():
+                            if 'weight' in name and len(param.shape) == 2:
+                                first_layer = param
+                                break
+                        
+                        if first_layer is not None:
+                            weight_norm = torch.norm(first_layer).item()
+                            weight_mean = first_layer.mean().item()
+                            print(f"      [DEBUG] 权重验证: norm={weight_norm:.4f}, mean={weight_mean:.6f}")
+                            if weight_norm < 1.0:
+                                print(f"      [WARN] ⚠️ 权重norm过小(<1.0)，可能未正确加载!")
+                            elif weight_norm > 100:
+                                print(f"      [OK] 权重norm正常(>100)，已加载预训练权重")
+                            else:
+                                print(f"      [INFO] 权重norm={weight_norm:.2f}，需要进一步确认")
+                        
+                        print(f"      [OK] 模型加载成功")
+                        
+                except Exception as load_error:
+                    print(f"      [FAIL] ❌ 模型加载失败: {load_error}")
+                    if 'size mismatch' in str(load_error):
+                        print(f"      [FAIL] 致命错误: Agent维度与模型不匹配!")
+                        print(f"             评估Agent使用硬编码维度 (64/128)")
+                        print(f"             但训练时可能使用了不同的维度")
+                        print(f"             这就是'零提升'的根本原因!")
                 
                 for step in range(150):
                     biz_types = {
