@@ -871,7 +871,7 @@ class MAPPOAgentV2:
             'obs_normalizer': self.obs_normalizer.state_dict(),
         }, path)
     
-    def load(self, path, reset_optimizer: bool = True):
+    def load(self, path, reset_optimizer: bool = True, verbose: bool = True):
         """加载模型 (兼容 PyTorch 2.6+)
         
         Args:
@@ -879,6 +879,9 @@ class MAPPOAgentV2:
             reset_optimizer: 是否重置优化器状态 (默认True)
                             - True: 加载权重但使用全新的优化器 (推荐用于微调)
                             - False: 完全恢复训练状态 (用于断点续训)
+            verbose: 是否输出详细日志 (默认True)
+                     - True: 输出完整的加载信息 (训练/首次评估时使用)
+                     - False: 静默模式 (重复评估时使用，减少日志冗余)
         """
         # [FIX] PyTorch 2.6+ 兼容性: weights_only 默认值从 False 改为 True
         try:
@@ -906,9 +909,10 @@ class MAPPOAgentV2:
             if 'obs_normalizer' in checkpoint:
                 self.obs_normalizer.load_state_dict(checkpoint['obs_normalizer'])
             
-            print(f"[LOAD] 模型已加载 (微调模式): 权重已恢复，优化器已重置")
-            print(f"       Actor LR: {original_actor_lr:.2e} (未使用保存的低LR)")
-            print(f"       Critic LR: {original_critic_lr:.2e} (未使用保存的低LR)")
+            if verbose:
+                print(f"[LOAD] 模型已加载 (微调模式): 权重已恢复，优化器已重置")
+                print(f"       Actor LR: {original_actor_lr:.2e} (未使用保存的低LR)")
+                print(f"       Critic LR: {original_critic_lr:.2e} (未使用保存的低LR)")
             
         else:
             # [RESUME TRAINING MODE] 完全恢复所有状态 (包括优化器)
@@ -923,9 +927,10 @@ class MAPPOAgentV2:
             if 'obs_normalizer' in checkpoint:
                 self.obs_normalizer.load_state_dict(checkpoint['obs_normalizer'])
             
-            print(f"[LOAD] 模型已加载 (续训模式): 所有状态已恢复")
-            print(f"       Actor LR: {restored_actor_lr:.2e} (来自检查点)")
-            print(f"       Critic LR: {restored_critic_lr:.2e} (来自检查点)")
+            if verbose:
+                print(f"[LOAD] 模型已加载 (续训模式): 所有状态已恢复")
+                print(f"       Actor LR: {restored_actor_lr:.2e} (来自检查点)")
+                print(f"       Critic LR: {restored_critic_lr:.2e} (来自检查点)")
     
     def save_best_model(self):
         """保存最佳模型状态到内存"""

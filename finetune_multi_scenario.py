@@ -2541,13 +2541,13 @@ class MultiScenarioFinetunerV2:
                 self._last_weight_snapshot[f"actor_{name}"] = {
                     'norm': torch.norm(param.data).item(),
                     'data_mean': param.data.mean().item(),
-                    'data_std': param.data.std().item(),
+                    'data_std': param.data.std().item() if param.numel() > 1 else 0.0,
                 }
             for name, param in agent.critic.named_parameters():
                 self._last_weight_snapshot[f"critic_{name}"] = {
                     'norm': torch.norm(param.data).item(),
                     'data_mean': param.data.mean().item(),
-                    'data_std': param.data.std().item(),
+                    'data_std': param.data.std().item() if param.numel() > 1 else 0.0,
                 }
             
             return {
@@ -2596,7 +2596,7 @@ class MultiScenarioFinetunerV2:
                 current_snapshot[key] = {
                     'norm': current_norm,
                     'data_mean': param.data.mean().item(),
-                    'data_std': param.data.std().item(),
+                    'data_std': param.data.std().item() if param.numel() > 1 else 0.0,
                 }
                 
             except Exception as e:
@@ -2778,9 +2778,9 @@ class MultiScenarioFinetunerV2:
                     print(f"      [DEBUG] 模型大小: {os.path.getsize(model_path)/1024:.1f}KB")
                 
                 try:
-                    agent.load(model_path)
+                    agent.load(model_path, verbose=(rep == 0 and tag is not None))
                     
-                    # [🔍 FIX] P0: 验证权重是否真正加载
+                    # [🔍 FIX] P0: 验证权重是否真正加载 (仅首次)
                     if rep == 0 and tag:
                         # 检查actor第一层权重是否为零（未初始化）
                         first_layer = None
@@ -2794,7 +2794,7 @@ class MultiScenarioFinetunerV2:
                             weight_mean = first_layer.mean().item()
                             print(f"      [DEBUG] 权重验证: norm={weight_norm:.4f}, mean={weight_mean:.6f}")
                             if weight_norm < 1.0:
-                                print(f"      [WARN] ⚠️ 权重norm过小(<1.0)，可能未正确加载!")
+                                print(f"      [WARN] 权重norm过小(<1.0)，可能未正确加载!")
                             elif weight_norm > 100:
                                 print(f"      [OK] 权重norm正常(>100)，已加载预训练权重")
                             else:
