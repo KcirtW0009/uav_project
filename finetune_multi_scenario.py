@@ -1054,11 +1054,34 @@ class MultiScenarioFinetunerV2:
                     print(f"   场景数: {len(cached_data['scores'])}")
                     
                     # 恢复基线数据
-                    for sid, score in cached_data['scores'].items():
-                        self.scenario_baselines[sid] = score
+                    # [FIX] P0: 正确处理嵌套字典结构
+                    # cached_data['scores'][sid] 可能是 dict (包含score, baseline等字段)
+                    # 也可能是 float (旧格式兼容)
+                    for sid, score_data in cached_data['scores'].items():
+                        if isinstance(score_data, dict):
+                            # 新格式: 提取 score 字段
+                            self.scenario_baselines[sid] = {
+                                'score': score_data.get('score', 0),
+                            }
+                        else:
+                            # 旧格式: 直接使用数值
+                            self.scenario_baselines[sid] = {'score': float(score_data)}
                     
-                    global_baseline = np.mean(list(cached_data['scores'].values()))
-                    print(f"   全局基线: {global_baseline:.4f} (从缓存加载)")
+                    # [FIX] P0: 正确计算全局基线平均值
+                    try:
+                        if all(isinstance(v, dict) for v in cached_data['scores'].values()):
+                            # 新格式: 从每个dict中提取score
+                            global_baseline = np.mean([
+                                s.get('score', 0) for s in cached_data['scores'].values()
+                            ])
+                        else:
+                            # 旧格式: 直接对数值求平均
+                            global_baseline = np.mean(list(cached_data['scores'].values()))
+                        
+                        print(f"   全局基线: {global_baseline:.4f} (从缓存加载)")
+                    except Exception as calc_error:
+                        print(f"   [WARN] 基线计算失败: {calc_error}, 使用默认值")
+                        global_baseline = 0.85
                     
                     return cached_data['scores']
                     
@@ -1104,7 +1127,8 @@ class MultiScenarioFinetunerV2:
                 'scenario_name': scenario['name']
             }
             
-            self.scenario_baselines[sid] = score  # [OK] Fix 5: 记录基线
+            # [FIX] P0: 统一使用dict格式存储baseline（与缓存加载逻辑一致）
+            self.scenario_baselines[sid] = {'score': score}  # [OK] Fix 5: 记录基线
             
             rel_score = score / scenario['expected_sat']
             status = "✓" if rel_score >= 0.95 else ("~" if rel_score >= 0.85 else "✗")
@@ -1564,8 +1588,20 @@ class MultiScenarioFinetunerV2:
               f"Critic={critic_params/1e3:.0f}K, Total={total_params/1e6:.2f}M")
         print(f"       └─ 设备: {'GPU (CUDA)' if torch.cuda.is_available() else 'CPU'}")
         
-        # [FAST] 性能优化: 预热normalizer (只需预热参考环境)
-        print(f"\n    [WARMUP] 预热Normalizer (50 steps)...")
+        # [FAST] 性能优化: 预热normalizer (所有环境)
+        print(f"\n    [WARMUP] 预热Normalizer (30 steps × {len(envs)} envs)...")
+        
+        # [FIX] P2: 对所有环境进行预热（而非仅参考环境）
+        warmup_start = time.time()
+        for sid, env in envs.items():
+            try:
+                self._warmup_normalizer(agent, env, steps=30)  # 减少到30步以提高效率
+                print(f"       ✓ {self.SCENARIOS[sid]['name']}: Normalizer已预热")
+            except Exception as warmup_error:
+                print(f"       [WARN] {self.SCENARIOS[sid]['name']}: 预热失败 - {warmup_error}")
+        
+        warmup_time = time.time() - warmup_start
+        print(f"       耗时: {warmup_time:.1f}s")
         
         # [SEARCH] Phase开始日志
         phase_start_time = time.time()
@@ -1818,7 +1854,13 @@ class MultiScenarioFinetunerV2:
                 tag=f"{phase_key}_{scenario['name']}"
             )
             
-            baseline = self.scenario_baselines.get(sid, score)
+            # [FIX] P0: 安全提取baseline值（兼容dict和float两种格式）
+            baseline_raw = self.scenario_baselines.get(sid, score)
+            if isinstance(baseline_raw, dict):
+                baseline = baseline_raw.get('score', score)
+            else:
+                baseline = float(baseline_raw) if baseline_raw is not None else score
+            
             improvement = (score - baseline) / max(baseline, 1e-6)
             abs_improvement = score - baseline
             
@@ -1911,11 +1953,25 @@ class MultiScenarioFinetunerV2:
             elapsed=time.time() - phase_start_time
         )
         
+        # [FIX] P0: 显式释放环境资源（防止句柄泄漏）
+        print(f"\n    [CLEANUP] 释放 {len(envs)} 个环境资源...")
+        for sid, env in envs.items():
+            try:
+                if hasattr(env, 'close'):
+                    env.close()
+                    print(f"       ✓ {self.SCENARIOS[sid]['name']}: 已关闭")
+                else:
+                    print(f"       ~ {self.SCENARIOS[sid]['name']}: 无close方法")
+            except Exception as close_error:
+                print(f"       [WARN] {self.SCENARIOS[sid]['name']}: 关闭失败 - {close_error}")
+        
         # 清理资源
         del envs, agent
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+        
+        print(f"    ✓ 资源清理完成")
         
         return phase_result
     
@@ -1960,6 +2016,13 @@ class MultiScenarioFinetunerV2:
                 gap_multiplier = 0.6
             
             weight = base_weight * gap_multiplier
+            
+            # [FIX] P1: 限制权重范围（防止弱场景饿死或强场景过拟合）
+            # 权重范围: [MIN_WEIGHT, MAX_WEIGHT]
+            MIN_WEIGHT = 0.3   # 最小权重 (保证每个场景至少有15%基础概率)
+            MAX_WEIGHT = 3.0   # 最大权重 (防止弱场景占据>70%采样)
+            
+            weight = max(MIN_WEIGHT, min(MAX_WEIGHT, weight))
             weights[sid] = weight
             
             scenarios_info.append({
@@ -2206,26 +2269,26 @@ class MultiScenarioFinetunerV2:
                         actor_loss = loss_info.get('actor_loss', 0) if isinstance(loss_info, dict) else 0
                         critic_loss = loss_info.get('critic_loss', 0) if isinstance(loss_info, dict) else 0
                         entropy_val = loss_info.get('entropy', 0) if isinstance(loss_info, dict) else 0
-                            
-                            # [FIX] P0: 确保提取的值是数值类型
-                            try:
-                                actor_loss = float(actor_loss) if actor_loss is not None else 0.0
-                                critic_loss = float(critic_loss) if critic_loss is not None else 0.0
-                                entropy_val = float(entropy_val) if entropy_val is not None else 0.0
-                            except (ValueError, TypeError):
-                                print(f"       [WARN] Loss value conversion failed, using defaults")
-                                actor_loss, critic_loss, entropy_val = 0.0, 0.0, 0.0
-                            
-                            actor_loss_sum += actor_loss
-                            critic_loss_sum += critic_loss
-                            entropy_sum += entropy_val
-                            
-                            # [CHART] NaN/Inf检测
-                            if debug_mode:
-                                for name, val in [('actor', actor_loss), 
-                                                   ('critic', critic_loss),
-                                                   ('entropy', entropy_val)]:
-                                    if isinstance(val, float):
+                        
+                        # [FIX] P0: 确保提取的值是数值类型
+                        try:
+                            actor_loss = float(actor_loss) if actor_loss is not None else 0.0
+                            critic_loss = float(critic_loss) if critic_loss is not None else 0.0
+                            entropy_val = float(entropy_val) if entropy_val is not None else 0.0
+                        except (ValueError, TypeError):
+                            print(f"       [WARN] Loss value conversion failed, using defaults")
+                            actor_loss, critic_loss, entropy_val = 0.0, 0.0, 0.0
+                        
+                        actor_loss_sum += actor_loss
+                        critic_loss_sum += critic_loss
+                        entropy_sum += entropy_val
+                        
+                        # [CHART] NaN/Inf检测
+                        if debug_mode:
+                            for name, val in [('actor', actor_loss), 
+                                               ('critic', critic_loss),
+                                               ('entropy', entropy_val)]:
+                                if isinstance(val, float):
                                         if np.isnan(val):
                                             nan_detected = True
                                             print(f"       [WARN] Debug: {name}_loss is NaN at "
@@ -2533,7 +2596,13 @@ class MultiScenarioFinetunerV2:
                 tag=f"{tag}_{scenario['name']}" if tag else scenario['name']
             )
             
-            baseline = self.scenario_baselines.get(sid, score)
+            # [FIX] P0: 安全提取baseline值（兼容dict和float两种格式）
+            baseline_raw = self.scenario_baselines.get(sid, score)
+            if isinstance(baseline_raw, dict):
+                baseline = baseline_raw.get('score', score)
+            else:
+                baseline = float(baseline_raw) if baseline_raw is not None else score
+            
             scores[sid] = {
                 'score': score,
                 'improvement': (score - baseline) / max(baseline, 1e-6),
