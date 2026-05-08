@@ -2067,8 +2067,54 @@ class MultiScenarioFinetunerV2:
                         env=env
                     )
                 
+                # [🔍 FIX] P0: 验证 agent.select_actions() 返回值
+                if debug_mode and step == 0:
+                    print(f"       [DEBUG] agent.select_actions() 返回值:")
+                    print(f"         type(actions)={type(actions).__name__}")
+                    if isinstance(actions, dict):
+                        print(f"           actions sample: {list(actions.items())[:3]}")
+                    print(f"         type(log_probs)={type(log_probs).__name__}")
+                    print(f"         type(values)={type(values).__name__}")
+                    if isinstance(values, (dict, np.ndarray)):
+                        print(f"           values shape/size: "
+                              f"{values.shape if hasattr(values, 'shape') else len(values)}")
+                
                 next_obs_dict, next_global_state, rewards, team_reward, done, info = \
                     env.step(actions)
+                
+                # [🔍 FIX] P0: 关键防御性检查 - 验证 env.step() 返回值类型
+                if debug_mode and step == 0:
+                    print(f"       [DEBUG] env.step() 返回值类型检查:")
+                    print(f"         type(next_obs_dict)={type(next_obs_dict).__name__}")
+                    print(f"         type(next_global_state)={type(next_global_state).__name__}")
+                    print(f"         type(rewards)={type(rewards).__name__}")
+                    if isinstance(rewards, dict):
+                        print(f"           rewards keys={list(rewards.keys())[:3]}...")
+                        for k, v in list(rewards.items())[:2]:
+                            print(f"             [{k}] = {v} (type={type(v).__name__})")
+                    else:
+                        print(f"           [WARN] rewards is NOT dict! value={rewards}")
+                    
+                    print(f"         type(team_reward)={type(team_reward).__name__}, value={team_reward}")
+                    print(f"         type(done)={type(done).__name__}, value={done}")
+                    print(f"         type(info)={type(info).__name__}")
+                    if isinstance(info, dict):
+                        print(f"           info keys={list(info.keys())[:5]}")
+                    else:
+                        print(f"           [WARN] info is NOT dict! value={info}")
+                
+                # [🛡️ FIX] P0: 强制类型转换 - 确保返回值符合预期
+                # 如果 rewards 不是字典，创建空字典避免崩溃
+                if not isinstance(rewards, dict):
+                    print(f"       [WARN] Step {step}: rewards 类型异常 "
+                          f"(expected dict, got {type(rewards).__name__}), 使用默认值")
+                    rewards = {uid: 0.0 for uid in range(env.num_agents)}
+                
+                # 如果 info 不是字典，强制转换为空字典
+                if not isinstance(info, dict):
+                    print(f"       [WARN] Step {step}: info 类型异常 "
+                          f"(expected dict, got {type(info).__name__}), 强制转为空字典")
+                    info = {}
                 
                 # [RED_CIRCLE] Fix P1: 动态奖励缩放!
                 # 不同场景的回报范围差异大 (300UAV vs 500UAV)
@@ -2143,12 +2189,23 @@ class MultiScenarioFinetunerV2:
                         loss_info = agent.train()
                         update_count += 1
                         
+                        # [🛡️ FIX] P0: 防御性检查 - 确保 loss_info 是字典
+                        if loss_info is None:
+                            if debug_mode and update_count <= 2:
+                                print(f"       [DEBUG] agent.train() 返回 None (buffer不足?)")
+                            continue
+                        
+                        if not isinstance(loss_info, dict):
+                            # [CRITICAL] 如果 train() 返回的不是字典，记录警告并跳过
+                            print(f"       [WARN] agent.train() 返回异常类型: "
+                                  f"{type(loss_info).__name__}, value={loss_info}")
+                            continue
+                        
                         # [SEARCH] 收集损失信息 (train()返回包含损失的字典)
-                        if isinstance(loss_info, dict):
-                            # [FIX] P0: 防御性检查 - 确保返回值是字典
-                            actor_loss = loss_info.get('actor_loss', 0) if isinstance(loss_info, dict) else 0
-                            critic_loss = loss_info.get('critic_loss', 0) if isinstance(loss_info, dict) else 0
-                            entropy_val = loss_info.get('entropy', 0) if isinstance(loss_info, dict) else 0
+                        # [FIX] P0: 防御性检查 - 确保返回值是字典
+                        actor_loss = loss_info.get('actor_loss', 0) if isinstance(loss_info, dict) else 0
+                        critic_loss = loss_info.get('critic_loss', 0) if isinstance(loss_info, dict) else 0
+                        entropy_val = loss_info.get('entropy', 0) if isinstance(loss_info, dict) else 0
                             
                             # [FIX] P0: 确保提取的值是数值类型
                             try:

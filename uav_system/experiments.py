@@ -79,7 +79,11 @@ def evaluate_mappo_in_experiment(num_bs: int, num_uav: int, num_steps: int,
     )
     
     try:
-        checkpoint = torch.load(model_path, map_location='cpu')
+        # [FIX] PyTorch 2.6+ 兼容性
+        try:
+            checkpoint = torch.load(model_path, map_location='cpu', weights_only=False)
+        except TypeError:
+            checkpoint = torch.load(model_path, map_location='cpu')
         agent.actor.load_state_dict(checkpoint['actor'])
         agent.critic.load_state_dict(checkpoint['critic'])
         print(f"  [MAPPO] 成功加载模型: {model_path}")
