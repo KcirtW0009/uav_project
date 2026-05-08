@@ -871,8 +871,15 @@ class MAPPOAgentV2:
             'obs_normalizer': self.obs_normalizer.state_dict(),
         }, path)
     
-    def load(self, path):
-        """加载模型 (兼容 PyTorch 2.6+)"""
+    def load(self, path, reset_optimizer: bool = True):
+        """加载模型 (兼容 PyTorch 2.6+)
+        
+        Args:
+            path: 模型文件路径
+            reset_optimizer: 是否重置优化器状态 (默认True)
+                            - True: 加载权重但使用全新的优化器 (推荐用于微调)
+                            - False: 完全恢复训练状态 (用于断点续训)
+        """
         # [FIX] PyTorch 2.6+ 兼容性: weights_only 默认值从 False 改为 True
         try:
             checkpoint = torch.load(path, weights_only=False)
@@ -880,12 +887,45 @@ class MAPPOAgentV2:
             # 向后兼容: 旧版本 PyTorch 不支持 weights_only 参数
             checkpoint = torch.load(path)
         
+        # 始终加载网络权重
         self.actor.load_state_dict(checkpoint['actor'])
         self.critic.load_state_dict(checkpoint['critic'])
-        self.actor_optimizer.load_state_dict(checkpoint['actor_optimizer'])
-        self.critic_optimizer.load_state_dict(checkpoint['critic_optimizer'])
-        if 'obs_normalizer' in checkpoint:
-            self.obs_normalizer.load_state_dict(checkpoint['obs_normalizer'])
+        
+        # [🔧 FIX] P0: 关键修复 - 根据场景决定是否加载优化器状态
+        if reset_optimizer:
+            # [MICRO-TUNING MODE] 只加载权重，不加载优化器状态
+            # 这确保微调时使用初始学习率，而非衰减后的低学习率
+            
+            # 记录原始学习率 (用于日志)
+            original_actor_lr = self.actor_optimizer.param_groups[0]['lr']
+            original_critic_lr = self.critic_optimizer.param_groups[0]['lr']
+            
+            # 不加载优化器状态，保持当前(初始)的学习率和scheduler状态
+            # 这样微调会从头开始使用完整的学习率
+            
+            if 'obs_normalizer' in checkpoint:
+                self.obs_normalizer.load_state_dict(checkpoint['obs_normalizer'])
+            
+            print(f"[LOAD] 模型已加载 (微调模式): 权重已恢复，优化器已重置")
+            print(f"       Actor LR: {original_actor_lr:.2e} (未使用保存的低LR)")
+            print(f"       Critic LR: {original_critic_lr:.2e} (未使用保存的低LR)")
+            
+        else:
+            # [RESUME TRAINING MODE] 完全恢复所有状态 (包括优化器)
+            # 用于从检查点完全恢复训练进度
+            
+            self.actor_optimizer.load_state_dict(checkpoint['actor_optimizer'])
+            self.critic_optimizer.load_state_dict(checkpoint['critic_optimizer'])
+            
+            restored_actor_lr = self.actor_optimizer.param_groups[0]['lr']
+            restored_critic_lr = self.critic_optimizer.param_groups[0]['lr']
+            
+            if 'obs_normalizer' in checkpoint:
+                self.obs_normalizer.load_state_dict(checkpoint['obs_normalizer'])
+            
+            print(f"[LOAD] 模型已加载 (续训模式): 所有状态已恢复")
+            print(f"       Actor LR: {restored_actor_lr:.2e} (来自检查点)")
+            print(f"       Critic LR: {restored_critic_lr:.2e} (来自检查点)")
     
     def save_best_model(self):
         """保存最佳模型状态到内存"""

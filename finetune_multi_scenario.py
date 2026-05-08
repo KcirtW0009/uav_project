@@ -2506,6 +2506,54 @@ class MultiScenarioFinetunerV2:
         """
         satisfactions = []
         
+        # [🔧 FIX] P0: 动态检测模型配置 (消除硬编码!)
+        # 从模型文件推断正确的 hidden_dim 和 critic_hidden_dim
+        model_hidden_dim = 64  # 默认值
+        model_critic_hidden_dim = 128  # 默认值
+        
+        try:
+            # [FIX] PyTorch 2.6+ 兼容性
+            try:
+                checkpoint = torch.load(model_path, map_location='cpu', weights_only=False)
+            except TypeError:
+                checkpoint = torch.load(model_path, map_location='cpu')
+            
+            # 方法1: 从config读取 (如果有)
+            if 'config' in checkpoint:
+                config = checkpoint['config']
+                detected_hidden = config.get('hidden_dim')
+                detected_critic = config.get('critic_hidden_dim')
+                if detected_hidden and detected_hidden in [64, 128, 256]:
+                    model_hidden_dim = detected_hidden
+                if detected_critic and detected_critic in [128, 256, 512]:
+                    model_critic_hidden_dim = detected_critic
+            
+            # 方法2: 从权重大小推断 (如果config不存在)
+            if 'actor' in checkpoint and model_hidden_dim == 64:
+                actor_state = checkpoint['actor']
+                for key, tensor in actor_state.items():
+                    if 'fc1.weight' in key and len(tensor.shape) == 2:
+                        inferred = tensor.shape[0]
+                        if inferred in [64, 128, 256]:
+                            model_hidden_dim = inferred
+                        break
+            
+            if 'critic' in checkpoint and model_critic_hidden_dim == 128:
+                critic_state = checkpoint['critic']
+                for key, tensor in critic_state.items():
+                    if 'fc1.weight' in key and len(tensor.shape) == 2:
+                        inferred = tensor.shape[0]
+                        if inferred in [128, 256, 512]:
+                            model_critic_hidden_dim = inferred
+                        break
+            
+            del checkpoint
+            torch.cuda.empty_cache() if torch.cuda.is_available() else None
+            
+        except Exception as detect_error:
+            print(f"      [WARN] 无法自动检测模型配置: {detect_error}")
+            print(f"             使用默认配置: hidden_dim={model_hidden_dim}, critic_hidden_dim={model_critic_hidden_dim}")
+        
         # [RED_CIRCLE] Fix: 使用场景ID哈希确保不同场景使用不同随机种子
         # 即使UAV数量相同，不同场景的业务混合也不同，必须使用独立种子
         scenario_hash = hash(scenario_id) % 10000  # 0-9999范围
@@ -2551,12 +2599,13 @@ class MultiScenarioFinetunerV2:
                     obs_dim=env.obs_dim,
                     state_dim=env.state_dim,
                     action_dim=env.action_dim,
-                    hidden_dim=64, critic_hidden_dim=128,
+                    hidden_dim=model_hidden_dim,  # ✅ 动态检测
+                    critic_hidden_dim=model_critic_hidden_dim,  # ✅ 动态检测
                 )
                 
                 # [🔍 FIX] P0: 关键诊断 - 验证模型加载是否成功
                 if rep == 0 and tag:
-                    print(f"      [DEBUG] 评估Agent配置: hidden_dim=64, critic_hidden_dim=128")
+                    print(f"      [DEBUG] 评估Agent配置: hidden_dim={model_hidden_dim}, critic_hidden_dim={model_critic_hidden_dim}")
                     print(f"      [DEBUG] 加载模型: {os.path.basename(model_path)}")
                     print(f"      [DEBUG] 模型大小: {os.path.getsize(model_path)/1024:.1f}KB")
                 
