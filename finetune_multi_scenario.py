@@ -1727,11 +1727,31 @@ class MultiScenarioFinetunerV2:
                       f"({progress_pct:5.1f}%) | {self.SCENARIOS[sid]['name']:12s}")
                 print(f"       ├─ 奖励: {scaled_reward:8.2f} (avg={avg_reward:8.2f} {trend}) | "
                       f"Steps: {steps:4d} (avg={avg_steps:.0f})")
+                
+                # [🔍 FIX] P0: 关键! 显示实际学习率 (防止优化器状态异常!)
+                current_actor_lr = agent.actor_optimizer.param_groups[0]['lr']
+                current_critic_lr = agent.critic_optimizer.param_groups[0]['lr']
+                lr_status = "✅" if current_actor_lr >= 1e-4 else ("⚠️" if current_actor_lr >= 1e-5 else "❌")
+                
                 print(f"       ├─ Losses: Actor={avg_actor_loss:7.4f} | "
                       f"Critic={avg_critic_loss:7.4f} | Entropy={avg_entropy:6.4f}")
-                print(f"       ├─ Updates: {updates:3d}x | Time: {ep_elapsed:6.2f}s "
+                print(f"       ├─ LR: Actor={current_actor_lr:.2e} {lr_status} | "
+                      f"Critic={current_critic_lr:.2e} | "
+                      f"Step: {agent._current_train_step}")
+                
+                # [🔍 FIX] P0: 定期权重健康检查 (每5个episodes)
+                if (ep + 1) % 5 == 0 or ep == 0:
+                    weight_health = self._check_weight_update_health(
+                        agent, ep + 1, episodes
+                    )
+                    if weight_health:
+                        health_status = "✅" if weight_health['is_healthy'] else "❌"
+                        print(f"       └─ 权重更新: max_change={weight_health['max_change']:.2f}% "
+                              f"| updated_layers={weight_health['updated_layers']}/{weight_health['total_layers']} "
+                              f"{health_status} {weight_health.get('message', '')}")
+                
+                print(f"       └─ Updates: {updates:3d}x | Time: {ep_elapsed:6.2f}s "
                       f"(avg={avg_time:.1f}s) | Speed: {steps/max(ep_elapsed,0.1):.0f} step/s")
-                print(f"       └─ 场景分布: [{dist_str}]")
                     
             except Exception as e:
                 # [OK] P1: 详细的异常处理和告警
@@ -2488,6 +2508,154 @@ class MultiScenarioFinetunerV2:
             
         except Exception as save_error:
             print(f"       [WARN] 无法保存debug快照: {save_error}")
+    
+    def _check_weight_update_health(self, agent, current_episode: int, total_episodes: int) -> dict:
+        """
+        [🔍 FIX] P0: 检查权重是否真的在更新 (防止"虚假健康"训练!)
+        
+        核心原理:
+        - Loss下降 ≠ 参数在更新 (这是之前误判的根因!)
+        - 必须定期对比权重快照，验证参数确实在变化
+        
+        Args:
+            agent: MAPPOAgent实例
+            current_episode: 当前episode编号
+            total_episodes: 总episodes数
+            
+        Returns:
+            dict: 健康状态信息
+                - is_healthy: bool (是否健康)
+                - max_change: float (最大变化百分比)
+                - updated_layers: int (有变化的层数)
+                - total_layers: int (总层数)
+                - message: str (诊断信息)
+        """
+        
+        # 首次调用时初始化快照
+        if not hasattr(self, '_last_weight_snapshot'):
+            self._last_weight_snapshot = {}
+            self._last_snapshot_episode = 0
+            
+            # 记录初始快照
+            for name, param in agent.actor.named_parameters():
+                self._last_weight_snapshot[f"actor_{name}"] = {
+                    'norm': torch.norm(param.data).item(),
+                    'data_mean': param.data.mean().item(),
+                    'data_std': param.data.std().item(),
+                }
+            for name, param in agent.critic.named_parameters():
+                self._last_weight_snapshot[f"critic_{name}"] = {
+                    'norm': torch.norm(param.data).item(),
+                    'data_mean': param.data.mean().item(),
+                    'data_std': param.data.std().item(),
+                }
+            
+            return {
+                'is_healthy': True,
+                'max_change': 0.0,
+                'updated_layers': 0,
+                'total_layers': len(self._last_weight_snapshot),
+                'message': '(初始快照)',
+            }
+        
+        # 获取当前权重快照
+        current_snapshot = {}
+        changes = []
+        
+        for key in self._last_weight_snapshot.keys():
+            # 从agent中获取对应的参数
+            prefix = "actor_" if key.startswith("actor_") else "critic_"
+            param_name = key[len(prefix):]
+            
+            try:
+                if prefix == "actor_":
+                    param = dict(agent.actor.named_parameters()).get(param_name)
+                else:
+                    param = dict(agent.critic.named_parameters()).get(param_name)
+                
+                if param is None:
+                    continue
+                
+                current_norm = torch.norm(param.data).item()
+                prev_norm = self._last_weight_snapshot[key]['norm']
+                
+                # 计算相对变化
+                if abs(prev_norm) > 1e-8:
+                    change_pct = abs(current_norm - prev_norm) / abs(prev_norm) * 100
+                else:
+                    change_pct = 0.0
+                
+                changes.append({
+                    'layer': key,
+                    'prev_norm': prev_norm,
+                    'current_norm': current_norm,
+                    'change_pct': change_pct,
+                })
+                
+                # 更新当前快照
+                current_snapshot[key] = {
+                    'norm': current_norm,
+                    'data_mean': param.data.mean().item(),
+                    'data_std': param.data.std().item(),
+                }
+                
+            except Exception as e:
+                continue
+        
+        # 更新存储的快照
+        self._last_weight_snapshot = current_snapshot
+        episodes_since_last = current_episode - self._last_snapshot_episode
+        self._last_snapshot_episode = current_episode
+        
+        # 统计分析
+        if not changes:
+            return None
+        
+        max_change = max(c['change_pct'] for c in changes) if changes else 0.0
+        updated_layers = sum(1 for c in changes if c['change_pct'] > 1.0)
+        total_layers = len(changes)
+        
+        # 健康判定标准 (基于经验!)
+        # 注意: 这些阈值是基于 diagnose_training.py 的实验结果!
+        is_healthy = True
+        messages = []
+        
+        # 判定1: 最大变化幅度是否足够
+        if max_change < 1.0:
+            is_healthy = False
+            messages.append("⚠️ 权重几乎不变(<1%)，可能lr过低或优化器异常!")
+        elif max_change < 5.0:
+            messages.append("~ 变化较小(1-5%)，可能需要更多训练")
+        elif max_change < 20.0:
+            messages.append("✅ 正常更新范围")
+        else:
+            messages.append("🚀 强烈更新(>20%)")
+        
+        # 判定2: 更新层占比
+        update_ratio = updated_layers / max(total_layers, 1)
+        if update_ratio < 0.3 and total_layers > 10:
+            is_healthy = False
+            messages.append(f"❌ 仅{updated_layers}/{total_layers}层更新({update_ratio:.0%})，可能存在梯度消失!")
+        
+        # 判定3: 学习率检查 (额外安全网!)
+        current_actor_lr = agent.actor_optimizer.param_groups[0]['lr']
+        expected_lr = getattr(agent, '_initial_actor_lr', 3e-4)
+        
+        if current_actor_lr < expected_lr * 0.5:
+            is_healthy = False
+            lr_ratio = current_actor_lr / expected_lr * 100
+            messages.append(f"🚨 Actor LR异常衰减! 当前={current_actor_lr:.2e} (应为{expected_lr:.2e}, 仅剩{lr_ratio:.0f}%)")
+        elif current_actor_lr < expected_lr * 0.8:
+            messages.append(f"⚠️ Actor LR略有衰减: {current_actor_lr:.2e} ({current_actor_lr/expected_lr*100:.0f}% of initial)")
+        
+        return {
+            'is_healthy': is_healthy,
+            'max_change': max_change,
+            'updated_layers': updated_layers,
+            'total_layers': total_layers,
+            'message': ' | '.join(messages),
+            'episodes_since_last_check': episodes_since_last,
+        }
     
     def _evaluate_single_scenario(self, model_path: str, 
                                    num_uav: int, 
