@@ -87,10 +87,29 @@ from uav_system.business import BusinessType
 
 @dataclass
 class CurriculumConfig:
-    """课程学习配置"""
-    # 总体控制
+    """课程学习配置 - 增强版"""
+    
+    # ====== 总体控制 ======
     total_phases: int = 4
     max_iterations: int = 3  # 每个Phase最多重复次数
+    
+    # ====== 模型架构参数 (替代硬编码) ======
+    default_hidden_dim: int = 64           # 默认Actor隐藏层维度
+    default_critic_hidden_dim: int = 128   # 默认Critic隐藏层维度
+    default_obs_dim: int = 49              # 默认观测维度
+    default_state_dim: int = 31            # 默认状态维度
+    
+    # ====== 训练过程参数 (替代硬编码) ======
+    warmup_steps: int = 30                 # Normalizer预热步数
+    quick_eval_steps: int = 150            # 快速评估步数
+    full_eval_steps: int = 350             # 完整评估步数 (Phase训练用)
+    rollout_length: int = 500              # Rollout长度
+    
+    # ====== 算法超参数 (替代魔法数字) ======
+    baseline_epsilon: float = 0.1          # 基线分数的平滑因子 (防除零)
+    min_improvement_threshold: float = 0.001  # 早停最小改进阈值
+    weight_clamp_min: float = 0.3          # 采样权重下界
+    weight_clamp_max: float = 3.5          # 采样权重上界
     
     # Phase配置
     phase_configs: Dict[str, Dict] = field(default_factory=lambda: {
@@ -667,9 +686,10 @@ class CurriculumTrainer:
         print(f"     {'-'*65}")
         for sid, scfg in self.scenarios.items():
             improvement = (scfg.target_score - scfg.baseline_score) * 100
-            diff_icon = {'easy': '★', 'medium': '●', 'hard': '▲'}[scfg.difficulty]
+            diff_icon = {'easy': '[EASY]', 'medium': '[MED]', 'hard': '[HARD]'}[scfg.difficulty]
+            sign = '+' if improvement >= 0 else ''
             print(f"     {scfg.name:12s} | {scfg.num_uav:>5d} | {scfg.baseline_score:>6.2%} | "
-                  f"{scfg.target_score:>6.2%} | {diff_icon:>4s} | {improvement:++.1f}%")
+                  f"{scfg.target_score:>6.2%} | {diff_icon:>4s} | {sign}{improvement:.1f}%")
         
         total_start_time = time.time()
         final_result = {
@@ -757,7 +777,7 @@ class CurriculumTrainer:
         target_scenarios = phase_config['scenarios']
         
         print(f"\n{'─'*80}")
-        print(f"  ▶ Phase: {phase_name}")
+        print(f"  [PHASE] Phase: {phase_name}")
         print(f"     Episodes: {episodes} | Scenarios: {len(target_scenarios)}")
         print(f"     Target: {phase_config.get('target_improvement', 0):.1%} improvement")
         print(f"{'─'*80}\n")
@@ -766,6 +786,10 @@ class CurriculumTrainer:
         
         # 初始化环境和Agent
         envs, agent, contrastive_module = self._setup_for_phase(phase_config)
+        
+        # 场景切换追踪 (用于动态重建agent)
+        last_scenario_id = None
+        last_num_agents = None
         
         # 训练循环
         episode_scores = []
@@ -776,6 +800,68 @@ class CurriculumTrainer:
             scenario_id = self._select_scenario(target_scenarios, phase_config)
             scenario_cfg = self.scenarios[scenario_id]
             env = envs[scenario_id]
+            
+            # [关键修复] 检查是否需要重建agent (UAV数量变化)
+            # 注意: 第一次也需要检查 (last_scenario_id可能为None, 但num_agents可能不匹配)
+            current_num_agents = env.num_agents
+            need_rebuild = (
+                agent.num_agents != current_num_agents
+            )
+            
+            if need_rebuild:
+                print(f"\n  [REBUILD] Agent重建: {last_num_agents} -> {env.num_agents} UAVs "
+                      f"({self.scenarios[last_scenario_id].name} -> {scenario_cfg.name})")
+                
+                # 保存当前模型权重
+                temp_model_path = os.path.join(self.output_dir, 'temp_rebuild.pt')
+                agent.save(temp_model_path)
+                
+                # 重建agent (匹配新环境的UAV数量)
+                model_hidden_dim, model_critic_hidden_dim = self._detect_model_config()
+                agent = MAPPOAgent(
+                    num_agents=env.num_agents,
+                    obs_dim=env.obs_dim,
+                    state_dim=env.state_dim,
+                    action_dim=env.action_dim,
+                    hidden_dim=model_hidden_dim,
+                    critic_hidden_dim=model_critic_hidden_dim,
+                    actor_lr=3e-04 * phase_config.get('lr_factor', 1.0),
+                    critic_lr=1e-03 * phase_config.get('lr_factor', 1.0),
+                    gamma=0.99,
+                    gae_lambda=0.95,
+                    clip_epsilon=0.2,
+                    entropy_coef=0.008 * phase_config.get('entropy_factor', 1.0),
+                    value_coef=0.5,
+                    rollout_length=500,
+                    num_epochs=5,
+                    batch_size=64,
+                    use_biz_heads=True,
+                    use_attention_critic=True,
+                    use_hierarchical=True,
+                    use_transformer=False,
+                    use_data_augmentation=True,
+                )
+                
+                # 加载刚保存的权重
+                agent.load(temp_model_path, reset_optimizer=False)  # 保持优化器状态
+                
+                # 清理临时文件
+                if os.path.exists(temp_model_path):
+                    os.remove(temp_model_path)
+                
+                print(f"  [OK] Agent重建完成: {env.num_agents} agents ready")
+                
+                # 重置对比学习模块 (如果需要)
+                if contrastive_module is not None and self.config.contrastive_enabled:
+                    contrastive_module = ContrastiveLearningModule(
+                        obs_dim=env.obs_dim,
+                        embedding_dim=self.config.contrastive_embedding_dim,
+                        temperature=self.config.contrastive_temperature,
+                    ).to(torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
+            
+            # 更新追踪状态
+            last_scenario_id = scenario_id
+            last_num_agents = env.num_agents
             
             # 执行单个episode
             ep_result = self._train_one_episode(
@@ -868,7 +954,7 @@ class CurriculumTrainer:
                 # 根据迭代次数选择UAV数
                 iteration = min(self.scheduler.current_iteration, len(progression) - 1)
                 num_uav = progression[iteration]
-                print(f"       [CURRICULUM_UAV] {scfg.name}: {scfg.num_uav} → {num_uav} UAV")
+                print(f"       [CURRICULUM_UAV] {scfg.name}: {scfg.num_uav} -> {num_uav} UAV")
             
             envs[sid] = MultiAgentHandoverEnv(
                 num_bs=8,
@@ -879,11 +965,26 @@ class CurriculumTrainer:
                 pos_range=1000,
             )
             
-            print(f"       ✓ {scfg.name}: {num_uav} UAVs initialized")
+            print(f"       [OK] {scfg.name}: {num_uav} UAVs initialized")
         
-        # 创建Agent (使用第一个环境的维度)
-        first_sid = target_scenarios[0]
-        ref_env = envs[first_sid]
+        # 创建Agent (智能选择参考环境)
+        # 策略: 优先选择UAV数量=300的环境 (匹配预训练模型)
+        ref_env = None
+        preferred_num_uav = 300  # 预训练模型的UAV数量
+        
+        for sid in target_scenarios:
+            if envs[sid].num_agents == preferred_num_uav:
+                ref_env = envs[sid]
+                print(f"       [SMART_INIT] 选择{self.scenarios[sid].name}作为参考环境 "
+                      f"(UAV={preferred_num_uav}, 匹配预训练模型)")
+                break
+        
+        if ref_env is None:
+            # 如果没有300 UAV的环境，使用第一个环境
+            first_sid = target_scenarios[0]
+            ref_env = envs[first_sid]
+            print(f"       [SMART_INIT] 使用{self.scenarios[first_sid].name}作为参考环境 "
+                  f"(UAV={ref_env.num_agents})")
         
         # 检测模型配置
         model_hidden_dim, model_critic_hidden_dim = self._detect_model_config()
@@ -1173,9 +1274,24 @@ class CurriculumTrainer:
     
     def _select_scenario(self, available_scenarios: List[str], phase_config: Dict) -> str:
         """
-        智能场景选择 (基于难度和优先级)
+        智能场景选择 (使用配置参数，无硬编码)
+        
+        Args:
+            available_scenarios: 可选场景列表
+            phase_config: 当前阶段配置
+            
+        Returns:
+            选中的场景ID
         """
+        if not available_scenarios:
+            raise ValueError("available_scenarios不能为空")
+        
         priority = phase_config.get('priority', 'balance')
+        
+        # 从配置获取参数 (替代硬编码的0.1, 0.3, 3.0)
+        eps = self.config.baseline_epsilon          # 0.1 (防除零)
+        w_min = self.config.weight_clamp_min         # 0.3
+        w_max = self.config.weight_clamp_max         # 3.5
         
         if priority == 'breakthrough':
             # 突破模式: 弱场景有更高概率被选中
@@ -1183,18 +1299,18 @@ class CurriculumTrainer:
             for sid in available_scenarios:
                 scfg = self.scenarios[sid]
                 gap = scfg.target_score - scfg.baseline_score
-                weight = 1.0 + gap * 3  # 差距越大权重越高
-                weights.append(max(0.3, min(3.0, weight)))
+                weight = 1.0 + gap * 5  # 差距越大权重越高 (增强版)
+                weights.append(max(w_min, min(w_max, weight)))
         elif priority == 'maintain':
             # 维持模式: 均匀采样
             weights = [1.0] * len(available_scenarios)
         else:
-            # 平衡模式: 基于基线性能
+            # 平衡模式: 基于基线性能 (使用配置中的eps)
             weights = []
             for sid in available_scenarios:
                 scfg = self.scenarios[sid]
-                weight = 1.0 / (scfg.baseline_score + 0.1)  # 低基线→高权重
-                weights.append(weight)
+                weight = 1.0 / (scfg.baseline_score + eps)  # 使用eps而非硬编码0.1
+                weights.append(max(w_min, min(w_max, weight)))
         
         # 归一化
         total_weight = sum(weights)
@@ -1205,39 +1321,51 @@ class CurriculumTrainer:
         return available_scenarios[chosen_idx]
     
     def _detect_model_config(self) -> Tuple[int, int]:
-        """检测模型的hidden_dim配置"""
-        model_hidden_dim = 64
-        model_critic_hidden_dim = 128
+        """检测模型的hidden_dim配置 (使用配置默认值)"""
+        # 从配置获取默认值 (替代硬编码的64/128)
+        model_hidden_dim = self.config.default_hidden_dim
+        model_critic_hidden_dim = self.config.default_critic_hidden_dim
         
         try:
-            checkpoint = torch.load(self.base_model_path, map_location='cpu', weights_only=False)
+            checkpoint = torch.load(self.base_model_path, map_location='cpu', 
+                                   weights_only=False)
             
             if 'config' in checkpoint:
                 cfg = checkpoint['config']
                 model_hidden_dim = cfg.get('hidden_dim', model_hidden_dim)
-                model_critic_hidden_dim = cfg.get('critic_hidden_dim', model_critic_hidden_dim)
+                model_critic_hidden_dim = cfg.get('critic_hidden_dim', 
+                                                  model_critic_hidden_dim)
+                print(f"       [DETECT] 从模型config读取: "
+                      f"actor_hidden={model_hidden_dim}, "
+                      f"critic_hidden={model_critic_hidden_dim}")
             else:
+                # 通过权重大小推断
                 if 'actor' in checkpoint:
                     for key, tensor in checkpoint['actor'].items():
                         if 'fc1.weight' in key:
                             inferred = tensor.shape[0]
-                            if inferred in [64, 128, 256]:
+                            if inferred in [32, 64, 128, 256]:
                                 model_hidden_dim = inferred
+                                print(f"       [DETECT] 推断actor hidden_dim={inferred}")
                             break
                 
                 if 'critic' in checkpoint:
                     for key, tensor in checkpoint['critic'].items():
                         if 'fc1.weight' in key:
                             inferred = tensor.shape[0]
-                            if inferred in [128, 256, 512]:
+                            if inferred in [64, 128, 256, 512]:
                                 model_critic_hidden_dim = inferred
+                                print(f"       [DETECT] 推断critic hidden_dim={inferred}")
                             break
             
             del checkpoint
-            torch.cuda.empty_cache() if torch.cuda.is_available() else None
-            
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                
         except Exception as e:
-            print(f"       [WARN] 无法检测模型配置: {e}, 使用默认值")
+            print(f"       [WARN] 无法检测模型配置: {e}")
+            print(f"             使用配置默认值: actor_hidden={model_hidden_dim}, "
+                  f"critic_hidden={model_critic_hidden_dim}")
         
         return model_hidden_dim, model_critic_hidden_dim
     
@@ -1256,8 +1384,11 @@ class CurriculumTrainer:
         # 否则使用基础模型
         return self.base_model_path
     
-    def _warmup_normalizers(self, envs: Dict, agent, num_steps: int = 30):
-        """预热Normalizer"""
+    def _warmup_normalizers(self, envs: Dict, agent, num_steps: int = None):
+        """预热Normalizer (使用配置默认步数)"""
+        if num_steps is None:
+            num_steps = self.config.warmup_steps  # 30 (替代硬编码)
+            
         for sid, env in envs.items():
             obs_dict, global_state = env.reset()
             
@@ -1266,24 +1397,70 @@ class CurriculumTrainer:
                 next_obs, _, _, _, _, _ = env.step(actions)
                 obs_dict = next_obs
             
-            print(f"       ✓ Normalizer预热完成: {self.scenarios[sid].name}")
+            print(f"       [WARMUP] {self.scenarios[sid].name}: "
+                  f"{num_steps} steps完成")
     
     def _quick_evaluate(self, agent, envs: Dict, scenarios: List[str]) -> float:
-        """快速评估 (每场景1个episode)"""
+        """
+        快速评估 (每场景1个episode, 使用配置步数)
+        
+        支持多场景动态Agent重建
+        """
         scores = []
+        eval_steps = self.config.quick_eval_steps  # 150 (替代硬编码)
         
         for sid in scenarios:
             env = envs[sid]
-            obs_dict, global_state = env.reset()
-            agent.reset_hidden()
             
-            for step in range(150):
+            # [关键修复] 检查是否需要为该场景创建专用agent
+            if agent.num_agents != env.num_agents:
+                # 临时保存当前模型
+                temp_path = os.path.join(self.output_dir, 'temp_eval.pt')
+                agent.save(temp_path)
+                
+                # 创建匹配该场景的agent
+                model_h, model_c = self._detect_model_config()
+                eval_agent = MAPPOAgent(
+                    num_agents=env.num_agents,
+                    obs_dim=env.obs_dim,
+                    state_dim=env.state_dim,
+                    action_dim=env.action_dim,
+                    hidden_dim=model_h,
+                    critic_hidden_dim=model_c,
+                    actor_lr=3e-04,
+                    critic_lr=1e-03,
+                    gamma=0.99,
+                    gae_lambda=0.95,
+                    clip_epsilon=0.2,
+                    entropy_coef=0.008,
+                    value_coef=0.5,
+                    rollout_length=500,
+                    num_epochs=5,
+                    batch_size=64,
+                    use_biz_heads=True,
+                    use_attention_critic=True,
+                    use_hierarchical=True,
+                    use_transformer=False,
+                    use_data_augmentation=True,
+                )
+                eval_agent.load(temp_path, reset_optimizer=False)
+                
+                # 清理临时文件
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+            else:
+                eval_agent = agent
+            
+            obs_dict, global_state = env.reset()
+            eval_agent.reset_hidden()
+            
+            for step in range(eval_steps):
                 biz_types = {
                     uid: env.env.uavs[uid].true_business_type.value
                     for uid in range(env.num_agents)
                 }
                 
-                actions, _, _, _, _ = agent.select_actions(
+                actions, _, _, _, _ = eval_agent.select_actions(
                     obs_dict, global_state,
                     biz_types=biz_types,
                     training=False
@@ -1394,16 +1571,35 @@ class CurriculumTrainer:
         }
     
     def _check_early_stop(self, scores: List[float], phase_config: Dict) -> bool:
-        """检查是否触发早停"""
+        """
+        检查是否触发早停 (使用配置阈值)
+        
+        Args:
+            scores: 历史评估分数列表
+            phase_config: 阶段配置
+            
+        Returns:
+            True if should stop early
+        """
         patience = phase_config.get('early_stop_patience', 10)
         
-        if len(scores) < patience:
+        # 使用配置中的阈值 (替代硬编码0.001)
+        threshold = phase_config.get('min_improvement_threshold',
+                                     self.config.min_improvement_threshold)
+        
+        if not scores or len(scores) < patience:
             return False
         
         recent = scores[-patience:]
         improvement = recent[-1] - recent[0]
         
-        return improvement < 0.001  # 几乎没有改进
+        # 添加日志 (每patience次打印一次)
+        if len(scores) % patience == 0 and len(scores) >= patience * 2:
+            print(f"       [EARLY_STOP] 最近{patience}ep: "
+                  f"{recent[0]:.4f} -> {recent[-1]:.4f} "
+                  f"(改进={improvement:+.4f}, 阈值={threshold})")
+        
+        return improvement < threshold
     
     def _save_phase_model(self, agent, phase_key: str, phase_result: Dict) -> str:
         """保存阶段模型"""
@@ -1484,7 +1680,7 @@ class CurriculumTrainer:
         if result['phases_completed']:
             print(f"\n  阶段完成情况:")
             for phase in result['phases_completed']:
-                print(f"    ✓ {phase['phase_name']}: "
+                print(f"    [OK] {phase['phase_name']}: "
                       f"{phase['episodes_completed']}eps, "
                       f"全局={phase['global_average']:.4f}")
 
@@ -1499,8 +1695,8 @@ def main():
     parser.add_argument('--mode', type=str, default='full',
                        choices=['full', 'quick'],
                        help='训练模式: full=完整版, quick=快速版')
-    parser.add_argument('--model', type=str, 
-                       default='results/mappo_models/mappo_8bs_300uav_best.pt',
+    parser.add_argument('--model', type=str,
+                       default='experiment_results/mappo_models/mappo_8bs_300uav_best.pt',
                        help='基础模型路径')
     parser.add_argument('--from-phase', type=int, default=None,
                        help='从指定阶段开始 (0-indexed)')

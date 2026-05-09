@@ -944,13 +944,27 @@ class MultiAgentHandoverEnv:
             r_load_adaptive *= load_factor
             ep_load_adaptive_sum += r_load_adaptive
 
-            # --- f. 关键业务差距奖励 ---
+            # --- f. 关键业务差距奖励 (V13: P2增强版) ---
             # 核心思想: 直接告诉agent"距离目标还差多少", 解决奖励稀疏问题。
             # 基于目标导向强化学习(HRL): r_gap = α × (target - current),
             # 当 current < target 时为负值(推动提升), 达到或超过时为零(不惩罚超额完成)。
+            #
+            # [P2增强] 对不同业务类型差异化权重:
+            #   - 控制信令(biz_type=0): 权重3.0 (最高优先级, 延迟敏感)
+            #   - 视频回传(biz_type=1): 权重2.5 (高优先级, 吞吐量敏感)
+            #   - 环境监测(biz_type=2): 权重1.5 (正常优先级, 可靠性敏感)
             target_sat = TARGET_SATISFACTION.get(biz_type, 0.75)
             sat_gap = max(0.0, target_sat - new_sat)  # 只 penalize 未达标的
-            r_target_gap = -1.5 * sat_gap  # 权重α=1.5, 平衡与其他分量的量级
+            
+            # [P2] 业务类型差异化权重
+            if biz_type == 0:
+                biz_critical_weight = 3.0  # 控制信令 - 最高优先级
+            elif biz_type == 1:
+                biz_critical_weight = 2.5  # 视频回传 - 高优先级
+            else:
+                biz_critical_weight = 1.5  # 环境监测 - 正常优先级
+            
+            r_target_gap = -biz_critical_weight * sat_gap  # 使用增强权重
             ep_target_gap_sum += r_target_gap
 
             # --- g. 同类相对排名信号 ---
@@ -1024,6 +1038,27 @@ class MultiAgentHandoverEnv:
         avg_connect_penalty = ep_connect_reward_sum / max(self.num_agents, 1)
         team_reward += avg_connect_penalty
 
+        # ====== 4.6 全局负载均衡惩罚 (P1改进: V13新增) ======
+        # 核心思想: 惩罚基站间负载不均衡, 鼓励UAV分散到不同基站。
+        # 理论支撑:
+        #   - 负载均衡能提升整体网络资源利用率, 减少拥塞和切换失败
+        #   - 基于多智能体协调框架: 团队级全局信号指导个体决策
+        #   - 惩罚函数: 基于基站负载标准差, std越大说明越不均衡
+        #
+        # 计算方法:
+        #   load_balance_penalty = -α × std(load_ratios)
+        #   α = 2.0 (经验值, 平衡与其他团队信号的量级)
+        #
+        # 预期效果:
+        #   - load_variance 从 0.063 降低到 <0.01 (接近增强算法的0.002)
+        #   - 提升连接保持率 (减少因基站过载导致的断连)
+        bs_loads = np.array([bs.load_ratio for bs in self.env.base_stations.values()])
+        load_std = np.std(bs_loads)
+        load_balance_penalty = -2.0 * load_std  # 权重α=2.0
+        
+        # 只在团队reward中加入, 避免干扰个体学习信号
+        team_reward += load_balance_penalty
+
         # ====== 5. 团队奖励归一化 ======
         team_reward /= max(self.num_agents, 1)
 
@@ -1046,8 +1081,9 @@ class MultiAgentHandoverEnv:
                 'action_reward': ep_action_reward_sum / max(self.num_agents, 1),
                 'connect_reward': ep_connect_reward_sum / max(self.num_agents, 1),
                 'load_adaptive': ep_load_adaptive_sum / max(self.num_agents, 1),   # [V12]
-                'target_gap': ep_target_gap_sum / max(self.num_agents, 1),          # [V12]
+                'target_gap': ep_target_gap_sum / max(self.num_agents, 1),          # [V12/V13增强]
                 'ranking_signal': ep_ranking_sum / max(self.num_agents, 1),         # [V12]
+                'load_balance_penalty': load_balance_penalty,                      # [V13/P1新增]
                 'good_switch': ep_good_switch,
                 'bad_switch': ep_bad_switch,
                 'raw_mean': np.mean(list(rewards_raw.values())),
