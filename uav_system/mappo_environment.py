@@ -49,6 +49,7 @@ from .environment import NetworkEnvironmentWithRecognition, EnhancedNetworkEnvir
 #     ParametricEnhancedAlgorithm, NUM_STRATEGIES, STRATEGY_CONFIGS
 # )
 from .business import BusinessType
+from .config import MAPPOConfig  # V21: 引入集中配置
 
 
 class RunningNormalizer:
@@ -659,23 +660,11 @@ class MultiAgentHandoverEnv:
             # 记录切换开始时间
             handover_start = time.time()
 
-            # ====== 预检查: 在释放旧资源前，先确认目标 BS 是否有足够容量 ======
-            # 计算释放旧资源后 UAV 自身可贡献的容量
-            # 跨BS切换时也计入自身释放容量，因为切换流程是先释放旧BS再分配新BS
-            uav_self_free = uav.current_allocated_rate  # UAV 自身释放的容量
-            effective_target_cap = target_bs.available_capacity + uav_self_free
-
-            # 检查目标 BS 能否至少以最低降级比率接受
-            min_ratio = uav.qos_profile.get_feasible_downgrade_ratios()[-1]  # 最低降级比率
-            min_required = uav.required_rate * min_ratio
-
-            if effective_target_cap < min_required and target_bs_id != uav.connected_bs_id:
-                # 目标 BS 容量不足，跳过切换（保持当前连接）
-                ep_switch_rollback += 1  # 计为回滚（切换未实际发生）
-                handover_end = time.time()
-                handover_latency = (handover_end - handover_start) * 1000
-                handover_latencies.append(handover_latency)
-                continue
+            # [PURE-MAPPO] 移除预检查机制，让模型完全自主决策
+            # 原预检查逻辑已被删除，现在直接执行切换：
+            #   - 成功 → switch_success
+            #   - 失败但回滚成功 → switch_rollback  
+            #   - 回滚也失败 → switch_disconnect
 
             # 释放当前 BS 资源
             old_bs_id = uav.connected_bs_id
@@ -684,7 +673,7 @@ class MultiAgentHandoverEnv:
                 old_bs.connected_uavs.pop(uid, None)
                 old_bs.current_load -= uav.current_allocated_rate
 
-            # 尝试切换到目标 BS（按业务类型降级，与增强算法一致）
+            # 尝试切换到目标 BS（按业务类型降级）
             allocated = False
             for ratio in uav.qos_profile.get_feasible_downgrade_ratios():
                 if target_bs.allocate(uid, uav.required_rate * ratio):
@@ -694,17 +683,19 @@ class MultiAgentHandoverEnv:
                     allocated = True
                     ep_switch_success += 1
                     break
+                    
             if not allocated:
-                # 切换失败，尝试回滚到旧 BS（也用降级比率）
+                # 切换失败，尝试回滚到旧 BS
                 if old_bs_id is not None:
                     old_bs = self.env.base_stations[old_bs_id]
                     for ratio in uav.qos_profile.get_feasible_downgrade_ratios():
                         if old_bs.allocate(uid, uav.required_rate * ratio):
                             uav.connected_bs_id = old_bs_id
                             uav.current_allocated_rate = uav.required_rate * ratio
-                            allocated = True  # 回滚成功
+                            allocated = True
                             ep_switch_rollback += 1
                             break
+                            
                 if not allocated:
                     # 回滚也失败，断连
                     uav.connected_bs_id = None
@@ -843,7 +834,7 @@ class MultiAgentHandoverEnv:
             old_rr = old_rate_ratios.get(uid, 0.5)
             new_rr = uav.current_allocated_rate / max(uav.required_rate, 1e-6)
             delta_rr = new_rr - old_rr
-            r_delta = 5.0 * delta_rr
+            r_delta = MAPPOConfig.RewardConfig.delta_scale * delta_rr  # V21: 配置化
             ep_delta_sum += r_delta
 
             # --- b. 反事实比较信号 ---
@@ -854,20 +845,22 @@ class MultiAgentHandoverEnv:
             if switched:
                 avg_rr = peer_avg_rr.get(biz_type, new_rr)
                 relative_gain = new_rr - avg_rr
-                r_counterfactual = 3.0 * relative_gain
+                r_counterfactual = MAPPOConfig.RewardConfig.counterfactual_scale * relative_gain  # V21: 配置化
             ep_value_reward_sum += r_counterfactual
 
-            # --- c. 业务类型权重 ---
+            # --- c. 业务类型权重 (V21: 统一权重来源) ---
             r_biz = 0.0
             if abs(delta_sat) > 1e-4:
-                biz_weight = {0: 2.0, 1: 2.5, 2: 1.5}.get(biz_type, 2.0)
+                biz_weight = MAPPOConfig.BusinessWeightConfig.weights.get(biz_type, MAPPOConfig.BusinessWeightConfig.default_weight)  # V21: 配置化
                 r_biz = biz_weight * delta_rr
             ep_biz_reward_sum += r_biz
 
-            # --- d. 动作奖励 (V19: 确保训练曲线单调上升) ---
+            # --- d. 动作奖励 (V19/V21: 配置化) ---
             # V19 核心设计思想:
             #   stay 必须是"高价值默认动作"，让 agent 从乱切快速收敛到"少切"
             #   但优秀的切换(stay < excellent_switch)仍然值得做
+            #
+            # V21改进: 所有参数从MAPPOConfig读取,消除硬编码
             #
             # 数学验证 (300UAV, 350步):
             #   随机阶段(stay~18%, switch~82%, 大部分是微负/坏切换):
@@ -882,60 +875,59 @@ class MultiAgentHandoverEnv:
             r_action = 0.0
             
             if switched:
-                if delta_sat > 0.05:
+                if delta_sat > MAPPOConfig.RewardConfig.excellent_switch_threshold:  # V21: 0.05
                     # 优秀切换：明显改善连接，奖励高于stay（鼓励好决策）
-                    r_action = 1.0 + delta_sat * 2.0          # 1.10~1.20
+                    r_action = MAPPOConfig.RewardConfig.excellent_switch_base + delta_sat * MAPPOConfig.RewardConfig.excellent_switch_coeff  # V21: 1.0 + delta*2.0
                     ep_good_switch += 1
-                elif delta_sat > 0.015:
+                elif delta_sat > MAPPOConfig.RewardConfig.good_switch_threshold:  # V21: 0.015
                     # 好切换：有改善但不大
-                    r_action = 0.55 + delta_sat * 3.0         # 0.595~0.73
+                    r_action = MAPPOConfig.RewardConfig.good_switch_base + delta_sat * MAPPOConfig.RewardConfig.good_switch_coeff  # V21: 0.55 + delta*3.0
                 elif delta_sat > 0.0:
                     # 微正切换：略优于stay底线
-                    r_action = 0.15 + delta_sat * 5.0         # 0.15~0.23
-                elif delta_sat > -0.03:
+                    r_action = MAPPOConfig.RewardConfig.micro_positive_base + delta_sat * MAPPOConfig.RewardConfig.micro_positive_coeff  # V21: 0.15 + delta*5.0
+                elif delta_sat > MAPPOConfig.RewardConfig.acceptable_switch_threshold:  # V21: -0.03
                     # 微负切换（可接受的小损失）
-                    r_action = delta_sat * 4.0                 # -0.12~0
+                    r_action = delta_sat * MAPPOConfig.RewardConfig.acceptable_penalty_coeff  # V21: delta*4.0
                 else:
                     # 坏切换：明显恶化连接，严厉惩罚
-                    r_action = delta_sat * 6.0 - 0.08          # down to -0.68
+                    r_action = delta_sat * MAPPOConfig.RewardConfig.bad_switch_coeff + MAPPOConfig.RewardConfig.bad_switch_penalty  # V21: delta*6.0 - 0.08
                     ep_bad_switch += 1
             elif action != 0:
                 # 非标准动作（predict/biz_spec等）
-                r_action = -0.15
+                r_action = MAPPOConfig.RewardConfig.non_standard_action_penalty  # V21: -0.15
             else:
-                # stay = 安全高回报动作
-                # 基础值 0.80 保证在大部分场景下 stay 都是正收益
-                # bonus 在 sat>0.93 时激活，鼓励维持高质量连接
-                r_action = 0.80 + max(0.0, (new_sat - 0.93)) * 2.0
-                # sat=0.99 → 0.80 + 0.12 = 0.92
-                # sat=0.96 → 0.80 + 0.06 = 0.86
-                # sat=0.93 → 0.80 (基准线)
-                # sat=0.90 → 0.80 (不变)
+                # stay = 安全高回报动作 (V21: 配置化)
+                # 基础值保证在大部分场景下 stay 都是正收益
+                # bonus 在 sat超过阈值时激活，鼓励维持高质量连接
+                r_action = MAPPOConfig.RewardConfig.stay_base_reward + max(0.0, (new_sat - MAPPOConfig.RewardConfig.stay_bonus_threshold)) * MAPPOConfig.RewardConfig.stay_bonus_scale
             ep_action_reward_sum += r_action
 
-            # ====== V12 新增分量 ======
+            # ====== V12 新增分量 (V21: 配置化) ======
 
             # --- e. 负载自适应系数 ---
             # 核心思想: 全局负载率越低(资源越充裕), 切换的边际收益越小,
             #           因此需要放大切换奖励来维持探索动力。
             # 同时低负载下留守的惩罚也应增强, 避免agent陷入"什么都不做"的局部最优。
-            if global_load_ratio < 0.60:
-                load_factor = 1.8   # 低负载(<60%): 强力鼓励切换和探索
-            elif global_load_ratio < 0.75:
-                load_factor = 1.4   # 中低负载(60-75%): 适度增强
-            elif global_load_ratio < 0.90:
-                load_factor = 1.0   # 正常负载(75-90%): 不调整
+            
+            lac = MAPPOConfig.LoadAdaptiveConfig  # V21: 简化引用
+            
+            if global_load_ratio < lac.low_load_threshold:
+                load_factor = lac.low_load_factor  # V21: 低负载(<60%): 强力鼓励切换和探索
+            elif global_load_ratio < lac.medium_low_threshold:
+                load_factor = lac.medium_low_factor  # V21: 中低负载(60-75%): 适度增强
+            elif global_load_ratio < lac.normal_load_threshold:
+                load_factor = lac.normal_load_factor  # V21: 正常负载(75-90%): 不调整
             else:
-                load_factor = 0.8   # 高负载(>90%): 保守策略, 降低切换冲动
+                load_factor = lac.high_load_factor  # V21: 高负载(>90%): 保守策略, 降低切换冲动
 
             r_load_adaptive = 0.0
             if action == 0:  # stay
-                # 低负载下留守惩罚增强: 资源充裕时不利用=浪费机会
-                if global_load_ratio < 0.80 and new_sat < 0.70:
-                    r_load_adaptive = -0.20 * (0.80 - global_load_ratio) / 0.20
-                elif global_load_ratio >= 0.95 and new_sat >= 0.70:
-                    # 高负载下留守合理, 给予轻微正奖励
-                    r_load_adaptive = 0.10
+                # 低负载下留守惩罚增强: 资源充裕时不利用=浪费机会 (V21: 配置化)
+                if global_load_ratio < lac.stay_low_load_punish_threshold and new_sat < lac.stay_low_load_sat_threshold:
+                    r_load_adaptive = lac.stay_low_load_punish_max * (lac.stay_low_load_punish_threshold - global_load_ratio) / 0.20
+                elif global_load_ratio >= lac.stay_high_load_reward_threshold and new_sat >= lac.stay_high_load_sat_threshold:
+                    # 高负载下留守合理, 给予轻微正奖励 (V21: 配置化)
+                    r_load_adaptive = lac.stay_high_load_reward
             else:
                 # 非留守动作在低负载下获得额外奖励
                 if global_load_ratio < 0.80:
@@ -944,25 +936,27 @@ class MultiAgentHandoverEnv:
             r_load_adaptive *= load_factor
             ep_load_adaptive_sum += r_load_adaptive
 
-            # --- f. 关键业务差距奖励 (V13: P2增强版) ---
+            # --- f. 关键业务差距奖励 (V13/V21: 配置化) ---
             # 核心思想: 直接告诉agent"距离目标还差多少", 解决奖励稀疏问题。
             # 基于目标导向强化学习(HRL): r_gap = α × (target - current),
             # 当 current < target 时为负值(推动提升), 达到或超过时为零(不惩罚超额完成)。
             #
-            # [P2增强] 对不同业务类型差异化权重:
-            #   - 控制信令(biz_type=0): 权重3.0 (最高优先级, 延迟敏感)
-            #   - 视频回传(biz_type=1): 权重2.5 (高优先级, 吞吐量敏感)
+            # [P2/V21] 对不同业务类型差异化权重 (从MAPPOConfig读取):
+            #   - 控制信令(biz_type=0): 权重2.0 (高优先级, 延迟敏感)
+            #   - 视频回传(biz_type=1): 权重2.5 (最高优先级, 吞吐量敏感)
             #   - 环境监测(biz_type=2): 权重1.5 (正常优先级, 可靠性敏感)
             target_sat = TARGET_SATISFACTION.get(biz_type, 0.75)
             sat_gap = max(0.0, target_sat - new_sat)  # 只 penalize 未达标的
             
-            # [P2] 业务类型差异化权重
+            # [P2/V21] 业务类型差异化权重 (从配置读取)
+            tgc = MAPPOConfig.TargetGapConfig  # V21: 简化引用
             if biz_type == 0:
-                biz_critical_weight = 3.0  # 控制信令 - 最高优先级
+                biz_critical_weight = tgc.control_signal_weight  # V21: 控制信令
             elif biz_type == 1:
+                biz_critical_weight = tgc.video_weight  # V21: 视频回传
                 biz_critical_weight = 2.5  # 视频回传 - 高优先级
             else:
-                biz_critical_weight = 1.5  # 环境监测 - 正常优先级
+                biz_critical_weight = tgc.environment_weight  # V21: 环境监测
             
             r_target_gap = -biz_critical_weight * sat_gap  # 使用增强权重
             ep_target_gap_sum += r_target_gap

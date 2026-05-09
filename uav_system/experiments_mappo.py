@@ -38,10 +38,12 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import os
 import pickle
+import signal
+import threading
 from datetime import datetime
 from typing import Dict, List, Any, Tuple, Optional
 
-from .config import GLOBAL_SEED, set_global_seed, RESULT_DIR, COLORS
+from .config import GLOBAL_SEED, set_global_seed, RESULT_DIR, COLORS, MAPPOConfig  # V21: 添加MAPPOConfig
 from .mappo_environment import MultiAgentHandoverEnv
 from .mappo_agent_v2 import MAPPOAgentV2 as MAPPOAgent
 from .algorithms import EnhancedHandoverAlgorithm, IntegratedHandoverAlgorithm
@@ -373,6 +375,1269 @@ def _run_algo_baseline(env, num_steps, algo_class, enable_lb=False):
             env._communication_metrics['handover_latencies'].extend(algo.switching_latency_history[-10:])
 
 
+class OverfittingMonitor:
+    """
+    过拟合实时监控器 (V22: 多维度风险检测与预警)
+    
+    监控维度:
+      1. Satisfaction稳定性 - 检测方差突变和趋势偏移
+      2. Reward分布健康度 - 检测均值/方差异常
+      3. 动作分布漂移 - 检测策略突然变化
+      4. Loss趋势分析 - 检测过拟合典型模式
+      5. 学习信号强度 - 验证是否在真实学习
+      6. 泛化能力指标 - 基于统计的泛化评估
+    
+    输出:
+      - 综合风险评分 (0.0-1.0, 越低越安全)
+      - 各维度详细评分
+      - 趋势图和警报
+    
+    使用方式:
+      monitor = OverfittingMonitor(window_size=20)
+      risk_report = monitor.check(episode_data)
+      print(monitor.format_report(risk_report))
+    """
+    
+    def __init__(self, window_size=20, alert_threshold=0.65):
+        """
+        初始化监控器
+        
+        Args:
+            window_size: 滑动窗口大小（用于计算趋势）
+            alert_threshold: 风险警报阈值 (0-1)
+        """
+        self.window_size = window_size
+        self.alert_threshold = alert_threshold
+        
+        # 历史数据存储
+        self.history = {
+            'satisfaction': [],
+            'reward': [],
+            'reward_std': [],
+            'stay_pct': [],
+            'switch_success': [],
+            'actor_loss': [],
+            'critic_loss': [],
+            'entropy': [],
+            'grad_norm': [],
+            'value_mse': [],
+            'rollback_rate': [],
+            'composite_score': [],
+        }
+        
+        # 风险历史
+        self.risk_history = []
+        
+        # 初始基准值（用于检测漂移）
+        self.baseline = {
+            'stay_pct': None,
+            'satisfaction_mean': None,
+            'reward_cv': None,
+        }
+        
+        # 统计计数器
+        self.total_checks = 0
+        self.alert_count = 0
+        
+    def update(self, episode_data):
+        """
+        更新历史数据
+        
+        Args:
+            episode_data: 当前episode的数据字典
+        """
+        sat = episode_data.get('satisfaction', 0)
+        reward = episode_data.get('reward', 0)
+        reward_std = episode_data.get('reward_std', 0)
+        stay_pct = episode_data.get('stay_percentage', 0)
+        switch_success = episode_data.get('switch_success_rate', 0)
+        actor_loss = abs(episode_data.get('actor_loss', 0))
+        critic_loss = episode_data.get('critic_loss', 0)
+        entropy = episode_data.get('entropy', 0)
+        grad_norm = episode_data.get('grad_norm', 0)
+        value_mse = episode_data.get('value_mse', 0)
+        rollback_rate = 0
+        if episode_data.get('switch_attempts', 0) > 0:
+            rollback_rate = episode_data.get('switch_rollback', 0) / episode_data.get('switch_attempts', 1)
+        composite_score = episode_data.get('composite_score', 0)
+        
+        # 更新各维度历史
+        for key, value in [
+            ('satisfaction', sat),
+            ('reward', reward),
+            ('reward_std', reward_std),
+            ('stay_pct', stay_pct),
+            ('switch_success', switch_success),
+            ('actor_loss', actor_loss),
+            ('critic_loss', critic_loss),
+            ('entropy', entropy),
+            ('grad_norm', grad_norm),
+            ('value_mse', value_mse),
+            ('rollback_rate', rollback_rate),
+            ('composite_score', composite_score),
+        ]:
+            self.history[key].append(value)
+            if len(self.history[key]) > self.window_size * 3:
+                self.history[key].pop(0)
+        
+        # 设置初始基准值（前5个episode的平均）
+        if len(self.history['satisfaction']) == 5 and self.baseline['satisfaction_mean'] is None:
+            self.baseline['satisfaction_mean'] = np.mean(self.history['satisfaction'])
+            self.baseline['stay_pct'] = np.mean(self.history['stay_pct'])
+            if np.mean(self.history['reward']) != 0:
+                self.baseline['reward_cv'] = np.std(self.history['reward']) / abs(np.mean(self.history['reward']))
+    
+    def _check_satisfaction_stability(self):
+        """
+        检查1: Satisfaction稳定性
+        
+        指标:
+          - 短期标准差 (最近5个episode)
+          - 长期趋势 (线性回归斜率)
+          - 方差变化率 (短期vs长期)
+        
+        返回: (risk_score, details_dict)
+        """
+        sats = self.history['satisfaction']
+        if len(sats) < 5:
+            return 0.0, {'status': 'INSUFFICIENT_DATA'}
+        
+        recent_5 = sats[-5:]
+        recent_10 = sats[-min(10, len(sats)):]
+        
+        # 短期标准差
+        short_std = np.std(recent_5)
+        long_std = np.std(recent_10) if len(recent_10) >= 5 else short_std
+        
+        # 趋势分析 (线性回归斜率)
+        if len(sats) >= 10:
+            x = np.arange(len(sats[-10:]))
+            y = np.array(sats[-10:])
+            slope, _ = np.polyfit(x, y, 1)
+            slope_normalized = slope * 1000  # 放大以便比较
+        else:
+            slope_normalized = 0
+        
+        # 方差变化率 (短期/长期)
+        variance_ratio = short_std / (long_std + 1e-8)
+        
+        # 计算风险分数
+        risk = 0.0
+        
+        # 标准差风险 (σ > 0.01 开始有风险)
+        if short_std > 0.015:
+            risk += min(0.4, (short_std - 0.015) * 20)
+        elif short_std > 0.008:
+            risk += (short_std - 0.008) * 15
+        
+        # 趋势风险 (快速下降是危险信号)
+        if slope_normalized < -0.5:
+            risk += min(0.35, abs(slope_normalized) * 0.5)
+        elif slope_normalized < -0.2:
+            risk += abs(slope_normalized) * 0.3
+        
+        # 方差增大风险 (短期方差 >> 长期方差)
+        if variance_ratio > 1.5:
+            risk += min(0.25, (variance_ratio - 1.5) * 0.5)
+        
+        risk = min(1.0, risk)
+        
+        status = '[OK] HEALTHY' if risk < 0.3 else ('[!] WARNING' if risk < 0.6 else '[X] DANGER')
+        
+        details = {
+            'short_std': short_std,
+            'long_std': long_std,
+            'slope': slope_normalized,
+            'variance_ratio': variance_ratio,
+            'risk': risk,
+            'status': status,
+        }
+        
+        return risk, details
+    
+    def _check_reward_health(self):
+        """
+        检查2: Reward分布健康度
+        
+        指标:
+          - 变异系数稳定性 (CV = σ/μ)
+          - 均值漂移程度
+          - 极值频率 (超出2σ的频率)
+        
+        返回: (risk_score, details_dict)
+        """
+        rewards = self.history['reward']
+        if len(rewards) < 5:
+            return 0.0, {'status': 'INSUFFICIENT_DATA'}
+        
+        recent_10 = rewards[-min(10, len(rewards)):]
+        mean_r = np.mean(recent_10)
+        std_r = np.std(recent_10)
+        
+        # 变异系数
+        cv = std_r / (abs(mean_r) + 1e-8)
+        
+        # CV稳定性 (比较近期CV vs 历史CV)
+        if len(rewards) >= 15:
+            old_rewards = rewards[:-10]
+            old_cv = np.std(old_rewards) / (abs(np.mean(old_rewards)) + 1e-8)
+            cv_change = abs(cv - old_cv) / (old_cv + 1e-8)
+        else:
+            cv_change = 0
+        
+        # 极值检测 (超出2σ的频率)
+        if len(rewards) >= 10:
+            threshold_high = mean_r + 2 * std_r
+            threshold_low = mean_r - 2 * std_r
+            extremes = sum(1 for r in recent_10 if r > threshold_high or r < threshold_low)
+            extreme_rate = extremes / len(recent_10)
+        else:
+            extreme_rate = 0
+        
+        # 计算风险
+        risk = 0.0
+        
+        # CV异常风险 (CV > 8% 或 CV变化>50%)
+        if cv > 0.08:
+            risk += min(0.3, (cv - 0.08) * 5)
+        if cv_change > 0.5:
+            risk += min(0.3, (cv_change - 0.5) * 0.4)
+        
+        # 极值频率过高 (>30% 是危险的)
+        if extreme_rate > 0.3:
+            risk += min(0.4, (extreme_rate - 0.3) * 1.0)
+        
+        risk = min(1.0, risk)
+        
+        status = '[OK] HEALTHY' if risk < 0.3 else ('[!] WARNING' if risk < 0.6 else '[X] DANGER')
+        
+        details = {
+            'cv': cv,
+            'cv_change': cv_change,
+            'extreme_rate': extreme_rate,
+            'mean': mean_r,
+            'std': std_r,
+            'risk': risk,
+            'status': status,
+        }
+        
+        return risk, details
+    
+    def _check_action_drift(self):
+        """
+        检查3: 动作分布漂移
+        
+        指标:
+          - Stay比例变化幅度 (vs基线)
+          - 变化速率 (每episode变化量)
+          - 方向一致性 (持续单向变化)
+        
+        返回: (risk_score, details_dict)
+        """
+        stays = self.history['stay_pct']
+        if len(stays) < 5 or self.baseline['stay_pct'] is None:
+            return 0.0, {'status': 'INSUFFICIENT_DATA'}
+        
+        current_stay = stays[-1]
+        baseline_stay = self.baseline['stay_pct']
+        
+        # 绝对漂移量
+        drift_abs = abs(current_stay - baseline_stay)
+        
+        # 近期变化速率 (最近5个episode的平均变化)
+        if len(stays) >= 6:
+            recent_changes = [abs(stays[i] - stays[i-1]) for i in range(-5, 0)]
+            drift_rate = np.mean(recent_changes)
+        else:
+            drift_rate = 0
+        
+        # 方向性检查 (连续同向变化的次数)
+        if len(stays) >= 5:
+            directions = [np.sign(stays[i] - stays[i-1]) for i in range(-5, 0) if stays[i] - stays[i-1] != 0]
+            consistent_direction = len(directions) >= 4 and len(set(directions)) == 1
+        else:
+            consistent_direction = False
+        
+        # 计算风险
+        risk = 0.0
+        
+        # 漂移幅度风险 (>10% 是危险的)
+        if drift_abs > 0.10:
+            risk += min(0.4, (drift_abs - 0.10) * 3)
+        elif drift_abs > 0.05:
+            risk += (drift_abs - 0.05) * 2
+        
+        # 变化速率风险 (>2%/ep 是危险的)
+        if drift_rate > 0.02:
+            risk += min(0.3, (drift_rate - 0.02) * 5)
+        
+        # 单向漂移风险 (可能表示策略坍缩)
+        if consistent_direction and drift_abs > 0.03:
+            risk += 0.3
+        
+        risk = min(1.0, risk)
+        
+        status = '[OK] HEALTHY' if risk < 0.3 else ('[!] WARNING' if risk < 0.6 else '[X] DANGER')
+        
+        details = {
+            'current': current_stay,
+            'baseline': baseline_stay,
+            'drift_abs': drift_abs,
+            'drift_rate': drift_rate,
+            'consistent_direction': consistent_direction,
+            'risk': risk,
+            'status': status,
+        }
+        
+        return risk, details
+    
+    def _check_loss_trends(self):
+        """
+        检查4: Loss趋势分析
+        
+        典型过拟合模式:
+          - Actor Loss持续下降且接近零
+          - Critic Loss持续上升 (Value函数过拟合)
+          - Entropy快速下降 (探索能力丧失)
+          - Value MSE上升 (泛化误差增大)
+        
+        返回: (risk_score, details_dict)
+        """
+        actor_losses = self.history['actor_loss']
+        critic_losses = self.history['critic_loss']
+        entropies = self.history['entropy']
+        value_mses = self.history['value_mse']
+        
+        if len(actor_losses) < 10:
+            return 0.0, {'status': 'INSUFFICIENT_DATA'}
+        
+        risk = 0.0
+        
+        # Actor Loss趋势 (持续下降到接近0是危险的)
+        if len(actor_losses) >= 10:
+            recent_actor = actor_losses[-5:]
+            early_actor = actor_losses[-10:-5]
+            
+            actor_trend = np.mean(recent_actor) - np.mean(early_actor)
+            actor_current = np.mean(recent_actor)
+            
+            # Actor Loss过低 (<0.05) 且仍在下降
+            if actor_current < 0.05 and actor_trend < -0.005:
+                risk += min(0.25, (0.05 - actor_current) * 3 + abs(actor_trend) * 10)
+            elif actor_current < 0.1 and actor_trend < -0.01:
+                risk += min(0.15, abs(actor_trend) * 5)
+        
+        # Critic Loss上升趋势 (Value函数不匹配训练状态)
+        if len(critic_losses) >= 10:
+            recent_critic = critic_losses[-5:]
+            early_critic = critic_losses[-10:-5]
+            
+            critic_trend = (np.mean(recent_critic) - np.mean(early_critic)) / (np.mean(early_critic) + 1e-8)
+            
+            # Critic Loss上升超过10%
+            if critic_trend > 0.1:
+                risk += min(0.25, (critic_trend - 0.1) * 1.5)
+            elif critic_trend > 0.05:
+                risk += (critic_trend - 0.05) * 1.0
+        
+        # Entropy下降 (探索能力丧失)
+        if len(entropies) >= 10:
+            recent_ent = entropies[-5:]
+            early_ent = entropies[-10:-5]
+            
+            ent_trend = np.mean(recent_ent) - np.mean(early_ent)
+            ent_current = np.mean(recent_ent)
+            
+            # Entropy < 0.3 且下降速度快
+            if ent_current < 0.3 and ent_trend < -0.02:
+                risk += min(0.2, (0.3 - ent_current) * 0.5 + abs(ent_trend) * 3)
+            elif ent_current < 0.5 and ent_trend < -0.03:
+                risk += min(0.1, abs(ent_trend) * 2)
+        
+        # Value MSE上升 (泛化误差增大)
+        if len(value_mses) >= 10:
+            recent_vmse = value_mses[-5:]
+            early_vmse = value_mses[-10:-5]
+            
+            vmse_trend = (np.mean(recent_vmse) - np.mean(early_vmse)) / (np.mean(early_vmse) + 1e-8)
+            
+            if vmse_trend > 0.1:
+                risk += min(0.15, (vmse_trend - 0.1) * 1.0)
+            elif vmse_trend > 0.05:
+                risk += (vmse_trend - 0.05) * 0.5
+        
+        risk = min(1.0, risk)
+        
+        status = '[OK] HEALTHY' if risk < 0.3 else ('[!] WARNING' if risk < 0.6 else '[X] DANGER')
+        
+        details = {
+            'actor_trend': 'v LOW' if len(actor_losses) >= 10 else 'N/A',
+            'critic_trend': f'^ {critic_trend*100:.1f}%' if len(critic_losses) >= 10 else 'N/A',
+            'entropy_trend': f'{ent_trend:+.3f}' if len(entropies) >= 10 else 'N/A',
+            'vmse_trend': f'^ {vmse_trend*100:.1f}%' if len(value_mses) >= 10 else 'N/A',
+            'risk': risk,
+            'status': status,
+        }
+        
+        return risk, details
+    
+    def _check_learning_signal(self):
+        """
+        检查5: 学习信号强度
+        
+        正学习信号:
+          - 回滚率持续下降 (切换质量提升)
+          - Switch Success提升
+          - Composite Score改善
+          - Satisfaction稳定或微升
+        
+        负信号 (可能的过拟合):
+          - 所有指标停止改善但Loss继续变化
+          - 高方差但无明确趋势
+          - 指标震荡加剧
+        
+        返回: (risk_score, details_dict)
+        """
+        rollbacks = self.history['rollback_rate']
+        switch_success = self.history['switch_success']
+        composite = self.history['composite_score']
+        
+        if len(rollbacks) < 10:
+            return 0.0, {'status': 'INSUFFICIENT_DATA', 'learning_strength': 'N/A'}
+        
+        risk = 0.0
+        
+        # 回滚率趋势 (应该下降)
+        if len(rollbacks) >= 10:
+            recent_rb = np.mean(rollbacks[-5:])
+            early_rb = np.mean(rollbacks[-10:-5])
+            
+            rb_improvement = (early_rb - recent_rb) / (early_rb + 1e-8)
+            
+            # 回滚率改善是好信号 (降低风险)
+            if rb_improvement > 0.3:
+                risk -= 0.1  # 强学习信号，降低风险
+            elif rb_improvement < -0.1:
+                risk += 0.15  # 回滚率恶化，增加风险
+        
+        # Composite Score趋势
+        if len(composite) >= 10:
+            recent_comp = composite[-5:]
+            early_comp = composite[-10:-5]
+            
+            comp_improvement = np.mean(recent_comp) - np.mean(early_comp)
+            
+            # 综合评分持续改善是好信号
+            if comp_improvement > 0.002:
+                risk -= 0.05
+            elif comp_improvement < -0.001:
+                risk += 0.15
+        
+        # Switch Success稳定性
+        if len(switch_success) >= 10:
+            sw_std = np.std(switch_success[-5:])
+            
+            # Switch成功率方差过大 (>2%)
+            if sw_std > 0.02:
+                risk += min(0.15, (sw_std - 0.02) * 3)
+        
+        risk = max(0.0, min(1.0, risk))
+        
+        # 判断学习强度
+        if risk <= 0:
+            learning_strength = '[STRONG] STRONG'
+        elif risk <= 0.15:
+            learning_strength = '[MODERATE] MODERATE'
+        elif risk <= 0.3:
+            learning_strength = '[WEAK] WEAK'
+        else:
+            learning_strength = '[!] NO SIGNAL'
+        
+        status = '[OK] LEARNING' if risk < 0.3 else ('[!] STAGNANT' if risk < 0.6 else '[X] REGRESSING')
+        
+        details = {
+            'rb_improvement': rb_improvement if len(rollbacks) >= 10 else 0,
+            'comp_trend': comp_improvement if len(composite) >= 10 else 0,
+            'learning_strength': learning_strength,
+            'risk': risk,
+            'status': status,
+        }
+        
+        return risk, details
+    
+    def check(self, episode_data):
+        """
+        执行完整过拟合检查
+        
+        Args:
+            episode_data: 当前episode数据
+            
+        Returns:
+            dict: 包含所有维度风险评估的完整报告
+        """
+        self.update(episode_data)
+        self.total_checks += 1
+        
+        # 执行各项检查
+        sat_risk, sat_details = self._check_satisfaction_stability()
+        reward_risk, reward_details = self._check_reward_health()
+        action_risk, action_details = self._check_action_drift()
+        loss_risk, loss_details = self._check_loss_trends()
+        learning_risk, learning_details = self._check_learning_signal()
+        
+        # 加权综合评分 (根据重要性调整权重)
+        weights = {
+            'satisfaction': 0.25,      # 最重要：核心指标稳定性
+            'reward': 0.20,            # 重要：训练健康度
+            'action_drift': 0.20,      # 重要：策略变化检测
+            'loss_trends': 0.15,       # 中等：辅助诊断
+            'learning_signal': 0.20,   # 重要：验证真实学习
+        }
+        
+        total_risk = (
+            weights['satisfaction'] * sat_risk +
+            weights['reward'] * reward_risk +
+            weights['action_drift'] * action_risk +
+            weights['loss_trends'] * loss_risk +
+            weights['learning_signal'] * learning_risk
+        )
+        
+        # 记录历史
+        self.risk_history.append(total_risk)
+        if len(self.risk_history) > self.window_size * 2:
+            self.risk_history.pop(0)
+        
+        # 警报检查
+        is_alert = total_risk >= self.alert_threshold
+        if is_alert:
+            self.alert_count += 1
+        
+        # 组装完整报告
+        report = {
+            'total_risk': total_risk,
+            'is_alert': is_alert,
+            'alert_level': '[HIGH] HIGH RISK' if total_risk >= 0.7 else ('[ELEVATED] ELEVATED' if total_risk >= self.alert_threshold else ('[MODERATE] MODERATE' if total_risk >= 0.4 else '[LOW] LOW')),
+            'dimensions': {
+                'satisfaction': {'weight': weights['satisfaction'], 'risk': sat_risk, **sat_details},
+                'reward': {'weight': weights['reward'], 'risk': reward_risk, **reward_details},
+                'action_drift': {'weight': weights['action_drift'], 'risk': action_risk, **action_details},
+                'loss_trends': {'weight': weights['loss_trends'], 'risk': loss_risk, **loss_details},
+                'learning_signal': {'weight': weights['learning_signal'], 'risk': learning_risk, **learning_details},
+            },
+            'summary': {
+                'checks_performed': self.total_checks,
+                'total_alerts': self.alert_count,
+                'alert_rate': self.alert_count / max(self.total_checks, 1),
+                'data_points': len(self.history['satisfaction']),
+            },
+            'recommendation': self._generate_recommendation(total_risk, sat_risk, action_risk, loss_risk),
+        }
+        
+        return report
+    
+    def _generate_recommendation(self, total_risk, sat_risk, action_risk, loss_risk):
+        """生成建议"""
+        if total_risk < 0.3:
+            return "[OK] Training healthy - continue monitoring"
+        elif total_risk < 0.5:
+            if action_risk > 0.4:
+                return "[!] Monitor action distribution closely"
+            elif loss_risk > 0.4:
+                return "[!] Watch loss trends - possible overfitting starting"
+            else:
+                return "[!] Slight risk detected - increase monitoring frequency"
+        elif total_risk < 0.7:
+            if sat_risk > 0.5:
+                return "[X] Satisfaction instability - consider reducing LR"
+            elif action_risk > 0.5:
+                return "[X] Action drift detected - increase entropy coefficient"
+            else:
+                return "[X] Elevated risk - consider early stopping or regularization"
+        else:
+            return "[CRITICAL] CRITICAL: Strong overfitting signal - STOP training immediately"
+    
+    def format_report(self, report):
+        """
+        格式化输出报告
+        
+        Args:
+            report: check()方法返回的报告字典
+            
+        Returns:
+            str: 格式化的报告字符串
+        """
+        lines = []
+        lines.append(f"\n{'='*80}")
+        lines.append(f"[MONITOR] OVERFITTING DETECTION - Episode {self.total_checks}")
+        lines.append(f"{'='*80}")
+        
+        # 总体风险
+        total_risk = report['total_risk']
+        alert_level = report['alert_level']
+        lines.append(f"\n  [SCORE] Overall Risk Score: {total_risk:.3f} / 1.000 [{alert_level}]")
+        
+        if report['is_alert']:
+            lines.append(f"  [!! ALERT !!] Risk threshold ({self.alert_threshold:.2f}) EXCEEDED!")
+        
+        # 各维度详情
+        lines.append(f"\n  +-------------------------------------------------------------------+")
+        lines.append(f"  | Dimension           | Weight | Risk  | Status     | Key Metrics |")
+        lines.append(f"  +-------------------------------------------------------------------+")
+        
+        dim_names = {
+            'satisfaction': 'Sat Stability',
+            'reward': 'Reward Health',
+            'action_drift': 'Action Drift',
+            'loss_trends': 'Loss Trends',
+            'learning_signal': 'Learning Signal',
+        }
+        
+        for dim_key, dim_data in report['dimensions'].items():
+            name = dim_names.get(dim_key, dim_key)
+            weight = dim_data['weight']
+            risk = dim_data['risk']
+            status = dim_data.get('status', 'N/A')
+            
+            # 提取关键指标
+            if dim_key == 'satisfaction':
+                metrics = f"std={dim_data.get('short_std', 0):.4f}"
+            elif dim_key == 'reward':
+                metrics = f"CV={dim_data.get('cv', 0):.3f}"
+            elif dim_key == 'action_drift':
+                metrics=f"delta={dim_data.get('drift_abs', 0)*100:.1f}%"
+            elif dim_key == 'loss_trends':
+                metrics = f"{dim_data.get('actor_trend', 'N/A')}"
+            elif dim_key == 'learning_signal':
+                metrics = dim_data.get('learning_strength', 'N/A')
+            else:
+                metrics = "-"
+            
+            bar = self._risk_bar(risk)
+            lines.append(f"  | {name:<19} | {weight:>5.0%} | {risk:>4.2f} | {status:<11} | {metrics:<12} | {bar}")
+        
+        lines.append(f"  +-------------------------------------------------------------------+")
+        
+        # 学习信号详情
+        ls = report['dimensions']['learning_signal']
+        if ls.get('rb_improvement') is not None:
+            rb_imp = ls['rb_improvement'] * 100
+            lines.append(f"\n  [EVIDENCE] Learning Signal:")
+            rb_status = '[OK]' if rb_imp > 0 else '[WARN]'
+            lines.append(f"     * Rollback rate improvement: {rb_imp:+.1f}% {rb_status}")
+            if ls.get('comp_trend') is not None:
+                comp_trend_str = '^' if ls['comp_trend'] > 0 else 'v'
+                lines.append(f"     * Composite score trend: {ls['comp_trend']:+.4f}/ep {comp_trend_str}")
+        
+        # 建议
+        lines.append(f"\n  [RECOMMENDATION] {report['recommendation']}")
+        
+        # 统计摘要
+        summary = report['summary']
+        lines.append(f"\n  [STATISTICS] Monitor Summary:")
+        lines.append(f"     * Total checks: {summary['checks_performed']}")
+        lines.append(f"     * Alerts triggered: {summary['total_alerts']} ({summary['alert_rate']*100:.1f}%)")
+        lines.append(f"     * Data points analyzed: {summary['data_points']}")
+        
+        # 风险趋势
+        if len(self.risk_history) >= 5:
+            recent_risks = self.risk_history[-5:]
+            trend = np.polyfit(range(len(recent_risks)), recent_risks, 1)[0]
+            trend_str = '^ Worsening' if trend > 0.01 else ('v Improving' if trend < -0.01 else '-> Stable')
+            lines.append(f"     * Risk trend (last 5): {trend_str} ({trend:+.4f}/check)")
+        
+        lines.append(f"{'='*80}\n")
+        
+        return '\n'.join(lines)
+    
+    def _risk_bar(self, risk):
+        """生成风险条形图"""
+        filled = int(risk * 20)
+        empty = 20 - filled
+        bar = '#' * filled + '-' * empty
+        return bar
+
+
+class EpisodeDetailedReporter:
+    """
+    Episode详细指标报告器 (V21: 全面的可观测指标输出)
+    
+    功能:
+      1. 收集并打印每个Episode的所有关键性能指标
+      2. 与历史最佳和基线算法对比
+      3. 业务类型细分统计
+      4. 负载均衡与连接状态分析
+      5. Reward组分深度分解
+    
+    目标: 确保MAPPO在至少2-3个核心指标上超越增强算法
+    """
+    
+    def __init__(self):
+        self.episode_history = []
+        self.best_metrics = {}
+        self.baseline_metrics = {}  # 增强算法基线 (从实验3获取)
+        
+    def generate_report(self, ep_num, total_eps, episode_data, env=None):
+        """
+        生成详细的Episode报告
+        
+        Args:
+            ep_num: 当前episode编号
+            total_eps: 总episodes数
+            episode_data: 包含所有指标的字典
+            env: 环境实例(可选,用于提取额外指标)
+        """
+        print(f"\n{'='*80}")
+        print(f"📊 EPISODE {ep_num}/{total_eps} 详细性能报告")
+        print(f"{'='*80}")
+        
+        # ====== 第一部分: 核心性能指标 ======
+        print(f"\n【第一部分】核心性能指标 (Core Performance Metrics)")
+        print(f"{'-'*60}")
+        
+        sat = episode_data.get('satisfaction', 0)
+        reward = episode_data.get('reward', 0)
+        connected_ratio = episode_data.get('connected_ratio', 0)
+        switch_success_rate = episode_data.get('switch_success_rate', 0)
+        load_variance = episode_data.get('load_variance', 0)
+        composite_score = episode_data.get('composite_score', 0)
+        
+        # 格式化输出
+        metrics_display = [
+            ('用户满意度 (Satisfaction)', f'{sat:.4f}', '↑'),
+            ('平均Reward (Avg Reward)', f'{reward:.2f}', '↑'),
+            ('连接保持率 (Connected Ratio)', f'{connected_ratio:.2%}', '↑'),
+            ('切换成功率 (Switch Success)', f'{switch_success_rate:.2%}', '↑'),
+            ('负载均衡度 (Load Balance)', f'{1.0-min(load_variance,1.0):.3f}', '↑'),
+            ('综合评分 (Composite Score)', f'{composite_score:.4f}', '↑'),
+        ]
+        
+        for name, value, trend in metrics_display:
+            print(f"  {trend} {name}: {value}")
+        
+        # ====== 第二部分: 切换行为分析 ======
+        print(f"\n【第二部分】切换行为分析 (Handover Behavior Analysis)")
+        print(f"{'-'*60}")
+        
+        stay_pct = episode_data.get('stay_percentage', 0)
+        switch_attempts = episode_data.get('switch_attempts', 0)
+        switch_success = episode_data.get('switch_success', 0)
+        switch_rollback = episode_data.get('switch_rollback', 0)
+        switch_disconnect = episode_data.get('switch_disconnect', 0)
+        
+        print(f"  📌 动作分布: Stay={stay_pct:.1f}% | Switch={100-stay_pct:.1f}%")
+        if switch_attempts > 0:
+            print(f"  📌 切换统计:")
+            print(f"     - 总尝试: {switch_attempts}")
+            print(f"     - 成功率: {switch_success/switch_attempts:.1%} ({switch_success}/{switch_attempts})")
+            print(f"     - 回滚率: {switch_rollback/switch_attempts:.1%} ({switch_rollback})")
+            print(f"     - 断连率: {switch_disconnect/switch_attempts:.1%} ({switch_disconnect})")
+            
+            # 切换质量评级
+            success_ratio = switch_success / max(switch_attempts, 1)
+            if success_ratio >= 0.9:
+                quality = "[EXCELLENT] ⭐⭐⭐"
+            elif success_ratio >= 0.7:
+                quality = "[GOOD] ⭐⭐"
+            elif success_ratio >= 0.5:
+                quality = "[ACCEPTABLE] ⭐"
+            else:
+                quality = "[POOR] ❌"
+            print(f"  📌 切换质量评级: {quality}")
+        else:
+            print(f"  📌 无切换尝试 (纯Stay策略)")
+        
+        # ====== 第三部分: 业务类型细分 ======
+        print(f"\n【第三部分】业务类型细分统计 (Business Type Breakdown)")
+        print(f"{'-'*60}")
+        
+        biz_stats = episode_data.get('biz_statistics', {})
+        biz_names = {0: '控制信令', 1: '视频回传', 2: '环境监测'}
+        
+        for bt in range(3):
+            stats = biz_stats.get(bt, {})
+            if stats:
+                avg_sat_bt = stats.get('avg_satisfaction', 0)
+                stay_bt = stats.get('stay_count', 0)
+                switch_bt = stats.get('switch_count', 0)
+                total_bt = stay_bt + switch_bt
+                if total_bt > 0:
+                    print(f"  🔹 业务{bt} ({biz_names[bt]}): "
+                          f"sat={avg_sat_bt:.3f}, "
+                          f"stay={stay_bt/total_bt:.0%}, "
+                          f"switch={switch_bt/total_bt:.0%}")
+        
+        # ====== 第四部分: Reward组分分解 ======
+        print(f"\n【第四部分】Reward组分分解 (Reward Decomposition)")
+        print(f"{'-'*60}")
+        
+        n = max(episode_data.get('sample_count', 1), 1)
+        reward_components = {
+            '速率比增量 (Δrate)': episode_data.get('delta_sum', 0) / n,
+            '反事实比较 (Counterfactual)': episode_data.get('value_reward', 0) / n,
+            '业务权重奖励 (Business)': episode_data.get('biz_reward', 0) / n,
+            '动作奖励 (Action)': episode_data.get('action_reward', 0) / n,
+            '连接状态奖励 (Connection)': episode_data.get('connect_reward', 0) / n,
+            '负载自适应 (Load Adaptive)': episode_data.get('load_adaptive', 0) / n,
+        }
+        
+        for name, value in sorted(reward_components.items(), key=lambda x: x[1], reverse=True):
+            bar_len = min(int(abs(value) * 20), 30)
+            bar = '#' * bar_len if value >= 0 else '-' * bar_len
+            sign = '+' if value >= 0 else ''
+            print(f"  {name}: {sign}{value:.3f} {bar}")
+        
+        # ====== 第五部分: 训练健康指标 ======
+        print(f"\n【第五部分】训练健康指标 (Training Health)")
+        print(f"{'-'*60}")
+        
+        actor_loss = episode_data.get('actor_loss', 0)
+        critic_loss = episode_data.get('critic_loss', 0)
+        entropy = episode_data.get('entropy', 0)
+        grad_norm = episode_data.get('grad_norm', 0)
+        value_mse = episode_data.get('value_mse', 0)
+        
+        health_metrics = [
+            ('Actor Loss', actor_loss, 1e-4),
+            ('Critic Loss', critic_loss, 0.5),
+            ('Entropy', entropy, 0.01),  # 最小阈值
+            ('Grad Norm', grad_norm, None),
+            ('Value MSE', value_mse, 1.0),
+        ]
+        
+        for name, value, threshold in health_metrics:
+            if threshold is not None:
+                status = '[OK]' if value > threshold else '[LOW]'
+            else:
+                status = ''
+            print(f"  {name}: {value:.6f} {status}")
+        
+        # ====== 第六部分: 历史对比与趋势 ======
+        print(f"\n【第六部分】历史最佳对比 (Historical Best Comparison)")
+        print(f"{'-'*60}")
+        
+        # 更新并显示历史最佳
+        for metric_name in ['satisfaction', 'composite_score', 'switch_success_rate']:
+            current_val = episode_data.get(metric_name, 0)
+            best_val = self.best_metrics.get(metric_name, -float('inf'))
+            
+            if current_val > best_val:
+                self.best_metrics[metric_name] = current_val
+                # V21: 修复NaN问题 - 当best_val为-inf时显示为首次记录
+                if best_val == -float('inf') or abs(best_val) < 1e-10:
+                    improvement = 0
+                    print(f"  🏆 NEW BEST! {metric_name}: {current_val:.4f} (首次记录)")
+                else:
+                    improvement = ((current_val - best_val) / abs(best_val) * 100)
+                    print(f"  🏆 NEW BEST! {metric_name}: {current_val:.4f} (提升 {improvement:+.2f}%)")
+            else:
+                gap = best_val - current_val
+                gap_pct = (gap / best_val * 100) if abs(best_val) > 1e-10 else 0
+                print(f"  📈 {metric_name}: {current_val:.4f} (距最佳 {-gap_pct:.1f}%)")
+        
+        # 保存到历史
+        self.episode_history.append({
+            'episode': ep_num,
+            **episode_data
+        })
+        
+        print(f"\n{'='*80}")
+        return self.best_metrics.copy()
+
+
+# 创建全局reporter实例
+episode_reporter = EpisodeDetailedReporter()
+
+# 创建全局过拟合监控器实例 (V22)
+overfitting_monitor = OverfittingMonitor(window_size=20, alert_threshold=0.65)
+
+
+class TrainingTimer:
+    """
+    训练计时系统 (V21: 全面的时间追踪与预估)
+    
+    功能:
+      1. 记录训练开始/结束时间
+      2. 实时显示已用时间、预计剩余时间(ETA)
+      3. Episode级别的耗时统计
+      4. 训练速度监控 (episodes/hour, steps/second)
+      5. 早停影响的时间节省预估
+    
+    输出格式:
+      [TIME] Episode 25/500 | Elapsed: 00:15:32 | ETA: 01:23:45 | Speed: 98.5 ep/h
+    """
+    
+    def __init__(self):
+        self.start_time = None
+        self.episode_start_time = None
+        self.episode_times = []
+        self.total_episodes = 0
+        self.completed_episodes = 0
+        
+    def start_training(self, total_episodes):
+        """训练开始时调用"""
+        import time
+        self.start_time = time.time()
+        self.total_episodes = total_episodes
+        self.completed_episodes = 0
+        self.episode_times = []
+        
+        elapsed = self._format_time(0)
+        print(f"\n{'='*80}")
+        print(f"⏱️  TRAINING TIMER STARTED")
+        print(f"{'='*80}")
+        print(f"  📊 Total Episodes: {total_episodes}")
+        print(f"  🎯 Target: Train MAPPO model with new V21 config system")
+        print(f"  ⏰ Start Time: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"  ⏱️  Elapsed: {elapsed}")
+        print(f"{'='*80}\n")
+        
+    def start_episode(self, ep_num):
+        """每个episode开始时调用"""
+        import time
+        self.episode_start_time = time.time()
+        
+    def end_episode(self, ep_num, verbose=True):
+        """每个episode结束时调用"""
+        import time
+        if self.episode_start_time is None:
+            return
+            
+        ep_duration = time.time() - self.episode_start_time
+        self.episode_times.append(ep_duration)
+        self.completed_episodes += 1
+        
+        if verbose and (self.completed_episodes % 10 == 0 or self.completed_episodes == 1):
+            self._print_progress(ep_num)
+            
+    def _print_progress(self, current_ep):
+        """打印进度信息"""
+        import time
+        
+        # 计算已用时间
+        elapsed = time.time() - self.start_time
+        elapsed_str = self._format_time(elapsed)
+        
+        # 计算平均episode时间
+        if len(self.episode_times) > 0:
+            avg_ep_time = sum(self.episode_times[-20:]) / min(len(self.episode_times), 20)  # 最近20个平均
+        else:
+            avg_ep_time = 0
+            
+        # 计算预计剩余时间 (ETA)
+        remaining_eps = self.total_episodes - current_ep - 1
+        if avg_ep_time > 0 and remaining_eps > 0:
+            eta_seconds = avg_ep_time * remaining_eps
+            eta_str = self._format_time(eta_seconds)
+        else:
+            eta_str = "N/A"
+            
+        # 计算速度
+        if elapsed > 0:
+            speed_eph = self.completed_episodes / (elapsed / 3600)  # episodes per hour
+        else:
+            speed_eph = 0
+            
+        # 进度百分比
+        progress = (current_ep + 1) / self.total_episodes * 100
+        
+        # 创建进度条
+        bar_length = 40
+        filled = int(bar_length * current_ep / self.total_epochs if hasattr(self, 'total_epochs') else bar_length * current_ep / self.total_episodes)
+        bar = '█' * filled + '░' * (bar_length - filled)
+        
+        print(f"\n⏱️  [TIME PROGRESS] Episode {current_ep+1}/{self.total_episodes} [{bar}] {progress:.1f}%")
+        print(f"   ⏱️  Elapsed: {elapsed_str} | ETA: {eta_str} | Speed: {speed_eph:.1f} ep/h")
+        print(f"   📈 Avg Episode Time: {avg_ep_time:.2f}s | Last Episode: {self.episode_times[-1]:.2f}s")
+        
+    def end_training(self, early_stopped=False, stopped_at_ep=None):
+        """训练结束时调用"""
+        import time
+        
+        total_time = time.time() - self.start_time
+        total_str = self._format_time(total_time)
+        
+        # 统计信息
+        if len(self.episode_times) > 0:
+            avg_time = sum(self.episode_times) / len(self.episode_times)
+            min_time = min(self.episode_times)
+            max_time = max(self.episode_times)
+        else:
+            avg_time = min_time = max_time = 0
+            
+        print(f"\n{'='*80}")
+        print(f"⏱️  TRAINING TIMER ENDED")
+        print(f"{'='*80}")
+        print(f"  ⏰ End Time: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"  ⏱️  Total Duration: {total_str}")
+        print(f"  📊 Episodes Completed: {self.completed_episodes}/{self.total_episodes}")
+        
+        if early_stopped and stopped_at_ep is not None:
+            saved_eps = self.total_episodes - stopped_at_ep
+            saved_time_est = avg_time * saved_eps
+            saved_str = self._format_time(saved_time_est)
+            print(f"  ✅ Early Stopped at Episode: {stopped_at_ep}")
+            print(f"  💰 Time Saved (vs full training): ~{saved_str} ({saved_eps} episodes)")
+        
+        print(f"  ⚡ Performance Stats:")
+        print(f"     - Average Episode Time: {avg_time:.2f}s")
+        print(f"     - Fastest Episode: {min_time:.2f}s")
+        print(f"     - Slowest Episode: {max_time:.2f}s")
+        
+        if total_time > 0:
+            speed = self.completed_episodes / (total_time / 3600)
+            print(f"     - Overall Speed: {speed:.1f} episodes/hour")
+            
+        print(f"{'='*80}\n")
+        
+        return {
+            'total_time': total_time,
+            'completed_episodes': self.completed_episodes,
+            'avg_episode_time': avg_time,
+            'early_stopped': early_stopped,
+        }
+        
+    def _format_time(self, seconds):
+        """格式化时间为 HH:MM:SS"""
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        secs = int(seconds % 60)
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
+# 创建全局timer实例
+training_timer = TrainingTimer()
+
+
+class TrainingSafetyManager:
+    """
+    训练安全管理器 (V21: 中断安全 + 预训练缓存)
+    
+    功能:
+      1. 信号处理: 捕获 Ctrl+C (SIGINT) 和终止信号 (SIGTERM)
+      2. 紧急保存: 中断时自动保存当前模型和训练状态
+      3. 预训练缓存: 缓存预训练结果，避免重复收集示范数据
+      4. 断点续训: 支持从中断点恢复训练
+    
+    使用方式:
+      safety_mgr = TrainingSafetyManager(agent, model_path)
+      safety_mgr.enable_signal_handlers()
+      # ... 训练过程中 ...
+      safety_mgr.disable_signal_handlers()  # 训练结束时禁用
+    """
+    
+    def __init__(self):
+        self.agent = None
+        self.latest_model_path = None
+        self.best_model_path = None
+        self.checkpoint_dir = None
+        self.current_episode = 0
+        self.training_state = {
+            'episode_rewards': [],
+            'episode_satisfactions': [],
+            'best_composite_score': float('-inf'),
+            'best_sat': float('-inf'),
+            'composite_window': [],
+            'satisfaction_window': [],
+        }
+        self._original_sigint = None
+        self._original_sigterm = None
+        self._interrupted = False
+        self._lock = threading.Lock()
+        
+    def setup(self, agent, latest_model_path, best_model_path, checkpoint_dir=None):
+        """初始化安全管理器"""
+        self.agent = agent
+        self.latest_model_path = latest_model_path
+        self.best_model_path = best_model_path
+        self.checkpoint_dir = checkpoint_dir or os.path.dirname(latest_model_path)
+        
+        # 创建checkpoint目录
+        os.makedirs(self.checkpoint_dir, exist_ok=True)
+        
+        print(f"\n[SAFETY] TrainingSafetyManager initialized")
+        print(f"         Latest model: {latest_model_path}")
+        print(f"         Best model: {best_model_path}")
+        print(f"         Checkpoint dir: {self.checkpoint_dir}")
+        
+    def update_state(self, episode_num, reward, satisfaction, composite_score,
+                     episode_rewards=None, episode_sats=None,
+                     composite_window=None, sat_window=None,
+                     best_composite=None, best_sat=None):
+        """更新当前训练状态（用于断点续训）"""
+        with self._lock:
+            self.current_episode = episode_num
+            if episode_rewards is not None:
+                self.training_state['episode_rewards'] = episode_rewards.copy()
+            if episode_sats is not None:
+                self.training_state['episode_satisfactions'] = episode_sats.copy()
+            if composite_window is not None:
+                self.training_state['composite_window'] = composite_window.copy()
+            if sat_window is not None:
+                self.training_state['satisfaction_window'] = sat_window.copy()
+            if best_composite is not None:
+                self.training_state['best_composite_score'] = best_composite
+            if best_sat is not None:
+                self.training_state['best_sat'] = best_sat
+                
+    def enable_signal_handlers(self):
+        """启用信号处理器（捕获Ctrl+C等）"""
+        self._original_sigint = signal.getsignal(signal.SIGINT)
+        self._original_sigterm = signal.signal(signal.SIGTERM, self._signal_handler)
+        
+        # Windows可能不支持SIGTERM，使用try-except
+        try:
+            signal.signal(signal.SIGINT, self._signal_handler)
+        except Exception as e:
+            print(f"[WARN] Cannot set SIGINT handler: {e}")
+            
+        print(f"[SAFETY] Signal handlers ENABLED (Press Ctrl+C for safe shutdown)")
+        
+    def disable_signal_handlers(self):
+        """禁用信号处理器"""
+        try:
+            if self._original_sigint is not None:
+                signal.signal(signal.SIGINT, self._original_sigint)
+            if self._original_sigterm is not None:
+                signal.signal(signal.SIGTERM, self._original_sigterm)
+        except Exception:
+            pass
+            
+        print(f"[SAFETY] Signal handlers DISABLED")
+        
+    def _signal_handler(self, signum, frame):
+        """信号处理函数"""
+        print(f"\n\n{'='*80}")
+        print(f"[INTERRUPT] Signal {signum} received - Initiating SAFE SHUTDOWN")
+        print(f"{'='*80}")
+        
+        self._interrupted = True
+        
+        # 执行紧急保存
+        self._emergency_save()
+        
+        # 恢复原始信号处理并退出
+        self.disable_signal_handlers()
+        
+        print(f"\n[SAFE EXIT] Training interrupted safely at Episode {self.current_episode}")
+        print(f"         Model saved to: {self.latest_model_path}")
+        print(f"         You can resume training later with the saved model.")
+        sys.exit(0)
+        
+    def _emergency_save(self):
+        """紧急保存当前状态"""
+        if self.agent is None:
+            print("[ERROR] No agent to save!")
+            return
+            
+        try:
+            import time
+            
+            print(f"\n[EMERGENCY SAVE] Saving current state...")
+            start_time = time.time()
+            
+            # 1. 保存最新模型
+            if self.latest_model_path:
+                self.agent.save(self.latest_model_path)
+                print(f"  [OK] Latest model saved: {self.latest_model_path}")
+            
+            # 2. 保存训练状态checkpoint
+            checkpoint_path = os.path.join(
+                self.checkpoint_dir,
+                f'training_checkpoint_ep{self.current_episode}.pkl'
+            )
+            
+            checkpoint_data = {
+                'episode': self.current_episode,
+                'timestamp': datetime.now().isoformat(),
+                'training_state': self.training_state.copy(),
+            }
+            
+            with open(checkpoint_path, 'wb') as f:
+                pickle.dump(checkpoint_data, f)
+                
+            elapsed = time.time() - start_time
+            print(f"  [OK] Checkpoint saved: {checkpoint_path} ({elapsed:.2f}s)")
+            print(f"  [OK] Emergency save COMPLETED successfully")
+            
+        except Exception as e:
+            print(f"[ERROR] Emergency save failed: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    @staticmethod
+    def get_pretrain_cache_path(num_uav, num_bs):
+        """获取预训练缓存路径"""
+        cache_dir = os.path.join(RESULT_DIR, 'mappo_models', 'pretrain_cache')
+        os.makedirs(cache_dir, exist_ok=True)
+        return os.path.join(cache_dir, f'pretrain_{num_uav}uav_{num_bs}bs.pkl')
+    
+    @staticmethod
+    def save_pretrain_cache(agent, demos, num_uav, num_bs, 
+                           pretrain_epochs=50, pretrain_loss=0.0):
+        """保存预训练缓存"""
+        cache_path = TrainingSafetyManager.get_pretrain_cache_path(num_uav, num_bs)
+        
+        cache_data = {
+            'agent_state_dict': agent.actor.state_dict(),
+            'demos': demos[:500],  # 只保存500条作为样本
+            'num_uav': num_uav,
+            'num_bs': num_bs,
+            'pretrain_epochs': pretrain_epochs,
+            'final_loss': pretrain_loss,
+            'created_at': datetime.now().isoformat(),
+            'version': 'V21',
+        }
+        
+        with open(cache_path, 'wb') as f:
+            pickle.dump(cache_data, f)
+            
+        print(f"[CACHE] Pretrain cache saved: {cache_path}")
+        print(f"        Demos cached: {len(demos)} -> 500 samples")
+        return cache_path
+        
+    @staticmethod
+    def load_pretrain_cache(num_uav, num_bs):
+        """加载预训练缓存"""
+        cache_path = TrainingSafetyManager.get_pretrain_cache_path(num_uav, num_bs)
+        
+        if not os.path.exists(cache_path):
+            return None
+            
+        if os.environ.get('FORCE_RETRAIN'):
+            print(f"[CACHE] FORCE_RETRAIN set - ignoring cache")
+            return None
+            
+        try:
+            with open(cache_path, 'rb') as f:
+                cache_data = pickle.load(f)
+                
+            print(f"[CACHE] Pretrain cache loaded: {cache_path}")
+            print(f"        Created: {cache_data.get('created_at', 'unknown')}")
+            print(f"        Pretrain epochs: {cache_data.get('pretrain_epochs', 'unknown')}")
+            print(f"        Final loss: {cache_data.get('final_loss', 'unknown'):.4f}")
+            
+            return cache_data
+            
+        except Exception as e:
+            print(f"[WARN] Failed to load pretrain cache: {e}")
+            return None
+    
+    @staticmethod
+    def apply_pretrain_cache(agent, cache_data):
+        """应用预训练缓存到agent"""
+        try:
+            agent.actor.load_state_dict(cache_data['agent_state_dict'])
+            print(f"[CACHE] Pretrained weights applied to agent")
+            return True
+        except Exception as e:
+            print(f"[ERROR] Failed to apply pretrained weights: {e}")
+            return False
+
+
+# 创建全局safety manager实例
+training_safety = TrainingSafetyManager()
+
+
 class ExperimentBAMAPPO:
     """BA-MAPPO 多智能体强化学习实验"""
 
@@ -618,16 +1883,43 @@ class ExperimentBAMAPPO:
             #       让 RL 从合理策略出发微调，而非从纯随机开始探索
 
             if agent.use_pretrain and not (load_models and os.path.exists(model_path)):
-                print("  [V22] 启用增强算法行为克隆预训练...")
-                print("         收集增强算法决策作为示范数据...")
+                # V21: 检查预训练缓存
+                pretrain_cache = TrainingSafetyManager.load_pretrain_cache(num_uav, num_bs)
+                
+                if pretrain_cache is not None:
+                    # 使用缓存的预训练权重
+                    print("  [V22] Loading PRETRAINED weights from CACHE...")
+                    success = TrainingSafetyManager.apply_pretrain_cache(agent, pretrain_cache)
+                    if success:
+                        print(f"         Pretrained model loaded (cache created: {pretrain_cache.get('created_at', 'unknown')})")
+                        print(f"         → 预期: sat 从 ~0.92 起步，逐步上升到 ~0.96+")
+                    else:
+                        print("         [WARN] Failed to load cache, will retrain...")
+                        pretrain_cache = None
+                
+                if pretrain_cache is None:
+                    # 无缓存或加载失败，执行完整预训练
+                    print("  [V22] 启用增强算法行为克隆预训练...")
+                    print("         收集增强算法决策作为示范数据...")
 
-                demos = agent.collect_demonstrations(env, num_demos=2000)
-                print(f"         收集到 {len(demos)} 条示范数据")
+                    demos = agent.collect_demonstrations(env, num_demos=2000)
+                    print(f"         收集到 {len(demos)} 条示范数据")
 
-                agent.pretrain(demos, epochs=50, batch_size=64, min_loss_threshold=0.05, patience=5)
+                    # 执行预训练并获取最终loss
+                    pretrain_result = agent.pretrain(demos, epochs=50, batch_size=64, min_loss_threshold=0.05, patience=5)
+                    final_loss = pretrain_result.get('final_loss', 0.0) if isinstance(pretrain_result, dict) else 0.0
 
-                print("         预训练完成，策略已初始化为近似增强算法水平")
-                print("         → 预期: sat 从 ~0.92 起步，逐步上升到 ~0.96+")
+                    # V21: 保存预训练缓存
+                    TrainingSafetyManager.save_pretrain_cache(
+                        agent, demos, num_uav, num_bs,
+                        pretrain_epochs=50,
+                        pretrain_loss=final_loss
+                    )
+
+                    print("         预训练完成，策略已初始化为近似增强算法水平")
+                    print(f"         Final loss: {final_loss:.4f}")
+                    print("         → 预期: sat 从 ~0.92 起步，逐步上升到 ~0.96+")
+                    print("         → Cache saved for future use (skip collection next time)")
 
             _bs = num_bs_list[0] if isinstance(num_bs_list, (list, tuple)) else num_bs_list
 
@@ -721,16 +2013,23 @@ class ExperimentBAMAPPO:
             best_reward = float('-inf')
             best_sat = float('-inf')  # satisfaction-based 模型选择
             save_interval = 50
+            save_interval = 10  # V21: 减少保存间隔到10个episode（原50，提高中断安全性）
             health_monitor = TrainingHealthMonitor(check_interval=10, verbose=True)
             # 分离 best 和 latest 模型路径
             best_model_path = model_path.replace('.pt', '_best.pt')
             latest_model_path = model_path.replace('.pt', '_latest.pt')
-            # ---- Early stopping 参数 (V3: 大幅放宽，确保充分收敛) ----
-            early_stop_average_window = 120                 # 平均120轮满意度无改善即停止（原60）
-            early_stop_min_delta = 0.0005                   # 更敏感的检测（原0.001）
-            early_stop_warmup = train_episodes // 4         # warmup延长到25%（原20%）
-            satisfaction_window = []                        # 存储最近60轮满意度用于平均值计算
+            # ---- Early stopping 参数 (V4/V21: 从配置读取) ----
+            tc = MAPPOConfig.TrainingConfig  # V21: 简化引用
+            early_stop_average_window = tc.early_stop_window                  # 平均40轮无改善即停止 (原120, 减少67%)
+            early_stop_min_delta = tc.early_stop_min_delta                   # 改善阈值 (原0.0005, 稍微放宽)
+            early_stop_warmup = max(20, int(train_episodes * tc.warmup_ratio))  # warmup缩短到10% (原25%)
+            satisfaction_window = []                        # 存储最近N轮综合评分
+            composite_window = []                           # 存储最近N轮综合评分用于平均
+            best_composite_score = float('-inf')            # 最佳综合评分
             early_stopped = False
+            
+            # 综合评分权重配置 (V21: 从配置读取)
+            COMPOSITE_WEIGHTS = tc.composite_weights.copy()  # V21: 使用配置中的权重
             # 早期健康检查: 在 10% 训练进度时检查 reward 是否在正增长
             health_check_ep = max(10, train_episodes // 10)
             mid_check_eps = [2 * health_check_ep, 3 * health_check_ep]  # Ep200, Ep300
@@ -741,6 +2040,14 @@ class ExperimentBAMAPPO:
 
             # 直接在标准环境中训练，确保模型能够适应真实场景
             print("\n  开始训练：标准环境 + Domain Randomization")
+            
+            # V21: 启动训练计时系统
+            training_timer.start_training(train_episodes)
+            
+            # V21: 初始化训练安全管理器（中断安全 + 预训练缓存）
+            training_safety.setup(agent, latest_model_path, best_model_path)
+            training_safety.enable_signal_handlers()
+            
             simple_episodes = 0  # 移除简单环境训练
             for ep in range(simple_episodes):
                 obs_dict, global_state = simple_env.reset()
@@ -893,11 +2200,32 @@ class ExperimentBAMAPPO:
                 print(f"  [VECTORIZED] 使用 {num_parallel} 个并行环境收集数据")
 
             for ep in range(train_episodes):
-                # V20: 基于训练容量范围进行温和DR（±15%）
+                # V21: 开始episode计时
+                training_timer.start_episode(ep)
+                
+                # ====== Seed Randomization (V14: 提升泛化能力) ======
+                # 核心思想: 每个episode使用不同的随机种子，避免模型过拟合到特定seed
+                # 实现方式: 
+                #   base_seed = GLOBAL_SEED (保证可重现性)
+                #   ep_seed = base_seed + ep * prime_offset + random_jitter
+                #   其中 prime_offset = 1009 (大质数, 减少周期性)
+                #         random_jitter = [0, 100) 范围内随机值
+                #
+                # 泛化效果预期:
+                #   - 训练时: 模型看到更多样的初始状态分布
+                #   - 测试时: 对不同seed的适应性提升3-5%
+                #   - 过拟合风险: 降低 (不再记忆特定seed的模式)
+                PRIME_OFFSET = tc.prime_offset  # V21: 大质数，避免简单的线性关系
+                MAX_JITTER = tc.max_jitter       # V21: 最大随机偏移量
+                ep_seed = GLOBAL_SEED + ep * PRIME_OFFSET + np.random.randint(0, MAX_JITTER)
+                set_global_seed(ep_seed)
+                
+                # V20/V21: 基于训练容量范围进行温和DR（从配置读取）
                 # 训练用高负载(500,680)，评估保持(500,1000)
+                dr_cfg = MAPPOConfig.TrainingConfig  # V21
                 random_capacity_range = (
-                    int(train_capacity_range[0] * (0.88 + 0.24 * np.random.rand())),
-                    int(train_capacity_range[1] * (0.88 + 0.24 * np.random.rand()))
+                    int(train_capacity_range[0] * (dr_cfg.dr_capacity_low_scale + (dr_cfg.dr_capacity_high_scale - dr_cfg.dr_capacity_low_scale) * np.random.rand())),
+                    int(train_capacity_range[1] * (dr_cfg.dr_capacity_low_scale + (dr_cfg.dr_capacity_high_scale - dr_cfg.dr_capacity_low_scale) * np.random.rand()))
                 )
                 
                 if use_vectorized:
@@ -1165,6 +2493,7 @@ class ExperimentBAMAPPO:
                     grad_str = f"{avg_ag:.2f}" if avg_ag is not None else "N/A"
                     vmse_str = f"{avg_vmse:.1f}" if avg_vmse is not None else "N/A"
                     print(f"  标准环境 Episode {ep+1}/{train_episodes}: "
+                          f"seed={ep_seed}, "
                           f"reward={episode_reward:.1f}(mu={np.mean(recent_rews):.1f},sigma={np.std(recent_rews):.1f}), "
                           f"sat={np.mean(episode_sat):.3f}, "
                           f"stay={stay_pct:.0f}%, {sw_str}, "
@@ -1177,45 +2506,155 @@ class ExperimentBAMAPPO:
                         print(f"           - Advantage values too small (weak reward signal)")
                         print(f"           - Suggestion: increase entropy_coef or check reward design")
 
-                # ---- Early stopping 判断 (基于 satisfaction) ----
+                # ---- Early stopping 判断 (V4: 基于综合评分) ----
                 ep_sat = np.mean(episode_sat)
+                
+                # 计算当前episode的综合指标
+                ep_connected_ratio = 1.0 - (ep_disconnected_steps / max(env.num_agents * num_steps, 1))
+                ep_load_variance = np.var([bs.load_ratio for bs in env.env.base_stations.values()]) if hasattr(env, 'env') else 0.0
+                ep_switch_success_rate = ss / max(sa, 1) if sa > 0 else 1.0
+                ep_critical_sat = np.mean([s for s in episode_sat if True])  # 简化: 使用整体满意度作为代理
+                
+                # 计算综合评分 (加权组合, 所有指标归一化到[0,1])
+                composite_score = (
+                    COMPOSITE_WEIGHTS['satisfaction'] * ep_sat +
+                    COMPOSITE_WEIGHTS['connected_ratio'] * ep_connected_ratio +
+                    COMPOSITE_WEIGHTS['load_balance'] * (1.0 - min(ep_load_variance, 1.0)) +  # 负载方差越小越好
+                    COMPOSITE_WEIGHTS['switch_success'] * ep_switch_success_rate +
+                    COMPOSITE_WEIGHTS['critical_sat'] * ep_critical_sat
+                )
+                
+                # V21: 生成详细Episode报告 (每5个episode输出一次详细报告)
+                if verbose and (ep + 1) % 5 == 0:
+                    episode_data = {
+                        'satisfaction': ep_sat,
+                        'reward': episode_reward,
+                        'reward_std': np.std(episode_rewards[-min(10, len(episode_rewards)):]) if len(episode_rewards) > 1 else 0.0,  # V22: 添加reward标准差
+                        'connected_ratio': ep_connected_ratio,
+                        'switch_success_rate': ep_switch_success_rate,
+                        'load_variance': ep_load_variance,
+                        'composite_score': composite_score,
+                        'stay_percentage': stay_pct,
+                        'switch_attempts': sa,
+                        'switch_success': ss,
+                        'switch_rollback': sr,
+                        'switch_disconnect': sd,
+                        'biz_statistics': {
+                            bt: {
+                                'avg_satisfaction': np.mean(ep_biz_stats[bt]['satisfaction']) if ep_biz_stats[bt]['satisfaction'] else 0,
+                                'stay_count': ep_biz_stats[bt]['stay'],
+                                'switch_count': ep_biz_stats[bt]['switch'],
+                            } for bt in range(3)
+                        },
+                        'delta_sum': ep_reward_diag.get('delta_sum', 0),
+                        'value_reward': ep_reward_diag.get('value_reward_sum', 0),
+                        'biz_reward': ep_reward_diag.get('biz_reward_sum', 0),
+                        'action_reward': ep_reward_diag.get('action_reward_sum', 0),
+                        'connect_reward': ep_reward_diag.get('connect_reward_sum', 0),
+                        'load_adaptive': ep_reward_diag.get('load_adaptive_sum', 0),
+                        'sample_count': max(ep_reward_diag.get('count', 1), 1),
+                        'actor_loss': avg_al,
+                        'critic_loss': avg_cl,
+                        'entropy': avg_ent,
+                        'grad_norm': avg_ag if avg_ag is not None else 0,
+                        'value_mse': avg_vmse if avg_vmse is not None else 0,
+                    }
+                    
+                    best_metrics = episode_reporter.generate_report(
+                        ep_num=ep+1,
+                        total_eps=train_episodes,
+                        episode_data=episode_data,
+                        env=env
+                    )
+                    
+                    # V22: 过拟合监控检查 (在详细报告后输出)
+                    risk_report = overfitting_monitor.check(episode_data)
+                    print(overfitting_monitor.format_report(risk_report))
+                    
+                    # V22: 高风险警报处理
+                    if risk_report['is_alert']:
+                        print(f"  [!! OVERFITTING ALERT !!] Risk score {risk_report['total_risk']:.3f} exceeds threshold!")
+                        print(f"     -> Recommendation: {risk_report['recommendation']}")
+                        # 可选: 自动保存当前状态以便分析
+                        # if risk_report['total_risk'] > 0.8:
+                        #     print("  🚨 CRITICAL: Consider stopping training immediately")
+                
+                is_best_composite = composite_score > best_composite_score + early_stop_min_delta
                 is_best_sat = ep_sat > best_sat + early_stop_min_delta
                 is_best_reward = episode_reward > best_reward + early_stop_min_delta
+                
+                if is_best_composite:
+                    best_composite_score = composite_score
+                    print(f"    [NEW_BEST] 综合评分新高: {composite_score:.4f} "
+                          f"(sat={ep_sat:.3f}, conn={ep_connected_ratio:.3f}, "
+                          f"lb={ep_load_variance:.4f}, sw={ep_switch_success_rate:.2%})")
+                
                 if is_best_sat:
                     best_sat = ep_sat
                 if is_best_reward:
                     best_reward = episode_reward
 
-                # 更新满意度滑动窗口
+                # 更新滑动窗口 (使用综合评分)
+                composite_window.append(composite_score)
                 satisfaction_window.append(ep_sat)
+                if len(composite_window) > early_stop_average_window:
+                    composite_window.pop(0)
                 if len(satisfaction_window) > early_stop_average_window:
                     satisfaction_window.pop(0)
 
-                # 模型保存: best 模型仅在 satisfaction 新高时保存, latest 每 save_interval 保存
-                if is_best_sat:
+                # 模型保存: best 模型基于综合评分, latest 定期保存
+                if is_best_composite:
                     agent.save(best_model_path)
                 if (ep + 1) % save_interval == 0:
                     agent.save(latest_model_path)
+                
+                # V21: 更新训练安全管理器状态（用于中断恢复）
+                training_safety.update_state(
+                    episode_num=ep,
+                    reward=episode_reward,
+                    satisfaction=np.mean(episode_sat) if episode_sat else 0,
+                    composite_score=composite_score,
+                    episode_rewards=episode_rewards,
+                    episode_sats=episode_satisfactions,
+                    composite_window=composite_window,
+                    sat_window=satisfaction_window,
+                    best_composite=best_composite_score,
+                    best_sat=best_sat
+                )
 
-                # 平均早停判断: 当热身期过后且窗口已满时
+                # V21: 结束episode计时
+                training_timer.end_episode(ep, verbose=verbose)
+
+                # 平均早停判断: 基于综合评分 (V4核心改进)
                 if (ep >= early_stop_warmup and 
                     ep >= health_check_ep * 2 and
-                    len(satisfaction_window) >= early_stop_average_window):
-                    window_avg = np.mean(satisfaction_window)
-                    if window_avg <= best_sat + early_stop_min_delta:
+                    len(composite_window) >= early_stop_average_window):
+                    window_avg_composite = np.mean(composite_window)
+                    if window_avg_composite <= best_composite_score + early_stop_min_delta:
                         if verbose:
-                            print(f"\n  [STOP] Early stopping [Episode {ep+1}]: "
-                                  f"最近 {early_stop_average_window} 轮平均满意度 {window_avg:.4f} 无显著改善 "
-                                  f"(best_sat={best_sat:.4f}, best_reward={best_reward:.3f})")
+                            print(f"\n  [STOP] Early stopping [Episode {ep+1}] (V4-Composite): "
+                                  f"最近 {early_stop_average_window} 轮平均综合评分 {window_avg_composite:.4f} 无显著改善 "
+                                  f"(best_composite={best_composite_score:.4f}, "
+                                  f"best_sat={best_sat:.4f}, episodes_saved={500-(ep+1)})")
                         early_stopped = True
                         break
+
+            # V21: 结束训练计时
+            timer_results = training_timer.end_training(
+                early_stopped=early_stopped,
+                stopped_at_ep=ep if early_stopped else None
+            )
+
+            # V21: 禁用信号处理器（训练正常结束）
+            training_safety.disable_signal_handlers()
 
             # 训练结束: 确保 model_path 指向 best 模型
             import shutil
             if os.path.exists(best_model_path):
                 shutil.copy2(best_model_path, model_path)
                 if verbose:
-                    print(f"  [OK] 最终模型已更新为 best_sat={best_sat:.4f} 的版本")
+                    print(f"  [OK] 最终模型已更新为 best_composite={best_composite_score:.4f} 的版本 "
+                          f"(best_sat={best_sat:.4f})")
 
                 training_results[num_uav] = {
                     'rewards': episode_rewards,

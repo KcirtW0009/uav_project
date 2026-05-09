@@ -1061,7 +1061,7 @@ class MAPPOAgentV2:
         # 预训练优化器 (使用单独的学习率)
         pretrain_optimizer = optim.Adam(self.actor.parameters(), lr=1e-3)
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-            pretrain_optimizer, mode='min', factor=0.5, patience=5, verbose=False
+            pretrain_optimizer, mode='min', factor=0.5, patience=5
         )
         
         best_val_loss = float('inf')
@@ -1131,8 +1131,17 @@ class MAPPOAgentV2:
                     print(f"  验证损失 {patience} 轮未改善，早停")
                     break
         
-        print(f"  预训练完成，最终验证损失: {val_loss:.4f}")
+        final_loss = val_loss
+        print(f"  预训练完成，最终验证损失: {final_loss:.4f}")
         self.actor.train()  # 恢复训练模式
+        
+        # V21: 返回预训练结果信息
+        return {
+            'final_loss': final_loss,
+            'best_val_loss': best_val_loss,
+            'epochs_completed': epoch + 1,
+            'n_samples': n_samples,
+        }
 
 
 # 保持向后兼容

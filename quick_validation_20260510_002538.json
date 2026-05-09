@@ -1,0 +1,87 @@
+{
+  "timestamp": "2026-05-10T00:25:38.743401",
+  "model_path": "experiment_results/mappo_models/mappo_8bs_300uav_best.pt",
+  "mappo_stats": {
+    "avg_satisfaction": 0.9644949554596652,
+    "critical_satisfaction": 0.9105252158536092,
+    "weighted_satisfaction": 0.9644949554596652,
+    "connected_count": 300,
+    "connected_ratio": 1.0,
+    "total_throughput": 4606.0,
+    "handover_success_rate": 1.0,
+    "avg_switching_latency_ms": 6.996563993389448,
+    "load_variance": 0.004561414814050879,
+    "avg_sinr": 17.776405661464906,
+    "_algorithm": "MAPPO"
+  },
+  "baseline": {
+    "enhanced_avg_satisfaction": 0.925236943512493,
+    "enhanced_avg_satisfaction_std": 0.0560114343620322,
+    "enhanced_handover_success_rate": 0.938372282181725,
+    "enhanced_handover_success_rate_std": 0.10802765348953235,
+    "enhanced_connected_ratio": 0.9804961010643041,
+    "enhanced_connected_ratio_std": 0.02558501749408018,
+    "enhanced_critical_satisfaction": 0.9990131578947368,
+    "enhanced_critical_satisfaction_std": 0.002960526315789458,
+    "enhanced_load_variance": 0.00199827129730381,
+    "enhanced_load_variance_std": 0.0019567396931760876,
+    "traditional_avg_satisfaction": 0.8216094772361501,
+    "traditional_avg_satisfaction_std": 0.06834530564009311,
+    "traditional_handover_success_rate": 0.6336974835867117,
+    "traditional_handover_success_rate_std": 0.13243697475547755,
+    "traditional_connected_ratio": 0.7755040750526119,
+    "traditional_connected_ratio_std": 0.0971468004033929,
+    "traditional_critical_satisfaction": 0.9365899967003923,
+    "traditional_critical_satisfaction_std": 0.03320753830791555,
+    "traditional_load_variance": 0.0368851790807948,
+    "traditional_load_variance_std": 0.022576896096579646
+  },
+  "judgment": {
+    "verdict_type": "OVERFITTING_RISK",
+    "confidence": "低",
+    "win_rate": 0.6,
+    "avg_improvement": -24.865171554637026,
+    "detailed_results": [
+      {
+        "metric": "整体满意度",
+        "mappo": 0.9644949554596652,
+        "enhanced": 0.925236943512493,
+        "diff_pct": 4.243022527628047,
+        "better": "True",
+        "verdict": "[OK] 优于"
+      },
+      {
+        "metric": "连接保持率",
+        "mappo": 1.0,
+        "enhanced": 0.9804961010643041,
+        "diff_pct": 1.9891867917195116,
+        "better": true,
+        "verdict": "[~] 略优"
+      },
+      {
+        "metric": "切换成功率",
+        "mappo": 1.0,
+        "enhanced": 0.938372282181725,
+        "diff_pct": 6.567512594787003,
+        "better": true,
+        "verdict": "[OK] 优于"
+      },
+      {
+        "metric": "关键业务满意度",
+        "mappo": 0.9105252158536092,
+        "enhanced": 0.9990131578947368,
+        "diff_pct": -8.857535192789848,
+        "better": "False",
+        "verdict": "[X] 劣于"
+      },
+      {
+        "metric": "负载方差",
+        "mappo": 0.004561414814050879,
+        "enhanced": 0.00199827129730381,
+        "diff_pct": -128.26804449452985,
+        "better": "False",
+        "verdict": "[X] 劣于"
+      }
+    ]
+  }
+}

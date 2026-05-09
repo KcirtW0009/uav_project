@@ -324,7 +324,7 @@ class AdaptiveRecognitionUpdater:
         }
 
 
-def train_or_load_recognition_model(force_retrain=False, compare_models=True, verbose=True):
+def train_or_load_recognition_model(force_retrain=False, compare_models=True, verbose=True, force_compare=False):
     """
     训练或加载业务识别模型
 
@@ -332,6 +332,7 @@ def train_or_load_recognition_model(force_retrain=False, compare_models=True, ve
         force_retrain: 是否强制重新训练
         compare_models: 是否对比多种模型并选取最优
         verbose: 是否打印详细信息
+        force_compare: 是否强制进行模型对比（即使已有保存的模型）
 
     Returns:
         (model, all_model_results): 训练好的模型和所有模型对比结果（加载时为None）
@@ -341,11 +342,20 @@ def train_or_load_recognition_model(force_retrain=False, compare_models=True, ve
     all_results_file = "all_model_results.pkl"
 
     # 尝试加载已有模型
-    if not force_retrain and os.path.exists(model_file) and os.path.exists(scaler_file):
+    if not force_retrain and not force_compare and os.path.exists(model_file) and os.path.exists(scaler_file):
         if verbose:
             print("发现已保存的模型，正在加载...")
         model = BusinessRecognitionModel()
         model.load()
+        
+        if verbose:
+            print(f"  [INFO] Loaded model type: {model.model_type}")
+            if force_compare:
+                print("  [WARN] force_compare=True, but model still loaded (this should not happen)")
+            elif compare_models:
+                print("  [NOTE] compare_models=True, but existing model loaded without comparison")
+                print("         Use --retrain or force_compare=True to re-compare models")
+        
         # 使用与训练数据同分布的种子生成测试集（避免分布偏移）
         X_test, y_test = BusinessRecognitionModel.generate_business_data(
             num_samples_per_class=500, seed=RECOGNITION_SEED + 42, noise_level=0.1)

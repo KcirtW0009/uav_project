@@ -14,12 +14,14 @@ BA-MAPPO 训练:
     .\venv\Scripts\python.exe main.py --exp mappo --rl-load     加载模型，仅评估
     .\venv\Scripts\python.exe main.py --exp mappo --rl-phase phase  仅训练阶段
     .\venv\Scripts\python.exe main.py --exp mappo --small        小规模调试 (128UAV/3BS)
+    .\venv\Scripts\python.exe main.py --exp mappo --force-compare 强制重新对比识别模型 (选最优dt/rf等)
 
 参数说明:
     --include-mappo:  实验3/4中集成MAPPO，实现三算法对比（传统 vs 增强 vs MAPPO）
     --mappo-model:    指定MAPPO模型路径（默认自动检测 8BSx300UAV 模型）
     --small:           缩减训练规模（快速调试用）
     --retrain:         强制重新训练业务识别模型
+    --force-compare:   强制重新对比所有识别模型并选取最优（忽略已有模型）
 
 架构说明:
     - 实验1/2/2b/2c: 业务识别 + 切换算法设计验证
@@ -80,7 +82,8 @@ def main(force_retrain=False, run_experiments=None,
         print("\n步骤1: 初始化业务识别模型（MAPPO评估阶段使用）...")
 
     recognition_model, all_model_results = train_or_load_recognition_model(
-        force_retrain=force_retrain, compare_models=True, verbose=True
+        force_retrain=force_retrain, compare_models=True, verbose=True,
+        force_compare=args.force_compare
     )
     scaler = recognition_model.scaler
 
@@ -221,6 +224,8 @@ if __name__ == "__main__":
                         help='在实验3/4中集成MAPPO评估，实现三算法对比')
     parser.add_argument('--mappo-model', type=str, default=None,
                         help='指定MAPPO模型路径（默认自动检测 mappo_models/mappo_8bs_300uav.pt）')
+    parser.add_argument('--force-compare', action='store_true',
+                        help='强制重新对比所有识别模型并选取最优（忽略已有模型）')
     args = parser.parse_args()
 
     if args.all:
