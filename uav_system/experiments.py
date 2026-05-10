@@ -226,7 +226,7 @@ def evaluate_mappo_in_experiment(num_bs: int, num_uav: int, num_steps: int,
                       for uid in range(min(100, env.num_agents))]),
             np.array([env.env.uavs[uid].true_business_type.value
                       for uid in range(min(100, env.num_agents))])
-        )[0] * 100) if recognition_model else 100.0,
+        )[0]) if recognition_model else 1.0,  # [FIX] 移除*100，统一在打印时处理
         '_algorithm': 'MAPPO',
     }
     
@@ -1172,8 +1172,23 @@ class Experiment3:
                     )
                     if mappo_stats is not None:
                         mappo_results.append(mappo_stats)
+                        # [AUTO-SAVE] 每轮完成后立即保存，防止绘图崩溃丢失数据
+                        try:
+                            import json
+                            auto_save_path = os.path.join(RESULT_DIR, 'exp3_mappo_raw_results.json')
+                            with open(auto_save_path, 'w', encoding='utf-8') as f:
+                                json.dump({
+                                    'timestamp': datetime.now().isoformat(),
+                                    'total_completed': len(mappo_results),
+                                    'seed_order': mappo_seed_order,
+                                    'results': mappo_results
+                                }, f, ensure_ascii=False, indent=2, default=str)
+                            print(f"  [AUTO-SAVE] 已保存 {len(mappo_results)} 轮结果 -> {auto_save_path}")
+                        except Exception as save_err:
+                            print(f"  [WARN] 自动保存失败: {save_err}")
+
                         # 显示MAPPO的所有17个指标
-                        print(f"\n  [MAPPO #{rep+1}] 完整指标:")
+                        print(f"\n  [MAPPO #{idx+1}] 完整指标:")
                         print("  " + "-"*60)
                         for metric_key, metric_name in Experiment3.METRICS.items():
                             if metric_key in mappo_stats:
@@ -1238,7 +1253,31 @@ class Experiment3:
         # 将检验结果添加到summary中
         summary['statistical_tests'] = all_test_results
 
-        Experiment3._plot(summary)
+        # [FINAL-SAVE] 绘图前保存完整summary（防止绘图崩溃）
+        if include_mappo and len(mappo_results) > 0:
+            try:
+                final_save_path = os.path.join(RESULT_DIR, 'exp3_mappo_summary.json')
+                with open(final_save_path, 'w', encoding='utf-8') as f:
+                    json.dump({
+                        'timestamp': datetime.now().isoformat(),
+                        'total_mappo_runs': len(mappo_results),
+                        'seed_order': mappo_seed_order,
+                        'summary': {k: {kk: (vv[0], vv[1]) if isinstance(vv, tuple) else vv
+                                       for kk, vv in v.items()}
+                                    for k, v in summary.items()},
+                        'raw_results': mappo_results
+                    }, f, ensure_ascii=False, indent=2, default=str)
+                print(f"\n  [FINAL-SAVE] 完整结果已保存 → {final_save_path}")
+            except Exception as e:
+                print(f"\n  [WARN] 最终保存失败: {e}")
+
+        try:
+            Experiment3._plot(summary)
+        except Exception as plot_err:
+            print(f"\n  [WARN] 绘图出错 (数据已保存，不影响结果): {plot_err}")
+            import traceback
+            traceback.print_exc()
+
         return summary
 
     @staticmethod
@@ -2436,6 +2475,26 @@ class Experiment4:
                         )
                         if mappo_stats is not None:
                             results[scenario]['mappo'].append(mappo_stats)
+
+                            # [AUTO-SAVE] 每轮完成后立即保存（实验4有5个场景，更需要保护）
+                            try:
+                                import json
+                                auto_save_path = os.path.join(RESULT_DIR, 'exp4_mappo_raw_results.json')
+                                with open(auto_save_path, 'w', encoding='utf-8') as f:
+                                    json.dump({
+                                        'timestamp': datetime.now().isoformat(),
+                                        'current_scenario': scenario,
+                                        'scenario_name': info['name'],
+                                        'completed_reps_in_scenario': len(results[scenario]['mappo']),
+                                        'total_completed': sum(len(s['mappo']) for s in results.values() if 'mappo' in s),
+                                        'seed_order': mappo_seed_order,
+                                        'results_by_scenario': {sc: dat['mappo'] for sc, dat in results.items() if 'mappo' in dat}
+                                    }, f, ensure_ascii=False, indent=2, default=str)
+                                total_so_far = sum(len(s['mappo']) for s in results.values() if 'mappo' in s)
+                                print(f"  [AUTO-SAVE] 已保存 {total_so_far} 轮结果 -> {auto_save_path}")
+                            except Exception as save_err:
+                                print(f"  [WARN] 自动保存失败: {save_err}")
+
                             # 显示MAPPO的所有指标（尽可能详细）
                             print(f"\n  [MAPPO #{rep+1}] 完整指标:")
                             print("  " + "-"*55)
@@ -2471,8 +2530,33 @@ class Experiment4:
                                     else:
                                         print(f"    {name}: {val:.4f}")
                             print("  " + "-"*55)
+
+        # [FINAL-SAVE] 绘图前保存完整summary（实验4有5个场景×10轮=50轮数据，必须保护！）
+        if include_mappo:
+            try:
+                total_mappo_runs = sum(len(s.get('mappo', [])) for s in results.values())
+                if total_mappo_runs > 0:
+                    final_save_path = os.path.join(RESULT_DIR, 'exp4_mappo_summary.json')
+                    with open(final_save_path, 'w', encoding='utf-8') as f:
+                        json.dump({
+                            'timestamp': datetime.now().isoformat(),
+                            'total_mappo_runs': total_mappo_runs,
+                            'scenarios_completed': list(results.keys()),
+                            'seed_order': mappo_seed_order,
+                            'raw_results_by_scenario': {sc: dat.get('mappo', []) for sc, dat in results.items()}
+                        }, f, ensure_ascii=False, indent=2, default=str)
+                    print(f"\n  [FINAL-SAVE] 实验4完整结果已保存 ({total_mappo_runs}轮) -> {final_save_path}")
+            except Exception as e:
+                print(f"\n  [WARN] 实验4最终保存失败: {e}")
+
         Experiment4._print_results_table(summary)
-        Experiment4._plot(summary)
+        try:
+            Experiment4._plot(summary)
+        except Exception as plot_err:
+            print(f"\n  [WARN] 实验4绘图出错 (数据已保存，不影响结果): {plot_err}")
+            import traceback
+            traceback.print_exc()
+
         return summary
 
     @staticmethod

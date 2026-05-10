@@ -1,20 +1,20 @@
 {
   "enhanced": {
     "handover_success_rate": [
-      0.938372282181725,
-      0.10802765348953235
+      0.8582587209302772,
+      0.1342408286323922
     ],
     "avg_switching_latency_ms": [
-      0.016538407761457843,
-      0.0025990821077493506
+      0.017034379763498527,
+      0.004839720941611362
     ],
     "max_switching_latency_ms": [
-      1.7806291580200195,
-      0.18358757736019418
+      1.5243768692016602,
+      0.05527065658014582
     ],
     "avg_decision_time_ms": [
-      0.05173464399983548,
-      0.021384258100611626
+      0.05681381639610215,
+      0.025914750688911074
     ],
     "missed_opportunity_rate": [
       0.0,
@@ -63,20 +63,20 @@
   },
   "traditional": {
     "handover_success_rate": [
-      0.6336974835867117,
-      0.13243697475547755
+      0.7496601181227895,
+      0.11245028975438878
     ],
     "avg_switching_latency_ms": [
-      0.0018195164843577039,
-      0.000219801275116284
+      0.00191124045331588,
+      0.0002566370677932391
     ],
     "max_switching_latency_ms": [
-      1.5822887420654297,
-      0.07157683125315425
+      1.3894081115722656,
+      0.13975336522022774
     ],
     "avg_decision_time_ms": [
-      0.0051942494187295725,
-      0.0002857853249208768
+      0.005436979508773689,
+      0.0007788562032728021
     ],
     "missed_opportunity_rate": [
       1.4233657251680551e-05,
@@ -128,10 +128,10 @@
     ]
   },
   "improvement": {
-    "handover_success_rate": 48.07890302334192,
-    "avg_switching_latency_ms": 808.9452007518339,
-    "max_switching_latency_ms": 12.535032998824699,
-    "avg_decision_time_ms": 895.9984557786006,
+    "handover_success_rate": 14.486378584394686,
+    "avg_switching_latency_ms": 791.2735042806868,
+    "max_switching_latency_ms": 9.71411901983664,
+    "avg_decision_time_ms": 944.9518212165657,
     "missed_opportunity_rate": -100.0,
     "avg_satisfaction": 12.612739890116664,
     "critical_satisfaction": 6.664939985934219,
@@ -146,55 +146,55 @@
     "connected_ratio": 26.433391210456904
   },
   "mappo": {
-    "avg_sinr": [
-      17.712521171811375,
-      0.5064191309274233
-    ],
-    "critical_satisfaction": [
-      0.9256658209326897,
-      0.015511826566750092
+    "load_variance": [
+      0.0036256461258664017,
+      0.005442418160060839
     ],
     "total_throughput": [
-      3629.95,
-      544.0904910950014
+      4412.62,
+      362.04759852814925
+    ],
+    "connected_ratio": [
+      0.9879999999999999,
+      0.015362291495737231
+    ],
+    "avg_satisfaction": [
+      0.9467123987676752,
+      0.013224920373260677
+    ],
+    "critical_satisfaction": [
+      0.895903650239128,
+      0.015352918904521508
+    ],
+    "avg_sinr": [
+      17.717379722448804,
+      0.5670040520198657
+    ],
+    "connected_count": [
+      296.4,
+      4.608687448721165
+    ],
+    "avg_switching_latency_ms": [
+      7.1734444037642175,
+      0.2658245412788692
     ],
     "handover_success_rate": [
       1.0,
       0.0
     ],
-    "load_variance": [
-      0.0629074523681301,
-      0.0322681176672787
-    ],
-    "avg_satisfaction": [
-      0.9057020827963719,
-      0.04453066980419823
-    ],
-    "avg_switching_latency_ms": [
-      7.037544213093582,
-      0.20857009157281087
-    ],
-    "connected_ratio": [
-      0.9146666666666668,
-      0.05582114294781144
-    ],
-    "connected_count": [
-      274.4,
-      16.746342884343434
-    ],
     "weighted_satisfaction": [
-      0.9057020827963719,
-      0.04453066980419823
+      0.9467123987676752,
+      0.013224920373260677
     ]
   },
   "three_algo_statistical_tests": {
     "avg_satisfaction": {
       "MAPPO_vs_增强": {
         "group1": {
-          "mean": 0.9057020827963719,
-          "std": 0.04453066980419823,
+          "mean": 0.9467123987676752,
+          "std": 0.013224920373260677,
           "count": 10,
-          "median": 0.9111275082039267
+          "median": 0.9456782451092688
         },
         "group2": {
           "mean": 0.925236943512493,
@@ -202,22 +202,22 @@
           "count": 10,
           "median": 0.9310513224551118
         },
-        "effect_size": -0.2197401062294143,
-        "test_method": "mannwhitney",
+        "effect_size": 0.5277162380144592,
+        "test_method": "ttest",
         "alpha": 0.05,
-        "statistic": 37.0,
-        "p_value": 0.3447042220069576,
+        "statistic": 1.119455191326835,
+        "p_value": 0.2776622500482013,
         "significant": false,
-        "effect_size_interpretation": "小",
+        "effect_size_interpretation": "中等",
         "name_a": "MAPPO",
         "name_b": "增强"
       },
       "MAPPO_vs_传统": {
         "group1": {
-          "mean": 0.9057020827963719,
-          "std": 0.04453066980419823,
+          "mean": 0.9467123987676752,
+          "std": 0.013224920373260677,
           "count": 10,
-          "median": 0.9111275082039267
+          "median": 0.9456782451092688
         },
         "group2": {
           "mean": 0.8216094772361501,
@@ -225,11 +225,11 @@
           "count": 10,
           "median": 0.8407954168262233
         },
-        "effect_size": 0.6254141484991023,
-        "test_method": "mannwhitney",
+        "effect_size": 2.5415091137889485,
+        "test_method": "ttest",
         "alpha": 0.05,
-        "statistic": 87.0,
-        "p_value": 0.00579535854433471,
+        "statistic": 5.391354986422734,
+        "p_value": 4.011833079136694e-05,
         "significant": true,
         "effect_size_interpretation": "大",
         "name_a": "MAPPO",
@@ -262,10 +262,10 @@
     "critical_satisfaction": {
       "MAPPO_vs_增强": {
         "group1": {
-          "mean": 0.9256658209326897,
-          "std": 0.015511826566750092,
+          "mean": 0.895903650239128,
+          "std": 0.015352918904521508,
           "count": 10,
-          "median": 0.9291555856860136
+          "median": 0.9012785883523704
         },
         "group2": {
           "mean": 0.9990131578947368,
@@ -285,10 +285,10 @@
       },
       "MAPPO_vs_传统": {
         "group1": {
-          "mean": 0.9256658209326897,
-          "std": 0.015511826566750092,
+          "mean": 0.895903650239128,
+          "std": 0.015352918904521508,
           "count": 10,
-          "median": 0.9291555856860136
+          "median": 0.9012785883523704
         },
         "group2": {
           "mean": 0.9365899967003923,
@@ -296,13 +296,13 @@
           "count": 10,
           "median": 0.9388496677740864
         },
-        "effect_size": -0.42151001407916944,
+        "effect_size": -1.5727589801584034,
         "test_method": "ttest",
         "alpha": 0.05,
-        "statistic": -0.8941577678802535,
-        "p_value": 0.3830378506100324,
-        "significant": false,
-        "effect_size_interpretation": "小",
+        "statistic": -3.3363256201261366,
+        "p_value": 0.003674341441127745,
+        "significant": true,
+        "effect_size_interpretation": "大",
         "name_a": "MAPPO",
         "name_b": "传统"
       },
@@ -333,10 +333,10 @@
     "connected_ratio": {
       "MAPPO_vs_增强": {
         "group1": {
-          "mean": 0.9146666666666668,
-          "std": 0.05582114294781144,
+          "mean": 0.9879999999999999,
+          "std": 0.015362291495737231,
           "count": 10,
-          "median": 0.9266666666666667
+          "median": 1.0
         },
         "group2": {
           "mean": 0.9804961010643041,
@@ -344,22 +344,22 @@
           "count": 10,
           "median": 1.0
         },
-        "effect_size": -0.6592203186882429,
+        "effect_size": 0.11832159566199232,
         "test_method": "mannwhitney",
         "alpha": 0.05,
-        "statistic": 11.0,
-        "p_value": 0.003160572989220222,
-        "significant": true,
-        "effect_size_interpretation": "大",
+        "statistic": 57.0,
+        "p_value": 0.5789951594282097,
+        "significant": false,
+        "effect_size_interpretation": "小",
         "name_a": "MAPPO",
         "name_b": "增强"
       },
       "MAPPO_vs_传统": {
         "group1": {
-          "mean": 0.9146666666666668,
-          "std": 0.05582114294781144,
+          "mean": 0.9879999999999999,
+          "std": 0.015362291495737231,
           "count": 10,
-          "median": 0.9266666666666667
+          "median": 1.0
         },
         "group2": {
           "mean": 0.7755040750526119,
@@ -367,11 +367,11 @@
           "count": 10,
           "median": 0.8036227779714187
         },
-        "effect_size": 1.7565280038589353,
-        "test_method": "ttest",
+        "effect_size": 0.8451542547285166,
+        "test_method": "mannwhitney",
         "alpha": 0.05,
-        "statistic": 3.72615858861817,
-        "p_value": 0.0015459103028550114,
+        "statistic": 100.0,
+        "p_value": 0.00014851370472994207,
         "significant": true,
         "effect_size_interpretation": "大",
         "name_a": "MAPPO",
@@ -404,10 +404,10 @@
     "load_variance": {
       "MAPPO_vs_增强": {
         "group1": {
-          "mean": 0.0629074523681301,
-          "std": 0.0322681176672787,
+          "mean": 0.0036256461258664017,
+          "std": 0.005442418160060839,
           "count": 10,
-          "median": 0.06858595121224696
+          "median": 0.0015397112067145097
         },
         "group2": {
           "mean": 0.00199827129730381,
@@ -415,22 +415,22 @@
           "count": 10,
           "median": 0.0010398349164264273
         },
-        "effect_size": 0.8451542547285166,
+        "effect_size": -0.01690308509457033,
         "test_method": "mannwhitney",
         "alpha": 0.05,
-        "statistic": 100.0,
-        "p_value": 0.00018267179110955002,
-        "significant": true,
-        "effect_size_interpretation": "大",
+        "statistic": 49.0,
+        "p_value": 0.9698499769931556,
+        "significant": false,
+        "effect_size_interpretation": "微小",
         "name_a": "MAPPO",
         "name_b": "增强"
       },
       "MAPPO_vs_传统": {
         "group1": {
-          "mean": 0.0629074523681301,
-          "std": 0.0322681176672787,
+          "mean": 0.0036256461258664017,
+          "std": 0.005442418160060839,
           "count": 10,
-          "median": 0.06858595121224696
+          "median": 0.0015397112067145097
         },
         "group2": {
           "mean": 0.0368851790807948,
@@ -438,12 +438,12 @@
           "count": 10,
           "median": 0.03348386360759552
         },
-        "effect_size": 0.9344620337223609,
-        "test_method": "ttest",
+        "effect_size": -0.8113480845393759,
+        "test_method": "mannwhitney",
         "alpha": 0.05,
-        "statistic": 1.9822933224193606,
-        "p_value": 0.06292411721022395,
-        "significant": false,
+        "statistic": 2.0,
+        "p_value": 0.00032983852077799353,
+        "significant": true,
         "effect_size_interpretation": "大",
         "name_a": "MAPPO",
         "name_b": "传统"
@@ -497,23 +497,23 @@
     },
     "handover_success_rate": {
       "group1": {
-        "mean": 0.938372282181725,
-        "std": 0.10802765348953235,
+        "mean": 0.8582587209302772,
+        "std": 0.1342408286323922,
         "count": 10,
-        "median": 0.9892202784676013
+        "median": 0.8909508195384157
       },
       "group2": {
-        "mean": 0.6336974835867117,
-        "std": 0.13243697475547755,
+        "mean": 0.7496601181227895,
+        "std": 0.11245028975438878,
         "count": 10,
-        "median": 0.6648899368239485
+        "median": 0.7863127172354183
       },
-      "effect_size": 0.760638829255665,
-      "test_method": "mannwhitney",
+      "effect_size": 0.8770271192609401,
+      "test_method": "ttest",
       "alpha": 0.05,
-      "statistic": 95.0,
-      "p_value": 0.0007685389131627665,
-      "significant": true,
+      "statistic": 1.8604554699417408,
+      "p_value": 0.07923968310887111,
+      "significant": false,
       "effect_size_interpretation": "大"
     },
     "critical_satisfaction": {
@@ -539,37 +539,37 @@
     },
     "avg_switching_latency_ms": {
       "group1": {
-        "mean": 0.016538407761457843,
-        "std": 0.0025990821077493506,
+        "mean": 0.017034379763498527,
+        "std": 0.004839720941611362,
         "count": 10,
-        "median": 0.015933717321930135
+        "median": 0.015714274457320196
       },
       "group2": {
-        "mean": 0.0018195164843577039,
-        "std": 0.000219801275116284,
+        "mean": 0.00191124045331588,
+        "std": 0.0002566370677932391,
         "count": 10,
-        "median": 0.0017838218900264602
+        "median": 0.0019137171499295676
       },
-      "effect_size": 7.9803623505810295,
+      "effect_size": 4.412928517843124,
       "test_method": "ttest",
       "alpha": 0.05,
-      "statistic": 16.928905003264983,
-      "p_value": 1.675666899644514e-12,
+      "statistic": 9.361235039575119,
+      "p_value": 2.4419974501635402e-08,
       "significant": true,
       "effect_size_interpretation": "大"
     },
     "avg_decision_time_ms": {
       "group1": {
-        "mean": 0.05173464399983548,
-        "std": 0.021384258100611626,
+        "mean": 0.05681381639610215,
+        "std": 0.025914750688911074,
         "count": 10,
-        "median": 0.04251003834789417
+        "median": 0.04551558794674353
       },
       "group2": {
-        "mean": 0.0051942494187295725,
-        "std": 0.0002857853249208768,
+        "mean": 0.005436979508773689,
+        "std": 0.0007788562032728021,
         "count": 10,
-        "median": 0.005164085985652254
+        "median": 0.005217820112318661
       },
       "effect_size": 0.8451542547285166,
       "test_method": "mannwhitney",
@@ -624,7 +624,7 @@
   },
   "_meta": {
     "experiment": "exp3",
-    "saved_at": "2026-05-09 20:13:39",
+    "saved_at": "2026-04-20 22:57:51",
     "global_seed": 30042
   }
 }
