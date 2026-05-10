@@ -8,6 +8,7 @@
     .\venv\Scripts\python.exe main.py --all                    全部实验(无MAPPO)
     .\venv\Scripts\python.exe main.py --exp 3 --include-mappo   实验3 + 三算法对比
     .\venv\Scripts\python.exe main.py --exp 4 --include-mappo   实验4 + MAPPO泛化评估
+    .\venv\Scripts\python.exe main.py --exp 3 4 --include-mappo --use-cache  实验3+4 (缓存模式, 快速!)
 
 BA-MAPPO 训练:
     .\venv\Scripts\python.exe main.py --exp mappo              训练MAPPO (8BSx300UAV, 对齐实验3)
@@ -22,6 +23,7 @@ BA-MAPPO 训练:
     --small:           缩减训练规模（快速调试用）
     --retrain:         强制重新训练业务识别模型
     --force-compare:   强制重新对比所有识别模型并选取最优（忽略已有模型）
+    --use-cache:       读取已有的传统/增强算法数据（跳过重新运行，大幅节省时间）
 
 架构说明:
     - 实验1/2/2b/2c: 业务识别 + 切换算法设计验证
@@ -30,6 +32,12 @@ BA-MAPPO 训练:
     - 实验4: 多场景泛化测试 (5个典型5G应用场景, 300-500 UAV)
              可选 +MAPPO 零样本泛化评估
     - MAPPO训练: BA-MAPPO 多智能体强化学习 (V12 Reward增强)
+
+缓存模式 (--use-cache):
+    - 实验3: 从 exp3_data.json 读取传统/增强算法的统计数据（节省 ~14小时）
+    - 实验4: 从 exp4_data.json 读取5个场景的传统/增强算法统计数据（节省 ~37小时）
+    - 仅运行MAPPO评估（纯净版，无保护机制），与传统/增强算法进行公平对比
+    - 总时间从 ~51小时 缩减到 ~几小时（仅MAPPO评估时间）
 """
 
 import sys
@@ -47,7 +55,8 @@ from uav_system.experiments import Experiment1, Experiment2, Experiment2b, Exper
 
 def main(force_retrain=False, run_experiments=None,
          rl_load=False, rl_phase='both', small_scale=False,
-         include_mappo=False, mappo_model_path=None):
+         include_mappo=False, mappo_model_path=None,
+         use_cache=False):  # [NEW] 缓存模式：读取已有数据而非重新运行
     """
     主函数：初始化模型并运行实验
 
@@ -59,6 +68,7 @@ def main(force_retrain=False, run_experiments=None,
         small_scale: 是否缩减训练规模（快速调试用）
         include_mappo: 在实验3/4中包含MAPPO评估（三算法对比模式）
         mappo_model_path: MAPPO模型文件路径（None=自动检测默认路径）
+        use_cache: 是否读取已有的传统/增强算法数据（跳过重新运行，大幅节省时间）
     """
     print("\n" + "=" * 80)
     print("无人机业务识别与切换决策联动系统")
@@ -102,11 +112,14 @@ def main(force_retrain=False, run_experiments=None,
         '2': lambda: Experiment2.run(recognition_model, scaler, num_steps=150, repeats=10),
         '2b': lambda: Experiment2b.run(recognition_model, scaler, num_steps=150, repeats=8),
         '2c': lambda: Experiment2c.run(recognition_model, scaler, num_steps=200, repeats=6),
-        '3': lambda: Experiment3.run(recognition_model, scaler, include_mappo=include_mappo,
-                                       mappo_model_path=mappo_model_path),
-        '4': lambda: Experiment4.run(recognition_model, scaler, num_steps=150, repeats=10,
+        '3': lambda: Experiment3.run(recognition_model, scaler,
                                        include_mappo=include_mappo,
-                                       mappo_model_path=mappo_model_path),
+                                       mappo_model_path=mappo_model_path,
+                                       use_cache=use_cache),  # [NEW] 缓存模式
+        '4': lambda: Experiment4.run(recognition_model, scaler, num_steps=150, repeats=10,
+                                      include_mappo=include_mappo,
+                                      mappo_model_path=mappo_model_path,
+                                      use_cache=use_cache),  # [NEW] 缓存模式
         'mappo': lambda: _run_exp_mappo(load_models=rl_load,
                                           phase=rl_phase,
                                           small_scale=small_scale,
@@ -226,6 +239,8 @@ if __name__ == "__main__":
                         help='指定MAPPO模型路径（默认自动检测 mappo_models/mappo_8bs_300uav.pt）')
     parser.add_argument('--force-compare', action='store_true',
                         help='强制重新对比所有识别模型并选取最优（忽略已有模型）')
+    parser.add_argument('--use-cache', action='store_true',
+                        help='实验3/4: 读取已有的传统/增强算法数据（跳过重新运行，大幅节省时间）')
     args = parser.parse_args()
 
     if args.all:
@@ -236,7 +251,8 @@ if __name__ == "__main__":
     set_global_seed(GLOBAL_SEED)
     main(force_retrain=args.retrain, run_experiments=run_experiments,
          rl_load=args.rl_load, rl_phase=args.rl_phase, small_scale=args.small,
-         include_mappo=args.include_mappo, mappo_model_path=args.mappo_model)
+         include_mappo=args.include_mappo, mappo_model_path=args.mappo_model,
+         use_cache=args.use_cache)  # [NEW] 传入缓存模式参数
 
 
 # ==================== 快速参考 ====================
@@ -246,3 +262,7 @@ if __name__ == "__main__":
 # .\venv\Scripts\python.exe main.py --exp 4 --include-mappo         实验4 + MAPPO泛化
 # .\venv\Scripts\python.exe main.py --exp mappo                    训练MAPPO(8BSx300UAV)
 #     --mappo-model results/mappo_models/custom_model.pt           指定自定义模型
+#
+# [NEW] 缓存模式 (快速!):
+# .\venv\Scripts\python.exe main.py --exp 3 4 --include-mappo --use-cache  完整三算法对比 (~几小时)
+#     从已有数据加载传统/增强算法，仅运行MAPPO评估（纯净版）
