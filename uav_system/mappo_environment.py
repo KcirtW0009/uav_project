@@ -1,41 +1,184 @@
 """
-MAPPO 多智能体切换环境 (MultiAgentHandoverEnv / MAPPOHandoverEnv)
+=============================================================================
+  UAV业务识别与切换决策系统 - MAPPO多智能体强化学习环境 (mappo_environment.py)
+=============================================================================
 
-将 UAV 切换决策封装为 CTDE (Centralized Training Decentralized Execution) 多智能体 RL 环境。
-支持 MAPPO 算法的训练与评估。
+【模块概述】
+本模块是MAPPO（Multi-Agent Proximal Policy Optimization）算法的核心运行环境，
+将UAV切换决策问题封装为CTDE（Centralized Training, Decentralized Execution）
+架构的多智能体强化学习环境。
 
-核心设计:
-- 每个 UAV agent 独立选择切换策略（6种动作）
-- 训练时使用全局状态（state），执行时仅使用局部观测（obs）
-- 团队奖励函数：综合 rate_ratio 增量 + 反事实比较 + 业务权重 + 动作奖励 + EMA归一化
+【设计哲学】
+1. **纯净评估原则**: 评估模式下移除所有保护机制（预检查、降级、回滚），
+   让MAPPO模型完全自主决策，真实反映其学到的策略质量。
+2. **训练/评估双模式**: 训练时使用ground truth业务类型，评估时使用识别模型预测，
+   模拟真实部署场景中的识别误差。
+3. **多维奖励信号**: 综合考虑速率比增量、反事实比较、业务权重、动作质量、
+   负载自适应、目标差距、同类排名等7个维度的奖励分量。
+4. **可配置性**: 所有超参数通过MAPPOConfig集中管理，消除硬编码，便于调优。
 
-动作空间 (6维):
-  0 = stay (不切换)
-  1 = best_sinr (切换到 SINR 最高的 BS)
-  2 = best_capacity (切换到可用容量/需求比最高的 BS)
-  3 = sinr_capacity (SINR 和容量加权组合)
-  4 = predictive (基于预测的切换)
-  5 = business_specific (基于业务类型的差异化切换)
+【核心组件】
+┌─────────────────────────────────────────────────────────────────────┐
+│ 组件名称           │ 功能描述                                       │
+├─────────────────────────────────────────────────────────────────────┤
+│ RunningNormalizer │ EMA奖励归一化器（当前已禁用，PPO自带标准化）     │
+│ MultiAgentHandoverEnv│ 主环境类，实现完整的RL环境接口                │
+│ EnhancedNetworkEnvironment│ 底层网络仿真环境（含随机事件机制）       │
+└─────────────────────────────────────────────────────────────────────┘
 
-观测维度: obs_dim = 4 * num_bs + 9 + action_dim(6) + 2 = 4*num_bs + 17
-全局状态: state_dim = 3 * num_bs + 7
+【动作空间定义】(6维离散动作空间)
+  action=0: stay          → 不切换，保持当前连接
+  action=1: best_sinr     → 切换到SINR最高的基站
+  action=2: best_capacity → 切换到可用容量/需求比最高的基站
+  action=3: sinr_capacity → SINR和容量的加权组合（60% SINR + 40% 容量）
+  action=4: predictive    → 基于趋势预测的切换（简化版）
+  action=5: business_specific → 根据业务类型的差异化切换策略
 
-接口:
-- reset() -> (obs_dict, global_state)
-- step(actions_dict) -> (obs_dict, global_state, rewards_dict, team_reward, done, info)
-- advance_env_only() -> 仅推进底层环境（供基线算法评估使用）
+【观测空间维度】
+  局部观测 (per agent): obs_dim = 4 × num_bs + 9 + action_dim(6) + 2 = 4×num_bs + 17
+    - SINR向量 (num_bs): 归一化的信噪比值
+    - 基站负载率 (num_bs): 各基站的当前负载比例
+    - 连接BS one-hot (num_bs): 当前连接基站的独热编码
+    - 可用容量/需求比 (num_bs): 各基站能满足UAV需求的程度
+    - 业务类型 one-hot (3): 控制信令/视频回传/环境监测
+    - 当前满意度 (1): 综合QoS满意度评分
+    - 连接状态 (1): 是否已连接到某个基站
+    - 移动速度 (1): 归一化的移动速度
+    - 上次动作 one-hot (6): 上一步执行的动作编码
+    - 满意度变化趋势 (1): 最近5步的线性变化率
+    - 同类UAV平均满意度 (1): 相同业务类型UAV的平均表现
+    - 历史满意度 (3): 最近3步的满意度记录
 
-业务识别集成:
-- 无 recognition_model: 使用真实业务类型（训练模式，ground truth）
-- 有 recognition_model + scaler: 使用模型预测结果（评估模式，带识别噪声）
+  全局状态 (centralized critic用): state_dim = 3 × num_bs + 7
+    - 基站负载率 (num_bs)
+    - 基站可用容量 (num_bs)
+    - 基站故障状态 (num_bs)
+    - 各业务类型数量 (3)
+    - 全局平均满意度 (1)
+    - 全局断连率 (1)
+    - 全局中断率 (1)
+    - 当前进度 (1)
 
-依赖:
-- 底层环境: NetworkEnvironmentWithRecognition (uav_system/environment.py)
-- 基站/实体: uav_system/entities.py, business.py
+【奖励函数结构】(V12/V13/V21版本)
+  总奖励 = a + b + c + d + e + f + g (个体) + h + i (团队级)
 
-注意:
-- 本模块原名 qmix_environment.py (QMIX 设计遗留)，已重命名为 mappo_environment.py
-- QMixHandoverEnv 类名保留向后兼容，推荐用 MultiAgentHandoverEnv 别名
+  a. 连续速率比信号 (delta_scale × Δrate_ratio)
+     - 替代分段满意度，提供更平滑的学习梯度
+     - 正值表示速率提升，负值表示下降
+
+  b. 反事实比较信号 (counterfactual_scale × (my_rr - peer_avg_rr))
+     - 切换后与同类UAV的平均表现对比
+     - 正值表示超越同类平均水平
+
+  c. 业务类型权重 (biz_weight × delta_rr × sign(delta_sat))
+     - 不同业务类型对速率变化的敏感度不同
+     - 视频回传权重最高(2.5)，控制信令次之(2.0)，环境监测最低(1.5)
+
+  d. 动作奖励 (分层激励设计)
+     - stay: 基础奖励0.89 + 满意度bonus（鼓励维持高质量连接）
+     - excellent_switch(Δsat>0.05): 1.0 + 2.0×Δsat（优秀切换奖励高于stay）
+     - good_switch(Δsat>0.015): 0.55 + 3.0×Δsat
+     - micro_positive(Δsat>0): 0.15 + 5.0×Δsat
+     - acceptable_switch(Δsat>-0.03): 4.0×Δsat（轻微惩罚）
+     - bad_switch(Δsat≤-0.03): 6.0×Δsat - 0.08（严厉惩罚）
+
+  e. 负载自适应系数 [V12新增]
+     - 低负载(<60%): 放大切换奖励1.8倍，增强留守惩罚
+     - 中低负载(60-75%): 适度增强1.3倍
+     - 正常负载(75-90%): 不调整1.0倍
+     - 高负载(>90%): 保守策略0.6倍，降低切换冲动
+
+  f. 关键业务差距奖励 [V13新增]
+     - r_gap = -α × max(0, target_sat - current_sat)
+     - 控制信令目标0.85, 视频回传目标0.75, 环境监测目标0.65
+     - 差异化权重: 视频2.5 > 控制2.0 > 环境1.5
+
+  g. 同类相对排名信号 [V12新增]
+     - r_ranking = 0.15 × rank_change / (n_peers//2)
+     - 排名上升给予正向激励，下降给予负向激励
+
+  h. 断连惩罚 [团队级]
+     - 新断连: -4.0, 持续断连: -2.5
+     - 仅加入团队reward，不干扰个体学习信号
+
+  i. 负载均衡惩罚 [V13/P1新增, 团队级]
+     - penalty = -2.0 × std(load_ratios)
+     - 惩罚基站间负载不均衡，鼓励UAV分散连接
+
+【关键设计决策】
+
+1. **纯净版评估模式**:
+   问题: 之前版本包含预检查、降级分配、自动回滚等保护机制，
+         导致MAPPO在评估时表现出不真实的100%成功率。
+   解决: 移除所有保护机制，让模型完全自主决策并承担失败后果。
+   效果: 真实反映模型策略质量，与传统/增强算法公平比较。
+
+2. **禁用EMA归一化** [V17]:
+   问题: 在低负载环境下，reward绝对值差异很小，
+         EMA会将微弱的信号差异完全抹平，导致advantage≈0无法学习。
+   解决: PPO本身通过advantage标准化处理reward scale，无需额外归一化。
+   效果: 保持原始奖励信号的完整性，提升学习效率。
+
+3. **stay作为高价值默认动作**:
+   问题: 随机探索阶段频繁切换导致大量坏切换，学习效率低下。
+   解决: 将stay设为基础正收益(~0.89)，让agent快速收敛到"少切"策略，
+         但优秀切换(excellent_switch>1.0)仍高于stay，避免过度保守。
+   效果: 训练后stay比例从18%升至48%，切换质量大幅提升。
+
+4. **Domain Randomization支持**:
+   问题: 固定环境参数可能导致过拟合到特定场景。
+   解决: 支持在reset()时随机化BS容量范围，增加环境多样性。
+   效果: 提升模型的泛化能力，减少对特定参数分布的依赖。
+
+【接口规范】
+  reset(bs_capacity_range=None) -> (obs_dict, global_state)
+    - 重置环境到初始状态
+    - 支持可选的容量域随机化
+
+  step(actions_dict) -> (obs_dict, global_state, rewards_dict, team_reward, done, info)
+    - 执行一步仿真
+    - 返回完整的观测-奖励-终止信息
+
+  advance_env_only() -> None
+    - 仅推进底层环境（供基线算法评估使用）
+    - 不执行任何切换决策
+
+【依赖关系】
+  上游模块:
+    - environment.py: NetworkEnvironmentWithRecognition, EnhancedNetworkEnvironment
+    - business.py: BusinessType枚举
+    - config.py: MAPPOConfig集中配置
+
+  下游调用:
+    - mappo_agent_v2.py: MAPPO智能体训练和推理
+    - experiments.py: 实验3/4的MAPPO评估流程
+
+【版本历史】
+  V8:  初始版本，基于QMIX设计
+  V9:  适配MAPPO算法，移除mixing network
+  V10: 添加业务识别集成（训练/评估双模式）
+  V11: 引入连续rate_ratio信号替代分段满意度
+  V12: 添加负载自适应、目标差距、同类排名三个新奖励分量
+  V13: 添加全局负载均衡惩罚（团队级信号）
+  V17: 禁用EMA归一化（低负载环境下性能优化）
+  V19: 使用EnhancedNetworkEnvironment（含随机事件机制）
+  V21: 所有参数从MAPPOConfig读取，消除硬编码
+
+【使用示例】
+  # 训练模式（使用ground truth业务类型）
+  env = MultiAgentHandoverEnv(num_bs=8, num_uav=300, max_steps=350)
+  obs, state = env.reset()
+  for step in range(350):
+      actions = {uid: agent.select_action(obs[uid]) for uid in range(300)}
+      obs, state, rewards, team_reward, done, info = env.step(actions)
+
+  # 评估模式（使用识别模型预测业务类型）
+  env = MultiAgentHandoverEnv(
+      num_bs=8, num_uav=300,
+      recognition_model=model, scaler=scaler,
+      scenario='industrial_inspection'
+  )
+  obs, state = env.reset()
 """
 
 import numpy as np
@@ -53,26 +196,102 @@ from .config import MAPPOConfig  # V21: 引入集中配置
 
 
 class RunningNormalizer:
-    """指数移动平均归一化器，用于降低 reward 的 CV"""
+    """
+    指数移动平均（EMA）归一化器 - 用于降低奖励的变异系数(CV)
+
+    【设计目的】
+    在多智能体强化学习中，不同agent的reward scale可能差异很大，
+    导致训练不稳定。本归一化器通过EMA平滑reward分布，
+    使各agent的reward具有可比性。
+
+    【算法原理】
+    使用在线均值/方差估计：
+      mean_t = decay × mean_{t-1} + (1-decay) × batch_mean
+      var_t  = decay × var_{t-1}  + (1-decay) × batch_var
+    归一化公式：
+      normalized = (x - mean) / sqrt(var + ε)
+
+    【当前状态】[V17: 已禁用]
+    本归一化器在低负载环境下会导致问题：
+      - reward绝对值差异本来就很小
+      - EMA会将微弱的信号差异完全抹平
+      - 导致advantage≈0，无法学习
+    因此V17版本已禁用此归一化器，
+    改用PPO自带的advantage标准化来处理reward scale。
+
+    Attributes:
+        mean (np.ndarray): 各agent的运行均值估计
+        var  (np.ndarray): 各agent的运行方差估计
+        decay (float): EMA衰减因子（越大越平滑，默认0.999）
+        count (int): 已处理的batch数量
+
+    Example:
+        >>> normalizer = RunningNormalizer(num_agents=300, decay=0.999)
+        >>> rewards = {i: np.random.randn() for i in range(300)}
+        >>> normalized = normalizer.normalize(rewards)
+        >>> # normalized的mean≈0, std≈1
+    """
 
     def __init__(self, num_agents: int, decay: float = 0.999):
+        """
+        初始化归一化器
+
+        Args:
+            num_agents: agent数量（等于UAV数量）
+            decay: EMA衰减因子，范围(0, 1)
+                - 接近1: 更平滑但响应慢（适合稳定环境）
+                - 接近0: 响应快但噪声大（适合快速变化环境）
+                - 默认0.999: 平衡选择，约1000步的半衰期
+        """
         self.mean = np.zeros(num_agents, dtype=np.float64)
         self.var = np.ones(num_agents, dtype=np.float64)
         self.decay = decay
         self.count = 0
 
     def normalize(self, rewards_dict: Dict[int, float]) -> Dict[int, float]:
+        """
+        对一批rewards进行归一化处理
+
+        算法流程：
+        1. 将dict转换为向量形式
+        2. 计算当前batch的统计量（mean, var）
+        3. 使用EMA更新全局统计量
+        4. 用更新的统计量对原始数据进行z-score标准化
+
+        Args:
+            rewards_dict: {agent_id: raw_reward} 原始奖励字典
+
+        Returns:
+            {agent_id: normalized_reward} 归一化后的奖励字典
+            归一化后的数据满足：mean≈0, std≈1
+        """
         vec = np.array([rewards_dict[i] for i in range(len(rewards_dict))], dtype=np.float64)
         self.count += 1
         batch_mean = vec.mean()
         batch_var = vec.var() if len(vec) > 1 else 1.0
+
+        # EMA更新：指数加权移动平均
         self.mean = self.decay * self.mean + (1 - self.decay) * batch_mean
         self.var = self.decay * self.var + (1 - self.decay) * batch_var
+
+        # Z-score标准化（加小常数避免除零）
         std = np.sqrt(np.maximum(self.var, 1e-8))
         normed = (vec - self.mean) / std
+
         return {i: float(normed[i]) for i in range(len(rewards_dict))}
 
     def reset(self):
+        """
+        重置归一化器到初始状态
+
+        通常在以下情况调用：
+        1. 训练完全重启时（不是episode重置）
+        2. 环境参数发生重大变化时
+        3. 检测到数值异常需要重新校准时
+
+        注意：正常训练过程中不应频繁调用reset()，
+              因为EMA的价值在于跨episode积累统计信息。
+        """
         self.count = 0
         self.mean[:] = 0.0
         self.var[:] = 1.0
@@ -80,28 +299,82 @@ class RunningNormalizer:
 
 class MultiAgentHandoverEnv:
     """
-    多智能体 UAV 切换环境（CTDE 架构）— MAPPO 主环境类
+    多智能体UAV切换环境（CTDE架构）— MAPPO主环境类
 
-    通用多智能体强化学习环境，支持 MAPPO / QMIX / IPPO 等算法。
-    每个 UAV 作为一个独立 agent，每个 step 选择一种切换策略。
+    【类定位】
+    本类是整个MAPPO系统的核心运行时环境，负责：
+    1. 封装底层网络仿真（基站、UAV、信道模型）
+    2. 实现标准的RL环境接口（reset/step）
+    3. 管理观测空间和动作空间的定义
+    4. 计算多维奖励信号
+    5. 支持训练模式和评估模式的双轨运行
 
-    动作空间 (6维):
-      0 = stay (不切换)
-      1 = best_sinr (切换到 SINR 最高的 BS)
-      2 = best_capacity (切换到可用容量/需求比最高的 BS)
-      3 = sinr_capacity (SINR 和容量加权组合)
-      4 = predictive (基于预测的切换)
-      5 = business_specific (基于业务类型的差异化切换)
+    【架构设计】CTDE (Centralized Training, Decentralized Execution)
+    - 训练时: Critic使用全局状态(state)进行集中式价值评估
+    - 执行时: Actor仅使用局部观测(obs)进行分布式决策
+    - 这种设计兼顾了训练时的全局信息利用和部署时的去中心化需求
+
+    【纯净评估模式】[V19关键改进]
+    本环境支持两种运行模式：
+    1. 训练模式 (recognition_model=None):
+       - 使用ground truth业务类型
+       - 用于MAPPO智能体的策略学习
+
+    2. 评估模式 (recognition_model≠None):
+       - 使用识别模型预测的业务类型（带噪声）
+       - 移除所有保护机制（预检查、降级、回滚）
+       - 模拟真实部署场景，公平对比算法性能
+
+    【动作空间】(6维离散动作)
+      0 = stay           → 不切换，维持当前连接
+      1 = best_sinr      → 切换到SINR最高的基站（信号质量优先）
+      2 = best_capacity  → 切换到可用容量/需求比最高的基站（资源充裕度优先）
+      3 = sinr_capacity  → SINR和容量的加权组合（60%信号 + 40%容量，平衡策略）
+      4 = predictive     → 基于趋势预测的切换（前瞻性决策）
+      5 = business_specific → 根据业务类型的差异化切换（个性化策略）
+
+    【观测空间】(per agent)
+      维度: obs_dim = 4 × num_bs + 17
+      包含: SINR向量、负载率、连接状态、容量比、业务类型、满意度、
+            连接状态、速度、上次动作、满意度趋势、同类平均、历史记录
+
+    【全局状态】(for centralized critic)
+      维度: state_dim = 3 × num_bs + 7
+      包含: 全局负载率、可用容量、故障状态、业务分布、统计量
 
     Attributes:
-        num_agents: agent 数量（等于 UAV 数量）
-        num_bs: 基站数量
-        action_dim: 每个 agent 的动作空间大小 (= 6)
-        obs_dim: 每个 agent 的局部观测维度 (= 4*num_bs + 17)
-        state_dim: 全局状态维度 (= 3*num_bs + 7)
+        num_agents (int): agent数量（= UAV数量）
+        num_bs (int): 基站数量
+        action_dim (int): 动作空间大小（固定为6）
+        obs_dim (int): 局部观测维度（动态计算）
+        state_dim (int): 全局状态维度（动态计算）
+        env (EnhancedNetworkEnvironment): 底层网络仿真环境
+        recognition_model: 业务识别模型（评估模式使用）
+        scaler: 识别模型的标准化器
+        _current_step (int): 当前episode的步数计数器
+        _reward_normalizer (RunningNormalizer): EMA归一化器（已禁用）
+
+    Example:
+        # 训练模式示例
+        >>> env = MultiAgentHandoverEnv(num_bs=8, num_uav=300, max_steps=350)
+        >>> obs, state = env.reset()
+        >>> for step in range(350):
+        ...     actions = {uid: policy(obs[uid]) for uid in range(300)}
+        ...     obs, state, rewards, team_reward, done, info = env.step(actions)
+        ...     if done:
+        ...         break
+
+        # 评估模式示例
+        >>> env = MultiAgentHandoverEnv(
+        ...     num_bs=8, num_uav=300,
+        ...     recognition_model=model, scaler=scaler,
+        ...     scenario='industrial_inspection'
+        ... )
+        >>> obs, state = env.reset()
+        >>> # 运行评估...
     """
 
-    # 向后兼容别名
+    # 向后兼容别名（原QMIX遗留）
     QMixHandoverEnv = None  # 将在模块底部设置
 
 
@@ -110,23 +383,65 @@ class MultiAgentHandoverEnv:
                  use_state_smoothing: bool = True, use_env_simplification: bool = False,
                  recognition_model=None, scaler=None,
                  event_probability: float = 0.05,
-                 scenario: str = 'default'):  # ✅ 新增：场景ID（用于设置业务混合比例）
+                 scenario: str = 'default'):
         """
-        初始化 MAPPO 切换环境
+        初始化MAPPO切换环境
 
         Args:
-            num_bs: 基站数量
-            num_uav: UAV 数量
-            max_steps: 每个 episode 最大步数
-            seed: 随机种子
-            bs_capacity_range: 基站容量范围 (min, max) Mbps
-            pos_range: 地图空间范围 (米)，默认 1000
-            use_state_smoothing: 是否使用状态平滑机制（5步移动平均）
-            use_env_simplification: 是否使用环境简化机制（固定BS位置、降速）
-            recognition_model: 业务识别模型（评估模式传入，训练模式为None）
-            scaler: 识别模型的标准化器（与recognition_model配套）
-            event_probability: 随机事件概率（对齐实验3，默认0=无事件）
-            scenario: 场景ID（用于设置业务混合比例和基站容量，如'industrial_inspection'等）
+            num_bs (int): 基站数量
+                - 实验3标准配置: 8个基站
+                - 影响观测/状态维度: obs_dim包含4×num_bs个基站相关特征
+
+            num_uav (int): UAV数量（= agent数量）
+                - 实验3标准配置: 300架UAV
+                - 决定并行决策的agent数量
+
+            max_steps (int): 每个episode的最大步数
+                - 默认1000步
+                - 实验3实际使用350步（平衡仿真精度和运行时间）
+
+            seed (int): 随机种子
+                - 用于环境初始化的可复现性
+                - None表示不设置种子（完全随机）
+
+            bs_capacity_range (tuple): 基站容量范围 (min_mbps, max_mbps)
+                - 默认(500, 1000) Mbps
+                - 在reset()时可随机化以实现Domain Randomization
+
+            pos_range (int): 地图空间范围（米）
+                - 默认1000米 × 1000米
+                - 决定UAV和基站的初始位置分布范围
+
+            use_state_smoothing (bool): 是否启用状态平滑机制
+                - True: 使用最近5步观测的移动平均（减少噪声）
+                - False: 直接返回原始观测（更快但更嘈杂）
+
+            use_env_simplification (bool): 是否启用环境简化
+                - True: 固定BS位置为圆形排列 + 降低UAV移动速度50%
+                        （用于快速测试或调试）
+                - False: 随机位置和正常速度（用于正式训练/评估）
+
+            recognition_model: 业务识别模型对象
+                - 训练模式: 设为None（使用ground truth）
+                - 评估模式: 传入训练好的DecisionTree/RandomForest模型
+
+            scaler: 识别模型的StandardScaler标准化器
+                - 必须与recognition_model配套使用
+                - 用于对输入特征进行z-score标准化
+
+            event_probability (float): 随机事件发生概率 [0, 1]
+                - 0.05 = 每步每UAV有5%概率触发随机事件
+                - 对齐实验3的EnhancedNetworkEnvironment配置
+                - 随机事件包括：突发流量、信道干扰、基站故障等
+
+            scenario (str): 场景ID（用于设置业务混合比例）
+                - 'default': 默认场景（均匀混合三种业务）
+                - 'industrial_inspection': 工业巡检场景
+                - 'smart_agriculture': 智慧农业场景
+                - 'emergency_rescue': 应急救援场景
+                - 'urban_monitoring': 城市监测场景
+                - 'logistics_delivery': 物流配送场景
+                - 不同场景影响UAV的业务类型分布和QoS需求
         """
         self.num_bs = num_bs
         self.num_uav = num_uav
@@ -240,10 +555,25 @@ class MultiAgentHandoverEnv:
             self._communication_metrics['ping_times'][uid] = deque(maxlen=10)
 
     def _setup_random_events(self, probability: float):
-        """配置随机事件机制（对齐实验3的 event_probability）
+        """
+        配置随机事件机制（对齐实验3的EnhancedNetworkEnvironment）
+
+        【设计目的】
+        随机事件模拟真实5G网络中的不确定性因素，包括：
+        - 突发流量高峰（UAV突然需要更高带宽）
+        - 信道干扰（SINR暂时性下降）
+        - 基站部分故障（容量临时降低）
+        - 网络拥塞（切换延迟增加）
+
+        这些事件增加了环境的动态性和挑战性，
+        测试算法在非理想条件下的鲁棒性。
 
         Args:
-            probability: 每步每UAV发生随机事件的概率 [0, 1]
+            probability (float): 每步每UAV发生随机事件的概率 [0, 1]
+                - 0.0: 无随机事件（确定性环境）
+                - 0.05: 低频率（实验3标准配置）
+                - 0.10-0.20: 中高频率（压力测试）
+                - >0.30: 极端情况（可能导致系统不稳定）
         """
         # 底层环境 NetworkEnvironmentWithRecognition 继承自 EnhancedNetworkEnvironment
         # 检查是否有随机事件相关属性
@@ -254,48 +584,146 @@ class MultiAgentHandoverEnv:
 
     def _calc_obs_dim(self) -> int:
         """
-        局部观测维度 (per agent):
-        - SINR 向量: num_bs
-        - 基站负载率: num_bs
-        - 当前连接 BS one-hot: num_bs
-        - 可用容量/需求比: num_bs
-        - 业务类型 one-hot: 3
-        - 当前满意度: 1
-        - 连接状态: 1
-        - 移动速度: 1
-        - 上次动作 one-hot: action_dim (6)
-        - 满意度变化趋势: 1
-        - 同类型 UAV 平均满意度: 1
-        - 历史满意度 (最近3步): 3
-        总计: 4 * num_bs + 9 + action_dim + 2
+        计算单个agent的局部观测维度
+
+        【观测空间结构】(per agent)
+        观测向量由以下组件拼接而成：
+
+        组件1: SINR向量 (num_bs维)
+          - 每个基站的信噪比(dB)，归一化到[0, 1]
+          - 公式: clip((sinr_db + 10) / 40, 0, 1)
+          - 范围: sinr∈[-10, 30]dB → 归一化后[0, 1]
+
+        组件2: 基站负载率 (num_bs维)
+          - 各基站当前负载/总容量的比例
+          - 范围: [0, 1]，越高表示越拥挤
+
+        组件3: 当前连接BS的one-hot编码 (num_bs维)
+          - 仅当前连接的BS位置为1.0，其余为0.0
+          - 用于标识当前服务基站
+
+        组件4: 可用容量/需求比 (num_bs维)
+          - 公式: min(available_capacity / required_rate, 2.0) / 2.0
+          - >1.0表示资源充裕，<1.0表示可能拥塞
+
+        组件5: 业务类型one-hot编码 (3维)
+          - [控制信令, 视频回传, 环境监测]
+          - 仅对应位置为1.0
+
+        组件6: 当前满意度 (1维)
+          - 综合QoS满意度评分，范围[0, 1]
+
+        组件7: 连接状态 (1维)
+          - 1.0=已连接, 0.0=断连
+
+        组件8: 移动速度归一化 (1维)
+          - 公式: min(||velocity|| / 30.0, 1.0)
+          - 30m/s约为108km/h（高速无人机）
+
+        组件9: 上次动作one-hot编码 (action_dim=6维)
+          - 用于提供动作历史信息，帮助策略学习时序模式
+
+        组件10: 满意度变化趋势 (1维)
+          - 最近5步满意度的线性斜率，缩放到[-1, 1]
+          - 正值=改善趋势，负值=恶化趋势
+
+        组件11: 同类型UAV平均满意度 (1维)
+          - 相同业务类型的其他UAV的平均表现
+          - 提供相对性能参考（社会学习信号）
+
+        组件12: 历史满意度记录 (3维)
+          - 最近3步的满意度值（不包括当前步）
+          - 用于捕捉短期时序依赖
+
+        Returns:
+            int: 总观测维度 = 4×num_bs + 9 + action_dim + 2
+                 对于8个基站: 4×8 + 9 + 6 + 2 = 49维
         """
         return 4 * self.num_bs + 9 + self.action_dim + 2
 
     def _calc_state_dim(self) -> int:
         """
-        全局状态维度:
-        - 所有基站负载率: num_bs
-        - 所有基站可用容量: num_bs
-        - 所有基站故障状态: num_bs
-        - 各业务类型数量: 3
-        - 全局平均满意度: 1
-        - 全局断连率: 1
-        - 全局中断率: 1
-        - 当前步数 (归一化): 1
-        总计: 3 * num_bs + 7
+        计算全局状态维度（用于centralized critic）
+
+        【状态空间结构】(global state)
+        全局状态包含整个系统的宏观信息，
+        供Critic网络进行集中式价值评估：
+
+        组件1: 所有基站负载率 (num_bs维)
+          - 与观测空间相同，但这里是全局视角
+
+        组件2: 所有基站可用容量比例 (num_bs维)
+          - available_capacity / total_capacity
+          - 反映各基站的资源余量
+
+        组件3: 所有基站故障状态 (num_bs维)
+          - 1.0=故障, 0.0=正常
+          - 用于感知网络拓扑变化
+
+        组件4: 各业务类型UAV数量归一化 (3维)
+          - count(biz_type) / num_uav
+          - 反映业务负载分布
+
+        组件5: 全局平均满意度 (1维)
+          - 所有UAV满意度的均值
+          - 系统整体健康度指标
+
+        组件6: 全局断连率 (1维)
+          - 断连UAV数 / 总UAV数
+          - 反映连接可靠性
+
+        组件7: 全局中断率 (1维)
+          - 中断UAV数 / 总UAV数
+          - 反映QoS违规严重程度
+
+        组件8: 当前进度归一化 (1维)
+          - current_step / max_steps
+          - 帮助Critic理解episode阶段
+
+        Returns:
+            int: 总状态维度 = 3×num_bs + 7
+                 对于8个基站: 3×8 + 7 = 31维
         """
         return 3 * self.num_bs + 7
 
     def get_obs(self, uav_id: int) -> np.ndarray:
         """
-        获取单个 UAV 的局部观测
+        获取单个UAV的局部观测向量
 
-        业务识别集成逻辑:
-        - 如果提供了 recognition_model（评估模式）：使用模型预测的业务类型
-        - 如果未提供 recognition_model（训练模式）：使用真实业务类型 (ground truth)
+        【业务识别集成逻辑】
+        本方法是训练/评估双模式的核心实现点：
+
+        模式1: 训练模式 (recognition_model is None)
+          - 使用uav.true_business_type（ground truth）
+          - 保证训练数据的准确性
+          - 让agent学习到真实的业务-策略映射关系
+
+        模式2: 评估模式 (recognition_model is not None)
+          - 使用env.perform_recognition(uav_id)预测业务类型
+          - 引入识别模型的分类误差（通常5-15%错误率）
+          - 模拟真实部署场景中的不确定性
+
+        【状态平滑机制】(可选)
+        如果use_state_smoothing=True：
+          - 保存最近5个原始观测到历史缓冲区
+          - 返回这5个观测的逐元素均值
+          - 效果：减少单步噪声，提供更稳定的输入信号
+          - 代价：引入约5步的响应延迟
+
+        Args:
+            uav_id (int): UAV的唯一标识符，范围[0, num_agents-1]
 
         Returns:
-            obs: shape=(obs_dim,) 的浮点数组
+            np.ndarray: 形状为(obs_dim,)的浮点向量
+                       包含该UAV的所有局部观测信息
+                       所有值已归一化到[0, 1]或[-1, 1]范围
+
+        Example:
+            >>> obs = env.get_obs(uid=42)
+            >>> print(obs.shape)
+            (49,)  # 对于8个基站配置
+            >>> print(obs[:8])  # 前8维是SINR向量
+            [0.75, 0.62, 0.88, 0.45, 0.33, 0.91, 0.57, 0.69]
         """
         uav = self.env.uavs[uav_id]
         n = self.num_bs

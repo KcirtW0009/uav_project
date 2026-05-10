@@ -107,8 +107,24 @@ def main():
         print("\n--- 测试统计表格打印 ---")
         Experiment3._print_results_table(summary)
 
-        print("\n--- 测试绘图功能 ---")
-        Experiment3._plot(summary)
+        print("\n--- 测试绘图功能 (安全模式: 不保存数据) ---")
+        # [FIX] 备份原始数据，防止_plot()覆盖
+        import shutil
+        exp3_json_path = os.path.join('experiment_results', 'exp3_data.json')
+        backup_path = exp3_json_path + '.before_test_backup'
+        if os.path.exists(exp3_json_path):
+            shutil.copy2(exp3_json_path, backup_path)
+            print(f"  [BACKUP] 已备份原始数据 -> {backup_path}")
+
+        try:
+            Experiment3._plot(summary)
+            print("  [OK] 绘图成功!")
+        finally:
+            # 恢复原始数据（无论绘图是否成功）
+            if os.path.exists(backup_path):
+                shutil.copy2(backup_path, exp3_json_path)
+                os.remove(backup_path)
+                print("  [RESTORE] 已恢复原始数据 (防止被测试数据覆盖)")
 
         print("\n" + "="*80)
         print("  [SUCCESS] 绘图功能正常! 可以安全运行完整实验")

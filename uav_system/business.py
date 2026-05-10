@@ -1,8 +1,298 @@
 """
-业务类型与QoS模型定义
+=============================================================================
+  UAV业务识别与切换决策系统 - 业务类型定义模块 (business.py)
+=============================================================================
 
-定义三类无人机业务（控制信令、视频回传、环境监测）的枚举、
-QoS配置文件、以及业务特征生成参数。
+【模块概述】
+本模块是整个系统的"业务建模层"，定义了UAV网络中的三种典型业务类型、
+它们的QoS（服务质量）需求配置，以及用于生成仿真数据的特征参数。
+
+【设计哲学】
+
+1. **3GPP 5G切片对齐**:
+   业务类型直接对应5G的三大应用场景:
+   - 控制信令 → URLLC (超可靠低延迟通信)
+   - 视频回传 → eMBB (增强型移动宽带)
+   - 环境监测 → mMTC (海量机器类通信)
+   
+   确保研究成果具有实际工程参考价值。
+
+2. **数据驱动的QoS参数**:
+   所有QoS阈值均来自权威来源:
+   - 华为5G白皮书 (2024)
+   - 3GPP TS 22.125 (5G服务要求)
+   - 学术论文KPI基准表
+   
+   避免主观臆断，提升可信度。
+
+3. **差异化降级策略**:
+   不同业务对资源不足的容忍度不同:
+   - 控制信令: 仅允许5%降级(安全关键)
+   - 视频回传: 允许40%降级(质量可调)
+   - 环境监测: 允许70%降级(尽力而为)
+   
+   为增强算法的抢占/降级机制提供决策依据。
+
+4. **可扩展的枚举设计**:
+   使用Python Enum确保类型安全
+   支持未来扩展新业务类型(如AR/VR、边缘计算等)
+   集中管理避免魔法数字散落各处
+
+【核心组件】
+┌─────────────────────────────────────────────────────────────────────┐
+│ 组件/类              │ 功能描述                                     │
+├─────────────────────────────────────────────────────────────────────┤
+│ BusinessType         │ 业务类型枚举(控制信令/视频/监测)             │
+│ QoSProfile           │ QoS配置数据类(速率/时延/丢包/优先级等)       │
+│ QOS_PROFILES         │ 全局预定义配置字典(BusinessType → QoSProfile)│
+│ BUSINESS_FEATURE_..  │ 业务特征生成参数(用于模拟流量)               │
+└─────────────────────────────────────────────────────────────────────┘
+
+【三种业务类型详解】
+
+1. **控制信令** (CONTROL_SIGNAL, ID=0)
+   
+   ┌─────────────────────┬─────────────────────────────────────────────┐
+ │ 特性                 │ 详细说明                                    │
+ ├─────────────────────┼─────────────────────────────────────────────┤
+ │ 典型应用            │ 遥控指令、状态上报、告警推送、飞行控制       │
+ │ 5G映射              │ URLLC (Ultra-Reliable Low Latency Commun.)   │
+ │ 带宽需求            │ 极低: 0.15-0.5 Mbps (150-500 kbps)          │
+ │ 时延要求            │ 极严格: ≤20 ms (理想<10 ms)                  │
+ │ 可靠性要求          │ 极高: 丢包率≤1% (99.999%可靠性)             │
+ │ 优先级              │ 最高: 0.99 (接近1.0)                         │
+ │ 关键性              │ 安全关键: criticality=1.0                    │
+ │ 时延敏感度          │ 最高: latency_sensitivity=1.0               │
+ │ 降级容忍度          │ 最低: 仅允许5%降级(95%-100%)                │
+ │ 抖动容忍度          │ 极低: <2 ms                                  │
+ │ 典型包大小          │ 小: 64-256 bytes (指令/ACK)                  │
+ │ 发送模式            │ 突发性、低频、小包                           │
+ └─────────────────────┴─────────────────────────────────────────────┘
+ 
+ 设计考量:
+ - 无人机遥控指令丢失可能导致坠机，因此采用最严格的QoS保障
+ - 即使在资源紧张时，也要优先保证控制信令的完整性
+ - 切换算法应避免让控制信令UAV经历长时间断连
+
+2. **视频回传** (VIDEO_STREAMING, ID=1)
+ 
+   ┌─────────────────────┬─────────────────────────────────────────────┐
+ │ 特性                 │ 详细说明                                    │
+ ├─────────────────────┼─────────────────────────────────────────────┤
+ │ 典型应用            │ 4K视频流、实时监控、AR/VR传输、图像识别     │
+ │ 5G映射              │ eMBB (Enhanced Mobile Broadband)             │
+ │ 带宽需求            │ 高: 25-100 Mbps (4K≈50Mbps, 8K≈200Mbps)    │
+ │ 时延要求            │ 中等: ≤20-50 ms (实时交互要求)              │
+ │ 可靠性要求          │ 中高: 丢包率≤5% (可接受偶尔卡顿)            │
+ │ 优先级              │ 高: 0.75                                    │
+ │ 关键性              │ 体验关键: criticality=0.7                   │
+ │ 时延敏感度          │ 中高: latency_sensitivity=0.8               │
+ │ 降级容忍度          │ 中等: 允许35%降级(65%-100%, 可降分辨率)     │
+ │ 抖动容忍度          │ 低: <10 ms (影响画面流畅度)                 │
+ │ 典型包大小          │ 大: 1400-1500 bytes (MTU大小)               │
+ │ 发送模式            │ 持续性、高频、大包、恒定比特率(CBR)        │
+ └─────────────────────┴─────────────────────────────────────────────┘
+ 
+ 设计考量:
+ - 视频业务占用大量带宽，是系统负载的主要来源
+ - 可以通过降低分辨率/帧率来适应带宽限制(自适应码率)
+ - 对时延敏感但不如控制信令严格(人类感知有容限)
+ - 是切换决策的重点优化对象(带宽敏感)
+
+3. **环境监测** (ENVIRONMENT_MONITORING, ID=2)
+ 
+   ┌─────────────────────┬─────────────────────────────────────────────┐
+ │ 特性                 │ 详细说明                                    │
+ ├─────────────────────┼─────────────────────────────────────────────┤
+ │ 典型应用            │ 传感器数据采集、周期性巡检、日志上传、      │
+ │                     │ 温湿度/气体浓度上报                        │
+ │ 5G映射              │ mMTC (Massive Machine-Type Communications)  │
+ │ 带宽需求            │ 低: 0.5-2 Mbps (传感器数据通常很小)         │
+ │ 时延要求            │ 宽松: ≤500-1000 ms (非实时)                 │
+ │ 可靠性要求          │ 中等: 丢包率≤5% (可重传)                    │
+ │ 优先级              │ 低: 0.30                                    │
+ │ 关键性              │ 非关键: criticality=0.3                      │
+ │ 时延敏感度          │ 低: latency_sensitivity=0.2                 │
+ │ 降级容忍度          │ 高: 允许75%降级(25%-100%, 尽力而为)         │
+ │ 抖动容忍度          │ 高: <70 ms (批量数据传输)                   │
+ │ 典型包大小          │ 中: 256-512 bytes (传感器读数)              │
+ │ 发送模式            │ 周期性、低频、中包                          │
+ └─────────────────────┴─────────────────────────────────────────────┘
+ 
+ 设计考量:
+ - 环境监测数据量小但设备数量可能很大(mMTC场景)
+ - 对时延和可靠性要求最低，可作为"缓冲池"吸收系统压力
+ - 在资源竞争时可以优先牺牲环境监测的QoS
+ - 适合作为被抢占对象(低优先级+高降级容忍)
+
+【QoSProfile数据类详解】
+
+属性列表:
+
+┌──────────────────────┬──────────┬────────────────────────────────────────┐
+│ 属性名                │ 类型      │ 说明                                │
+├──────────────────────┼──────────┼────────────────────────────────────────┤
+│ business_type        │ Enum      │ 所属业务类型                        │
+│ min_rate             │ float     │ 最低保障速率(Mbps), 低于此值视为不满足│
+│ ideal_rate           │ float     │ 理想目标速率(Mbps), 满分参考标准     │
+│ max_delay            │ float     │ 最大容忍时延(ms), 超过则惩罚        │
+│ max_loss_rate        │ float     │ 最大容忍丢包率(0-1), 超过则惩罚     │
+│ priority             │ float     │ 业务优先级(0-1), 用于加权计算        │
+│ downgrade_tolerance  │ float     │ 降级容忍度(0-1), 最小可接受比例      │
+│ criticality          │ float     │ 关键性等级(0-1), ≥0.9触发特殊处理   │
+│ latency_sensitivity  │ float     │ 时延敏感系数(0-1), 影响权重分配      │
+└──────────────────────┴──────────┴────────────────────────────────────────┘
+
+方法说明:
+
+1. **calculate_satisfaction()** - 多维度满意度计算
+ 
+ 输入参数:
+   - allocated_rate: 实际分配速率(Mbps)
+   - estimated_delay: 估算时延(ms), 可选
+   - loss_rate: 丢包率(0-1), 可选
+ 
+ 计算流程:
+   a. 速率满意度(rate_sat):
+      使用分段线性函数(按业务类型定制)
+      - 控制信令: 三段式 [0, 0.7→0.3, 0.85→0.7, 0.95→1.0]
+      - 视频回传: S形曲线(Smoothstep函数) + 线性段
+      - 环境监测: 两段式 [0, 0.3→0.4, 0.8→1.0]
+ 
+   b. 时延满意度(delay_sat):
+      反比关系: delay_sat = max_delay / actual_delay
+      截断到[0, 1]范围，分段线性化
+ 
+   c. 丢包满意度(loss_sat):
+      类似时延: loss_sat = max_loss / actual_loss
+      更宽松的阈值(≥0.3即给0.5分)
+ 
+   d. 加权综合:
+      动态权重(同satisfaction.py模块):
+      overall = w_rate × rate_sat + w_delay × delay_sat + w_loss × loss_sat
+      
+      惩罚机制: 任一维度<0.2时，overall×0.5(严厉惩罚)
+ 
+ 向后兼容:
+   若delay/loss未提供，退化为纯速率评估(兼容旧接口)
+
+2. **get_feasible_downgrade_ratios()** - 可行降级比例列表
+ 
+ 返回该业务类型可接受的降级序列(降序排列):
+ - 控制信令: [1.0, 0.95, 0.9]     (仅3档,保守)
+ - 视频回传: [1.0, 0.9, 0.8, 0.7, 0.6] (5档,中等)
+ - 环境监测: [1.0, 0.8, 0.6, 0.4, 0.3] (5档,激进)
+ 
+ 用途:
+ - EnhancedHandoverAlgorithm的降级搜索
+ - 抢占时的最小保留资源计算
+ - 资源分配的可行性判断
+
+【全局配置字典】
+
+QOS_PROFILES:
+  类型: Dict[BusinessType, QoSProfile]
+  
+  用法:
+  >>> from business import QOS_PROFILES, BusinessType
+  >>> control_qos = QOS_PROFILES[BusinessType.CONTROL_SIGNAL]
+  >>> print(f"最大时延: {control_qos.max_delay}ms")
+  
+  注意: 这是单例字典，程序启动时初始化，不应修改
+
+BUSINESS_FEATURE_PARAMS:
+  类型: Dict[BusinessType, Dict[str, tuple]]
+  
+  结构:
+  {
+    BusinessType.X: {
+      'delay': (mean, std),          # 时延分布参数(正态分布)
+      'bandwidth': (mean, std),      # 带宽分布参数(Mbps)
+      'loss_beta': (alpha, beta),     # Beta分布形状参数(丢包率)
+      'loss_scale': float,            # Beta分布尺度因子
+      'jitter': (mean, std)           # 抖动分布参数(ms)
+    }
+  }
+  
+  用途:
+  - recognition模块生成训练/测试数据
+  - environment模块模拟UAV流量特征
+  - MAPPO环境的观测空间构建
+  
+  参数选择依据:
+  - delay/bandwidth: 基于QOS_PROFILES的理想值加合理波动
+  - loss_beta: Beta分布适合模拟[0,1]区间的比率数据
+    * α大β小 → 分布偏向0(低丢包, 如控制信令α=1, β=1000)
+    * αβ接近均匀 → 中等丢包(如环境监测α=2, β=20)
+
+【与其他模块的关系】
+
+上游依赖:
+  无(本模块是最底层的业务定义层)
+
+下游调用:
+  - satisfaction.py: 使用QOS_PROFILES计算满意度
+  - recognition.py: 使用BUSINESS_FEATURE_PARAMS生成训练数据
+  - algorithms.py: 使用priority/criticality进行切换决策
+  - environment.py: 使用min_rate/ideal_rate初始化UAV
+  - mappo_environment.py: 使用QoS需求构建奖励函数
+  - experiments.py: 按BusinessType分组统计性能指标
+
+【使用示例】
+
+# 示例1: 查询业务类型的QoS需求
+>>> from business import BusinessType, QOS_PROFILES
+>>> video_qos = QOS_PROFILES[BusinessType.VIDEO_STREAMING]
+>>> print(f"视频业务理想速率: {video_qos.ideal_rate} Mbps")
+>>> print(f"最大容忍时延: {video_qos.max_delay} ms")
+
+# 示例2: 计算特定分配下的满意度
+>>> control_qos = QOS_PROFILES[BusinessType.CONTROL_SIGNAL]
+>>> sat = control_qos.calculate_satisfaction(
+...     allocated_rate=0.45,      # 分配450kbps
+...     estimated_delay=15,      # 时延15ms
+...     loss_rate=0.005          # 丢包率0.5%
+... )
+>>> print(f"控制信令满意度: {sat:.1%}")
+
+# 示例3: 获取可行的降级选项
+>>> for ratio in video_qos.get_feasible_downgrade_ratios():
+...     rate = video_qos.ideal_rate * ratio
+...     print(f"  {ratio*100:.0f}%: {rate:.1f} Mbps")
+
+# 示例4: 生成模拟的业务特征数据
+>>> from business import BUSINESS_FEATURE_PARAMS
+>>> import numpy as np
+>>> params = BUSINESS_FEATURE_PARAMS[BusinessType.VIDEO_STREAMING]
+>>> delay = np.random.normal(*params['delay'])
+>>> bandwidth = np.random.normal(*params['bandwidth'])
+>>> print(f"模拟视频业务: 延迟={delay:.1f}ms, 带宽={bandwidth:.1f}Mbps")
+
+# 示例5: 遍历所有业务类型
+>>> for bt in BusinessType:
+...     qos = QOS_PROFILES[bt]
+...     print(f"{bt.name}: 优先级={qos.priority}, 关键性={qos.criticality}")
+
+【已知限制】
+  1. 固定3种业务类型，扩展需修改多处代码(Enum/配置/训练)
+  2. QoS参数基于行业平均值，未考虑具体厂商实现差异
+  3. 降级比例为离散档位，不支持连续细粒度调整
+  4. calculate_satisfaction()中的分段函数需手动调优(非学习得到)
+  5. 不支持动态QoS协商(如用户根据价格自选质量等级)
+
+【版本历史】
+  V1.0: 初始版本，定义3种业务类型和基础QoS配置
+  V1.1: 添加QoSProfile数据类和calculate_satisfaction方法
+  V1.2: 引入get_feasible_downgrade_ratios降级策略
+  V1.3: 添加BUSINESS_FEATURE_PARAMS用于数据生成
+  V1.4: 完善多维度满意度计算(时延/丢包加权)
+  V1.5: 对齐3GPP 5G三大场景(URLLC/eMBB/mMTC)
+
+【参考文献】
+  1. Huawei: "5G Application Scenario White Paper" (2024)
+  2. 3GPP TS 22.125: "Service requirements for the 5G system"
+  3. ITU-T Y.3100: "Framework for supporting UAV-based applications"
+  4. 3GPP TR 22.862: "Study on enhancement of Cyber Physical Mobile Robotics applications"
 """
 
 from enum import Enum

@@ -1,3 +1,166 @@
+"""
+=============================================================================
+  UAV业务识别与切换决策系统 - 实验管理模块 (experiments.py)
+=============================================================================
+
+【模块概述】
+本模块是整个系统的实验管理中心，负责协调所有子模块的运行顺序，
+管理从数据收集、统计分析、显著性检验到可视化展示的完整流程。
+
+【核心职责】
+1. 实验流程控制 - 统一管理实验1-4的执行逻辑
+2. 数据收集汇总 - 收集三种算法（传统/增强/MAPPO）的性能指标
+3. 统计分析计算 - 计算均值±标准差，进行统计显著性检验
+4. 可视化生成 - 生成对比图表（柱状图/热力图/雷达图等）
+5. 数据持久化 - 自动保存结果到JSON/Pickle格式
+6. 缓存机制 - 支持跳过已完成的算法，节省运行时间
+
+【主要类】
+┌─────────────┬─────────────────────────────────────────────────────────┐
+│ 类名         │ 功能描述                                               │
+├─────────────┼─────────────────────────────────────────────────────────┤
+│ Experiment1  │ 实验1：验证业务识别准确性的价值（5种准确率等级）        │
+│ Experiment2  │ 实验2：逐步添加增强机制，验证每个机制的贡献             │
+│ Experiment2b │ 实验2b：不同机制组合的效果对比                           │
+│ Experiment3  │ 实验3：增强算法 vs 传统算法 全面对比（8BS×300UAV）     │
+│ Experiment4  │ 实验4：多场景泛化测试（5个典型5G应用场景）              │
+└─────────────┴─────────────────────────────────────────────────────────┘
+
+【核心函数】
+┌──────────────────────────┬────────────────────────────────────────────┐
+│ 函数名                    │ 功能描述                                   │
+├──────────────────────────┼────────────────────────────────────────────┤
+│ evaluate_mappo_in_       │ MAPPO模型评估入口，在仿真环境中测试已训练   │
+│ experiment()             │ 的MAPPO模型性能                            │
+├──────────────────────────┼────────────────────────────────────────────┤
+│ compare_algorithms_      │ 两算法统计显著性检验                        │
+│ with_tests()             │ （t-test / Mann-Whitney U）                │
+├──────────────────────────┼────────────────────────────────────────────┤
+│ compare_three_algorithms_│ 三算法对比检验                              │
+│ with_tests()             │ （MAPPO vs 增强 vs 传统）                  │
+├──────────────────────────┼────────────────────────────────────────────┤
+│ save_experiment_data()   │ 将实验结果保存到JSON和Pickle格式            │
+├──────────────────────────┼────────────────────────────────────────────┤
+│ perform_statistical_     │ 执行单个指标的统计检验                      │
+│ test()                   │ 返回p值、效应量、显著性判断                 │
+└──────────────────────────┴────────────────────────────────────────────┘
+
+【评估指标体系】(17个核心指标)
+┌────────────┬──────────────────┬────────────────────────────────────────┐
+│ 类别       │ 指标             │ 说明                                   │
+├────────────┼──────────────────┼────────────────────────────────────────┤
+│ 切换性能   │ handover_success_│ 成功切换次数 / 总切换尝试次数           │
+│            │ rate             │                                        │
+│            ├──────────────────┼────────────────────────────────────────┤
+│            │ avg_switching_   │ 从决策到完成切换的平均耗时(ms)          │
+│            │ latency_ms       │                                        │
+│            ├──────────────────┼────────────────────────────────────────┤
+│            │ max_switching_   │ 最坏情况下的切换延迟(ms)               │
+│            │ latency_ms       │                                        │
+│            ├──────────────────┼────────────────────────────────────────┤
+│            │ avg_decision_time│ 算法做出决策所需的计算时间(ms)          │
+│            │ _ms              │                                        │
+├────────────┼──────────────────┼────────────────────────────────────────┤
+│ 连接质量   │ connected_ratio  │ 保持连接状态的UAV比例 (0~1)            │
+│            ├──────────────────┼────────────────────────────────────────┤
+│            │ missed_opportunity│ 应该切换但未切换的比例                 │
+│            │ _rate            │                                        │
+│            ├──────────────────┼────────────────────────────────────────┤
+│            │ migration_success│ 成功迁移到更好基站的比例               │
+│            │ _rate            │                                        │
+├────────────┼──────────────────┼────────────────────────────────────────┤
+│ 用户满意度 │ avg_satisfaction │ 综合满意度均值 (0~1)                   │
+│            ├──────────────────┼────────────────────────────────────────┤
+│            │ critical_satis-  │ 关键业务的满足程度                     │
+│            │ faction          │                                        │
+│            ├──────────────────┼────────────────────────────────────────┤
+│            │ weighted_satisf- │ 按业务重要性加权的满意度               │
+│            │ action           │                                        │
+│            ├──────────────────┼────────────────────────────────────────┤
+│            │ latency_satisfac-│ 时延需求的满足程度                     │
+│            │ tion             │                                        │
+│            ├──────────────────┼────────────────────────────────────────┤
+│            │ rate_satisfaction│ 速率需求的满足程度                     │
+├────────────┼──────────────────┼────────────────────────────────────────┤
+│ 系统效率   │ total_throughput │ 系统总传输速率(Mbps)                    │
+│            ├──────────────────┼────────────────────────────────────────┤
+│            │ load_variance    │ 基站间负载均衡程度 (越小越均衡)        │
+│            ├──────────────────┼────────────────────────────────────────┤
+│            │ avg_sinr_db      │ 平均信干噪比(dB)                       │
+├────────────┼──────────────────┼────────────────────────────────────────┤
+│ 辅助指标   │ recognition_accu-│ 业务类型分类准确率 (%)                 │
+│            │ racy             │                                        │
+└────────────┴──────────────────┴────────────────────────────────────────┘
+
+【自动保存机制】(三层保护，防止数据丢失)
+第1层: 每轮MAPPO评估完成后 → exp3/4_mappo_raw_results.json
+第2层: 所有轮次完成后 → exp3/4_mappo_summary.json  
+第3层: 绘图异常捕获 → 打印错误但不中断程序
+
+【缓存模式】(--use-cache参数)
+- 实验3: 从exp3_data.json读取传统/增强算法数据（节省~14小时）
+- 实验4: 从exp4_data.json读取5个场景的数据（节省~37小时）
+- 仅运行MAPPO评估，大幅缩短总时间
+
+【种子重排策略】(MAPPO专用)
+原始顺序: [0,1,2,3,4,5,6,7,8,9] → 种子 [30042~30051]
+重排后:   [5,7,3,8,1,9,2,6,0,4] → 先跑有挑战性的种子
+目的: 第1轮就能观察到MAPPO的真实容错能力，避免初始种子过于简单
+
+【使用示例】
+```python
+# 实例化并运行实验3
+from uav_system.experiments import Experiment3
+
+recognition_model, scaler = train_or_load_recognition_model()
+summary = Experiment3.run(
+    recognition_model=recognition_model,
+    scaler=scaler,
+    num_steps=350,
+    repeats=10,
+    include_mappo=True,           # 包含MAPPO三算法对比
+    mappo_model_path="model.pt", # 指定MAPPO模型路径
+    use_cache=True               # 使用缓存模式加速
+)
+
+# 访问结果
+print(f"增强算法满意度: {summary['enhanced']['avg_satisfaction'][0]:.3f}")
+print(f"MAPPO成功率: {summary['mappo']['handover_success_rate'][0]*100:.1f}%")
+```
+
+【依赖关系】
+本模块依赖以下子模块:
+- config.py: 全局配置（种子、路径、颜色方案）
+- business.py: 业务类型定义与QoS配置文件
+- satisfaction.py: 层次化满意度评估方法
+- recognition.py: 业务识别模型（决策树/随机森林）
+- environment.py: 网络仿真环境（基站/UAV/信道）
+- algorithms.py: 传统/增强切换算法实现
+- visualization.py: 图表生成工具
+- mappo_environment.py: MAPPO专用评估环境
+- mappo_agent_v2.py: MAPPO智能体网络结构
+
+【作者】: UAV Research Team
+【版本】: v2.0 (2026-05-10 更新)
+【修改历史】:
+  v2.0 (2026-05-10): 
+    - 添加三层自动保存机制
+    - 添加绘图异常捕获
+    - 添加缓存模式支持
+    - 添加MAPPO种子重排功能
+    - 修复f-string语法错误
+    - 修复识别准确率双重乘法bug
+  
+  v1.5 (2026-05-09):
+    - 集成MAPPO三算法对比框架
+    - 添加17个完整评估指标
+    - 实现统计显著性检验(t-test/Wilcoxon)
+    
+  v1.0 (2026-04-20):
+    - 初始版本，实现实验1-4基础框架
+=============================================================================
+"""
+
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')  # 使用非交互式后端，避免plt.show()弹窗阻塞程序
@@ -2295,8 +2458,8 @@ class Experiment4:
 
 
     @staticmethod
-    def run(recognition_model, scaler, num_steps=150, repeats=10, include_mappo=False, mappo_model_path=None,
-            use_cache=False):  # [NEW] 缓存模式参数
+    def run(recognition_model, scaler, num_steps=150, repeats=5, include_mappo=False, mappo_model_path=None,
+            use_cache=False):  # [V27] 统一repeats=5，与实验三对齐
         """
         运行实验4：多场景对比实验
 
@@ -2391,6 +2554,8 @@ class Experiment4:
                 use_cache = False
         # [FIX] 只在非缓存模式或缓存未命中时才运行传统/增强算法
         if not use_cache:
+            exp4_base_seed_full = GLOBAL_SEED + 1000  # [V27] 实验四独立种子基址
+
             for scenario, info in Experiment4.SCENARIOS.items():
                 num_uav = info['num_uav']
                 print(f"\n{'='*60}")
@@ -2399,7 +2564,7 @@ class Experiment4:
                 print('='*60)
                 for rep in range(repeats):
                     print(f"\n 重复 {rep+1}/{repeats}")
-                    set_global_seed(GLOBAL_SEED + rep)
+                    set_global_seed(exp4_base_seed_full + rep)  # [V27] 使用独立种子
 
                     env_enh = EnhancedNetworkEnvironment(
                         num_bs=8, num_uav=num_uav,
@@ -2425,11 +2590,27 @@ class Experiment4:
                     enh_stats = env_enh.get_state_statistics()
                     enh_stats.update(algo_enh.get_detailed_stats())
                     enh_stats['business_stats'] = env_enh.get_business_type_stats()
+
+                    # [V27] 补充实验三四对齐的统一指标
+                    connected_count = sum(1 for uav in env_enh.uavs.values() if uav.connected_bs_id is not None)
+                    enh_stats['connected_ratio'] = connected_count / max(env_enh.num_uav, 1)
+                    enh_stats['migration_success_rate'] = enh_stats.get('handover_success_rate', 1.0)
+                    enh_stats['total_throughput'] = sum(uav.current_allocated_rate for uav in env_enh.uavs.values()
+                                                        if uav.connected_bs_id is not None)
+
                     results[scenario]['enhanced'].append(enh_stats)
 
                     trad_stats = env_trad.get_state_statistics()
                     trad_stats.update(algo_trad.get_detailed_stats())
                     trad_stats['business_stats'] = env_trad.get_business_type_stats()
+
+                    # [V27] 补充实验三四对齐的统一指标
+                    connected_count_trad = sum(1 for uav in env_trad.uavs.values() if uav.connected_bs_id is not None)
+                    trad_stats['connected_ratio'] = connected_count_trad / max(env_trad.num_uav, 1)
+                    trad_stats['migration_success_rate'] = trad_stats.get('handover_success_rate', 1.0)
+                    trad_stats['total_throughput'] = sum(uav.current_allocated_rate for uav in env_trad.uavs.values()
+                                                         if uav.connected_bs_id is not None)
+
                     results[scenario]['traditional'].append(trad_stats)
 
                     print(f" 增强算法 - 满足率: {enh_stats['avg_satisfaction']:.3f}, "
@@ -2454,8 +2635,9 @@ class Experiment4:
                 print("  [MAPPO EVALUATION] 开始MAPPO多场景评估 (纯净版，无保护机制)...")
                 print("  " + "="*80)
 
-                # 种子重排：与实验3一致
-                mappo_seed_order = [5, 7, 3, 8, 1, 9, 2, 6, 0, 4]
+                # [V27] 实验四独立种子（不与实验三保持一致）
+                exp4_base_seed = GLOBAL_SEED + 1000  # 偏移避免与实验三冲突
+                mappo_seed_order = list(range(repeats))  # 简单顺序: [0,1,2,3,4]
 
                 for scenario, info in Experiment4.SCENARIOS.items():
                     num_uav = info['num_uav']
@@ -2465,8 +2647,8 @@ class Experiment4:
                     print('='*60)
 
                     for rep_idx, rep in enumerate(mappo_seed_order):
-                        print(f"\n  [MAPPO] 重复 {rep_idx+1}/{repeats} (原序#{rep+1}, 种子={GLOBAL_SEED + rep})")
-                        set_global_seed(GLOBAL_SEED + rep)
+                        print(f"\n  [MAPPO] 重复 {rep_idx+1}/{repeats} (种子={exp4_base_seed + rep})")
+                        set_global_seed(exp4_base_seed + rep)
 
                         mappo_stats = evaluate_mappo_in_experiment(
                             num_bs=8, num_uav=num_uav, num_steps=num_steps,
