@@ -2624,6 +2624,7 @@ class Experiment4:
                             num_bs=8, num_uav=num_uav, num_steps=num_steps,
                             recognition_model=recognition_model, scaler=scaler,  # [FIX] 传入识别模型
                             model_path=mappo_model_path,  # 支持自定义模型路径
+                            seed=exp4_base_seed_full + rep,  # [V27 FIX] 传入独立种子
                         )
                         if mappo_stats is not None:
                             results[scenario]['mappo'].append(mappo_stats)
@@ -2654,6 +2655,7 @@ class Experiment4:
                             num_bs=8, num_uav=num_uav, num_steps=num_steps,
                             recognition_model=recognition_model, scaler=scaler,
                             model_path=mappo_model_path,
+                            seed=exp4_base_seed + rep,  # [V27 FIX] 传入独立种子
                         )
                         if mappo_stats is not None:
                             results[scenario]['mappo'].append(mappo_stats)

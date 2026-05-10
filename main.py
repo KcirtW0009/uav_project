@@ -18,7 +18,7 @@
 【快速开始】
 ```bash
 # 0. 进入项目目录
-cd "f:\桌面\本科毕业论文\结题\uav_project"
+cd "f:/桌面/本科毕业论文/结题/uav_project"
 
 # 1. 激活虚拟环境 (可选，如果已激活可跳过)
 .\venv\Scripts\activate
@@ -310,11 +310,10 @@ def main(force_retrain=False, run_experiments=None,
                                        mappo_model_path=mappo_model_path,
                                        use_cache=use_cache,
                                        mappo_repeats=mappo_repeats),  # [NEW] MAPPO差异化重复
-        '4': lambda: Experiment4.run(recognition_model, scaler, num_steps=150, repeats=10,
+        '4': lambda: Experiment4.run(recognition_model, scaler, num_steps=150, repeats=5,
                                       include_mappo=include_mappo,
                                       mappo_model_path=mappo_model_path,
-                                      use_cache=use_cache,
-                                      mappo_repeats=mappo_repeats),  # [NEW] MAPPO差异化重复
+                                      use_cache=use_cache),  # [V27] 统一repeats=5
         'mappo': lambda: _run_exp_mappo(load_models=rl_load,
                                           phase=rl_phase,
                                           small_scale=small_scale,
