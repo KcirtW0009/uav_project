@@ -381,15 +381,6 @@ def evaluate_mappo_in_experiment(num_bs: int, num_uav: int, num_steps: int,
                                         for uid in range(env.num_agents)]),
         'rate_satisfaction': np.mean([HierarchicalSatisfactionMetric.compute_satisfaction(env.env.uavs[uid])['rate_sat']
                                       for uid in range(env.num_agents)]),
-        'recognition_accuracy': (recognition_model.evaluate_on_test(
-            np.array([[env.env.uavs[uid].current_latency,        # delay
-                       env.env.uavs[uid].current_allocated_rate,  # bandwidth
-                       env.env.uavs[uid].packet_loss_rate,        # loss_rate
-                       np.random.uniform(0.5, 2.0)]               # jitter (模拟值)
-                      for uid in range(min(100, env.num_agents))]),
-            np.array([env.env.uavs[uid].true_business_type.value
-                      for uid in range(min(100, env.num_agents))])
-        )[0]) if recognition_model else 1.0,  # [FIX] 移除*100，统一在打印时处理
         '_algorithm': 'MAPPO',
     }
     
@@ -1154,7 +1145,6 @@ class Experiment3:
         'total_throughput': '系统吞吐量(Mbps)',
         'load_variance': '负载方差',
         'avg_sinr': '平均SINR(dB)',
-        'recognition_accuracy': '识别准确率(%)',
         'migration_success_rate': '迁移成功率',
         'connected_ratio': '连接保持率',
     }
@@ -1284,11 +1274,13 @@ class Experiment3:
                 enh_stats = env_enh.get_state_statistics()
                 enh_stats.update(algo_enh.get_detailed_stats())
                 enh_stats['connected_ratio'] = enh_stats['connected_count'] / env_enh.num_uav
+                enh_stats.pop('recognition_accuracy', None)  # [V27] 移除识别准确率指标
                 enhanced_results.append(enh_stats)
 
                 trad_stats = env_trad.get_state_statistics()
                 trad_stats.update(algo_trad.get_detailed_stats())
                 trad_stats['connected_ratio'] = trad_stats['connected_count'] / env_trad.num_uav
+                trad_stats.pop('recognition_accuracy', None)  # [V27] 移除识别准确率指标
                 traditional_results.append(trad_stats)
 
                 print(f" 增强算法 - 满足率: {enh_stats['avg_satisfaction']:.3f}, "
@@ -2564,12 +2556,13 @@ class Experiment4:
                 print('='*60)
                 for rep in range(repeats):
                     print(f"\n 重复 {rep+1}/{repeats}")
-                    set_global_seed(exp4_base_seed_full + rep)  # [V27] 使用独立种子
+                    current_seed = exp4_base_seed_full + rep  # [V27 FIX] 统一种子变量
+                    set_global_seed(current_seed)
 
                     env_enh = EnhancedNetworkEnvironment(
                         num_bs=8, num_uav=num_uav,
                         recognition_model=recognition_model, scaler=scaler,
-                        seed=GLOBAL_SEED + rep, scenario=scenario, event_probability=0.05
+                        seed=current_seed, scenario=scenario, event_probability=0.05  # [V27 FIX] 使用统一种子
                     )
                     algo_enh = EnhancedHandoverAlgorithm(env_enh)
                     algo_enh.epsilon = 0.0  # 最终算法不含ε-greedy探索机制
@@ -2577,7 +2570,7 @@ class Experiment4:
                     env_trad = EnhancedNetworkEnvironment(
                         num_bs=8, num_uav=num_uav,
                         recognition_model=recognition_model, scaler=scaler,
-                        seed=GLOBAL_SEED + rep, scenario=scenario, event_probability=0.05
+                        seed=current_seed, scenario=scenario, event_probability=0.05  # [V27 FIX] 使用统一种子
                     )
                     algo_trad = IntegratedHandoverAlgorithm(env_trad)
 
@@ -2597,6 +2590,7 @@ class Experiment4:
                     enh_stats['migration_success_rate'] = enh_stats.get('handover_success_rate', 1.0)
                     enh_stats['total_throughput'] = sum(uav.current_allocated_rate for uav in env_enh.uavs.values()
                                                         if uav.connected_bs_id is not None)
+                    enh_stats.pop('recognition_accuracy', None)  # [V27] 移除识别准确率指标
 
                     results[scenario]['enhanced'].append(enh_stats)
 
@@ -2610,6 +2604,7 @@ class Experiment4:
                     trad_stats['migration_success_rate'] = trad_stats.get('handover_success_rate', 1.0)
                     trad_stats['total_throughput'] = sum(uav.current_allocated_rate for uav in env_trad.uavs.values()
                                                          if uav.connected_bs_id is not None)
+                    trad_stats.pop('recognition_accuracy', None)  # [V27] 移除识别准确率指标
 
                     results[scenario]['traditional'].append(trad_stats)
 
@@ -2704,7 +2699,6 @@ class Experiment4:
                                 ('avg_switching_latency_ms', '平均切换延迟(ms)'),
                                 ('max_switching_latency_ms', '最大切换延迟(ms)'),
                                 ('migration_success_rate', '迁移成功率'),
-                                ('recognition_accuracy', '识别准确率(%)'),
                             ]
                             for metric_key, name in other_metrics:
                                 if metric_key in mappo_stats:

@@ -236,6 +236,7 @@ import os
 import warnings
 
 warnings.filterwarnings('ignore', category=RuntimeWarning, module='numpy')
+warnings.filterwarnings('ignore', message='.*sklearn.utils.parallel.delayed.*')  # [V27] 抑制sklearn并行配置警告
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from uav_system.config import set_global_seed, GLOBAL_SEED, RESULT_DIR
