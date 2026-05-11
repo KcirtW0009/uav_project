@@ -346,41 +346,63 @@ def evaluate_mappo_in_experiment(num_bs: int, num_uav: int, num_steps: int,
     final_sats = [env.env.uavs[uid].current_satisfaction for uid in range(env.num_agents)]
     connected_count = sum(1 for uid in range(env.num_agents) if env.env.uavs[uid].connected_bs_id is not None)
     total_ho = sum(env.env.uavs[uid].handover_count for uid in range(env.num_agents))
-    
+
     # [FIX V2] 使用真实收集的切换数据计算成功率
     # 切换成功率 = 切换成功 / 切换尝试
     if total_switch_attempts_all > 0:
         real_handover_success_rate = total_switch_success_all / total_switch_attempts_all
     else:
         real_handover_success_rate = 1.0
-    
+
     # [FIX V2] 连接保持率 = (切换成功 + 回滚成功 + 不切换) / 总UAV数
     stay_count = max(0, (env.num_agents * num_steps) - total_switch_attempts_all)
     connected_kept = total_switch_success_all + total_switch_rollback_all + stay_count
     real_connected_ratio = connected_kept / max(env.num_agents * num_steps, 1)
-    
+
+    # 安全计算辅助函数：防止空列表错误
+    def _safe_mean(data, default=0.0):
+        """安全计算均值，空列表返回默认值"""
+        return np.mean(data) if len(data) > 0 else default
+
+    def _safe_max(data, default=0.0):
+        """安全计算最大值，空列表返回默认值"""
+        return max(data) if len(data) > 0 else default
+
+    def _safe_var(data, default=0.0):
+        """安全计算方差，空列表返回默认值"""
+        return np.var(data) if len(data) > 0 else default
+
+    # 收集各项指标数据（带空列表保护）
+    handover_latencies = env._communication_metrics.get('handover_latencies', [])
+    throughput_data = [env.env.uavs[uid].current_allocated_rate
+                       for uid in range(env.num_agents)
+                       if env.env.uavs[uid].connected_bs_id is not None]
+    load_ratios = [bs.load_ratio for bs in env.env.base_stations.values()]
+    sinr_data = env.env.sinr_matrix[:env.num_agents, :num_bs]
+    critical_sats = [s for i, s in enumerate(final_sats)
+                     if env.env.uavs[i].true_business_type.value == 0]
+    delay_sats = [HierarchicalSatisfactionMetric.compute_satisfaction(env.env.uavs[uid])['delay_sat']
+                  for uid in range(env.num_agents)]
+    rate_sats = [HierarchicalSatisfactionMetric.compute_satisfaction(env.env.uavs[uid])['rate_sat']
+                 for uid in range(env.num_agents)]
+
     stats = {
-        'avg_satisfaction': np.mean(final_sats),
-        'critical_satisfaction': np.mean([s for i, s in enumerate(final_sats)
-                                          if env.env.uavs[i].true_business_type.value == 0]),
-        'weighted_satisfaction': np.mean(final_sats),
+        'avg_satisfaction': _safe_mean(final_sats),
+        'critical_satisfaction': _safe_mean(critical_sats),
+        'weighted_satisfaction': _safe_mean(final_sats),
         'connected_count': connected_count,
         'connected_ratio': real_connected_ratio,
-        'total_throughput': sum(env.env.uavs[uid].current_allocated_rate 
-                               for uid in range(env.num_agents)
-                               if env.env.uavs[uid].connected_bs_id is not None),
+        'total_throughput': sum(throughput_data),
         'handover_success_rate': real_handover_success_rate,
-        'avg_switching_latency_ms': np.mean(env._communication_metrics.get('handover_latencies', [0])),
-        'max_switching_latency_ms': max(env._communication_metrics.get('handover_latencies', [0])),
+        'avg_switching_latency_ms': _safe_mean(handover_latencies),
+        'max_switching_latency_ms': _safe_max(handover_latencies),
         'avg_decision_time_ms': 0.001,  # MAPPO决策时间极短（神经网络推理）
         'missed_opportunity_rate': 0.0,  # MAPPO不会错失机会（全局优化）
         'migration_success_rate': real_handover_success_rate,  # 切换成功即迁移成功
-        'load_variance': np.var([bs.load_ratio for bs in env.env.base_stations.values()]),
-        'avg_sinr': np.mean(env.env.sinr_matrix[:env.num_agents, :num_bs]),
-        'latency_satisfaction': np.mean([HierarchicalSatisfactionMetric.compute_satisfaction(env.env.uavs[uid])['delay_sat']
-                                        for uid in range(env.num_agents)]),
-        'rate_satisfaction': np.mean([HierarchicalSatisfactionMetric.compute_satisfaction(env.env.uavs[uid])['rate_sat']
-                                      for uid in range(env.num_agents)]),
+        'load_variance': _safe_var(load_ratios),
+        'avg_sinr': _safe_mean(sinr_data.flatten()) if sinr_data.size > 0 else 0.0,
+        'latency_satisfaction': _safe_mean(delay_sats),
+        'rate_satisfaction': _safe_mean(rate_sats),
         '_algorithm': 'MAPPO',
     }
     
@@ -2431,6 +2453,14 @@ class Experiment4:
     - 物流配送: eMBB+网络切片，控制与监测并重
     """
     SCENARIOS = {
+        'agriculture': {
+            'name': '农业植保',
+            'desc': '植物健康监测，mMTC大量传感+eMBB数据，大范围覆盖',
+            '5g_feature': 'mMTC+eMBB',
+            'switch_focus': '大范围网联覆盖、能效切换',
+            'num_uav': 350,
+            'seeds': [30051, 30045, 30048],
+        },
         'smart_city': {
             'name': '智慧城市监控',
             'desc': '安防巡逻视频，eMBB高带宽+URLLC切片，优先保证视频流畅',
@@ -2446,14 +2476,6 @@ class Experiment4:
             'switch_focus': '边缘节点接入、通信恢复机制',
             'num_uav': 300,
             'seeds': [30044, 30047, 30046, 30051, 30049],
-        },
-        'agriculture': {
-            'name': '农业植保',
-            'desc': '植物健康监测，mMTC大量传感+eMBB数据，大范围覆盖',
-            '5g_feature': 'mMTC+eMBB',
-            'switch_focus': '大范围网联覆盖、能效切换',
-            'num_uav': 350,
-            'seeds': [30051, 30045, 30048],
         },
         'emergency_rescue': {
             'name': '应急救援',
@@ -2680,6 +2702,24 @@ class Experiment4:
                         if mappo_stats is not None:
                             results[scenario]['mappo'].append(mappo_stats)
                             print(f" MAPPO     - 满足率: {mappo_stats['avg_satisfaction']:.3f}")
+
+                            # [AUTO-SAVE] 非缓存模式下也需要保护（防止37小时运行崩溃）
+                            try:
+                                auto_save_path = os.path.join(RESULT_DIR, 'exp4_mappo_raw_results.json')
+                                with open(auto_save_path, 'w', encoding='utf-8') as f:
+                                    json.dump({
+                                        'timestamp': datetime.now().isoformat(),
+                                        'current_scenario': scenario,
+                                        'scenario_name': info['name'],
+                                        'completed_reps_in_scenario': len(results[scenario]['mappo']),
+                                        'total_completed': sum(len(s.get('mappo', [])) for s in results.values()),
+                                        'seed_order': scenario_seeds,
+                                        'results_by_scenario': {sc: dat.get('mappo', []) for sc, dat in results.items()}
+                                    }, f, ensure_ascii=False, indent=2, default=str)
+                                total_so_far = sum(len(s.get('mappo', [])) for s in results.values())
+                                print(f"  [AUTO-SAVE] 已保存 {total_so_far} 轮结果 -> {auto_save_path}")
+                            except Exception as save_err:
+                                print(f"  [WARN] 自动保存失败: {save_err}")
         else:
             # [CACHE MODE] 缓存模式下只运行MAPPO（传统/增强已从文件加载）
             if include_mappo:
