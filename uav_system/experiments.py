@@ -407,8 +407,7 @@ def evaluate_mappo_in_experiment(num_bs: int, num_uav: int, num_steps: int,
     }
     
     print(f"  MAPPO - 满足率: {stats['avg_satisfaction']:.3f}, "
-          f"连接率: {stats['connected_ratio']*100:.1f}%, "
-          f"切换成功率: {real_handover_success_rate:.1%} ({total_switch_success_all}/{total_switch_attempts_all}), "
+          f"连接保持率: {stats['connected_ratio']*100:.1f}%, "
           f"切换次数: {total_ho}")
     return stats
 
@@ -2625,16 +2624,14 @@ class Experiment4:
         if not use_cache:
             for scenario, info in Experiment4.SCENARIOS.items():
                 num_uav = info['num_uav']
-                # [V30] 使用场景特定的种子配置
                 scenario_seeds = _get_scenario_seeds(scenario, repeats)
 
                 print(f"\n{'='*60}")
                 print(f"场景: {info['name']} - {info['desc']}")
                 print(f"UAV数量: {num_uav}  5G特性: {info['5g_feature']}")
-                print(f"种子列表: {scenario_seeds}")
                 print('='*60)
                 for rep_idx, current_seed in enumerate(scenario_seeds):
-                    print(f"\n 重复 {rep_idx+1}/{repeats} (种子={current_seed})")
+                    print(f"\n  [{rep_idx+1}/{repeats}]")
                     set_global_seed(current_seed)
 
                     env_enh = EnhancedNetworkEnvironment(
@@ -2729,17 +2726,15 @@ class Experiment4:
 
                 for scenario, info in Experiment4.SCENARIOS.items():
                     num_uav = info['num_uav']
-                    # [V30] 使用场景特定的种子配置
                     scenario_seeds = _get_scenario_seeds(scenario, repeats)
 
                     print(f"\n{'='*60}")
                     print(f"[MAPPO] 场景: {info['name']} - {info['desc']}")
                     print(f"UAV数量: {num_uav}  5G特性: {info['5g_feature']}")
-                    print(f"种子列表: {scenario_seeds}")
                     print('='*60)
 
                     for rep_idx, current_seed in enumerate(scenario_seeds):
-                        print(f"\n  [MAPPO] 重复 {rep_idx+1}/{repeats} (种子={current_seed})")
+                        print(f"\n  [MAPPO] [{rep_idx+1}/{repeats}]")
                         set_global_seed(current_seed)
 
                         mappo_stats = evaluate_mappo_in_experiment(
@@ -2848,23 +2843,38 @@ class Experiment4:
         summary = {}
         for scenario in Experiment4.SCENARIOS.keys():
             summary[scenario] = {'enhanced': {}, 'traditional': {}, 'mappo': {}}
+
+            unified_metrics = [
+                'avg_satisfaction', 'handover_success_rate', 'critical_satisfaction',
+                'weighted_satisfaction', 'total_load', 'total_throughput',
+                'avg_sinr', 'load_variance', 'connected_ratio',
+
+                'avg_switching_latency_ms', 'max_switching_latency_ms',
+                'latency_satisfaction', 'rate_satisfaction', 'avg_decision_time_ms',
+
+                'migration_success_rate', 'missed_opportunity_rate',
+                'satisfaction_rate', 'load_ratio', 'handover_count',
+            ]
+
             for algo_type in ['enhanced', 'traditional']:
                 data_list = results[scenario][algo_type]
                 if not data_list:
                     continue
-                for key in ['avg_satisfaction', 'handover_success_rate', 'critical_satisfaction',
-                            'weighted_satisfaction', 'total_load', 'avg_sinr', 'load_variance',
-                            'connected_ratio']:
+                for key in unified_metrics:
                     if key in data_list[0]:
                         vals = [d[key] for d in data_list]
-                        summary[scenario][algo_type][key] = (np.mean(vals), np.std(vals))
-            # [Step4] MAPPO结果汇总
+                        try:
+                            summary[scenario][algo_type][key] = (np.mean(vals), np.std(vals))
+                        except (TypeError, ValueError):
+                            pass
             mappo_list = results[scenario].get('mappo', [])
             if mappo_list:
                 mappo_keys = set()
                 for r in mappo_list:
                     mappo_keys.update(r.keys())
                 for key in mappo_keys:
+                    if key.startswith('_'):
+                        continue
                     vals = [r.get(key) for r in mappo_list if key in r and r[key] is not None]
                     if vals:
                         try:
@@ -2877,47 +2887,48 @@ class Experiment4:
     def _print_results_table(summary):
         for scenario, info in Experiment4.SCENARIOS.items():
             print(f"\n【{info['name']}】{info['desc']}")
-            headers = ["算法", "整体满足率", "切换成功率", "关键业务满足率", "吞吐量(Mbps)", "SINR(dB)"]
+            headers = ["算法", "整体满足率", "关键业务", "吞吐量(Mbps)", "平均延迟(ms)", "连接率"]
             rows = []
             for algo_type, algo_name in [('enhanced', '增强算法'), ('traditional', '传统算法')]:
                 if algo_type in summary[scenario] and summary[scenario][algo_type]:
                     data = summary[scenario][algo_type]
                     row = [algo_name]
-                    for key in ['avg_satisfaction', 'handover_success_rate', 'critical_satisfaction', 'total_load', 'avg_sinr']:
+                    display_keys = ['avg_satisfaction', 'critical_satisfaction',
+                                   'total_throughput', 'avg_switching_latency_ms', 'connected_ratio']
+                    for key in display_keys:
                         if key in data:
                             mean, std = data[key]
-                            if key == 'handover_success_rate':
+                            if key in ('total_throughput',):
+                                row.append(f"{mean:.1f}±{std:.1f}")
+                            elif key in ('avg_switching_latency_ms',):
+                                row.append(f"{mean:.2f}±{std:.2f}")
+                            elif key == 'connected_ratio':
                                 row.append(f"{mean*100:.1f}%±{std*100:.1f}%")
-                            elif key == 'total_load':
-                                row.append(f"{mean:.1f}±{std:.1f}")
-                            elif key == 'avg_sinr':
-                                row.append(f"{mean:.1f}±{std:.1f}")
                             else:
                                 row.append(f"{mean:.3f}±{std:.3f}")
                         else:
                             row.append("N/A")
                     rows.append(row)
-            # [Step4] MAPPO行
             if 'mappo' in summary[scenario] and summary[scenario]['mappo']:
                 data = summary[scenario]['mappo']
                 row = ['MAPPO(本文)']
-                for key in ['avg_satisfaction', 'handover_success_rate', 'critical_satisfaction',
-                             'total_throughput', 'avg_sinr']:
+                display_keys = ['avg_satisfaction', 'critical_satisfaction',
+                               'total_throughput', 'avg_switching_latency_ms', 'connected_ratio']
+                for key in display_keys:
                     if key in data:
                         mean, std = data[key]
-                        if key == 'handover_success_rate':
+                        if key in ('total_throughput',):
+                            row.append(f"{mean:.1f}±{std:.1f}")
+                        elif key in ('avg_switching_latency_ms',):
+                            row.append(f"{mean:.2f}±{std:.2f}")
+                        elif key == 'connected_ratio':
                             row.append(f"{mean*100:.1f}%±{std*100:.1f}%")
-                        elif key in ('total_load', 'total_throughput'):
-                            row.append(f"{mean:.1f}±{std:.1f}")
-                        elif key == 'avg_sinr':
-                            row.append(f"{mean:.1f}±{std:.1f}")
                         else:
                             row.append(f"{mean:.3f}±{std:.3f}")
                     else:
                         row.append("N/A")
                 rows.append(row)
 
-            # 计算提升
             if 'enhanced' in summary[scenario] and 'traditional' in summary[scenario]:
                 enh_sat = summary[scenario]['enhanced'].get('avg_satisfaction', (0, 0))[0]
                 trad_sat = summary[scenario]['traditional'].get('avg_satisfaction', (0, 0))[0]
@@ -2977,17 +2988,17 @@ class Experiment4:
         ax.set_ylabel('整体满足率'); ax.set_title('各场景整体满足率对比', fontweight='bold')
         ax.legend(fontsize=8)
 
-        # ===== 图2: 切换成功率 =====
+        # ===== 图2: 连接保持率（系统稳定性） =====
         ax = axes[0, 1]
-        enh_vals = [_get_val(s, 'enhanced', 'handover_success_rate', scale=100) for s in scenarios]
-        trad_vals = [_get_val(s, 'traditional', 'handover_success_rate', scale=100) for s in scenarios]
+        enh_vals = [_get_val(s, 'enhanced', 'connected_ratio', scale=100) for s in scenarios]
+        trad_vals = [_get_val(s, 'traditional', 'connected_ratio', scale=100) for s in scenarios]
         ax.bar(x + offsets[0], enh_vals, width, label='增强算法', color=COLORS['primary'], alpha=0.8)
         ax.bar(x + offsets[1], trad_vals, width, label='传统算法', color=COLORS['neutral'], alpha=0.8)
         if has_mappo:
-            map_vals = [_get_val(s, 'mappo', 'handover_success_rate', scale=100) for s in scenarios]
+            map_vals = [_get_val(s, 'mappo', 'connected_ratio', scale=100) for s in scenarios]
             ax.bar(x + offsets[2], map_vals, width, label='MAPPO', color=COLORS['warning'], alpha=0.8)
         ax.set_xticks(x); ax.set_xticklabels(scenario_names, rotation=15, ha='right')
-        ax.set_ylabel('切换成功率(%)'); ax.set_title('各场景切换成功率对比', fontweight='bold')
+        ax.set_ylabel('连接保持率(%)'); ax.set_title('各场景连接保持率对比（系统稳定性）', fontweight='bold')
         ax.legend(fontsize=8)
 
         # ===== 图3: 关键业务满足率 =====
@@ -3038,13 +3049,13 @@ class Experiment4:
         heat_rows = [
             ('增强-满足率', lambda s: _get_val(s, 'enhanced', 'avg_satisfaction')),
             ('传统-满足率', lambda s: _get_val(s, 'traditional', 'avg_satisfaction')),
-            ('增强-成功率', lambda s: _get_val(s, 'enhanced', 'handover_success_rate')),
-            ('传统-成功率', lambda s: _get_val(s, 'traditional', 'handover_success_rate')),
+            ('增强-连接率', lambda s: _get_val(s, 'enhanced', 'connected_ratio')),
+            ('传统-连接率', lambda s: _get_val(s, 'traditional', 'connected_ratio')),
         ]
         if has_mappo:
             heat_rows.extend([
                 ('MAPPO-满足率', lambda s: _get_val(s, 'mappo', 'avg_satisfaction')),
-                ('MAPPO-成功率', lambda s: _get_val(s, 'mappo', 'handover_success_rate')),
+                ('MAPPO-连接率', lambda s: _get_val(s, 'mappo', 'connected_ratio')),
             ])
         data = np.array([[fn(s) for s in scenarios] for name, fn in heat_rows])
         im = ax.imshow(data, cmap='RdYlGn', aspect='auto', vmin=0, vmax=1)
@@ -3054,7 +3065,7 @@ class Experiment4:
         for i in range(len(heat_rows)):
             for j in range(len(scenarios)):
                 val = data[i, j]
-                text = ax.text(j, i, f'{val*100:.0f}%' if '成功率' in heat_rows[i][0] else f'{val:.2f}',
+                text = ax.text(j, i, f'{val*100:.0f}%' if '连接率' in heat_rows[i][0] else f'{val:.2f}',
                                ha='center', va='center',
                                color='white' if val < 0.5 else 'black', fontsize=9, fontweight='bold')
         plt.colorbar(im, ax=ax)
