@@ -280,7 +280,7 @@ def main(force_retrain=False, run_experiments=None,
     all_model_results = None
 
     # [V28] 判断是否需要加载业务识别模型（实验3/4已切断识别模块）
-    needs_recognition = any(exp in run_experiments_str for exp in ['1', '2', '2b', '2c', 'mappo'])
+    needs_recognition = any(exp in run_experiments_str for exp in ['1', '2', '2b', '2c', '3', 'mappo'])  # [回档版] 实验三使用识别模型
 
     if needs_recognition:
         # V17: 始终加载业务识别模型（评估阶段需要接入预测噪声）
@@ -315,12 +315,12 @@ def main(force_retrain=False, run_experiments=None,
         '2': lambda: Experiment2.run(recognition_model, scaler, num_steps=150, repeats=10),
         '2b': lambda: Experiment2b.run(recognition_model, scaler, num_steps=150, repeats=8),
         '2c': lambda: Experiment2c.run(recognition_model, scaler, num_steps=200, repeats=6),
-        '3': lambda: Experiment3.run(None, None,  # [V28] 切断识别模块入口
+        '3': lambda: Experiment3.run(recognition_model, scaler,  # [回档版] 使用识别模型
                                        include_mappo=include_mappo,
                                        mappo_model_path=mappo_model_path,
                                        use_cache=use_cache,
                                        mappo_repeats=mappo_repeats),  # [NEW] MAPPO差异化重复
-        '4': lambda: Experiment4.run(None, None, num_steps=150, repeats=5,  # [V28] 切断识别模块入口
+        '4': lambda: Experiment4.run(None, None, num_steps=350, repeats=5,  # [V30] 优化参数：350步×5次
                                       include_mappo=include_mappo,
                                       mappo_model_path=mappo_model_path,
                                       use_cache=use_cache),  # [V27] 统一repeats=5
@@ -445,6 +445,8 @@ if __name__ == "__main__":
                         help='强制重新对比所有识别模型并选取最优（忽略已有模型）')
     parser.add_argument('--use-cache', action='store_true',
                         help='实验3/4: 读取已有的传统/增强算法数据（跳过重新运行，大幅节省时间）')
+    parser.add_argument('--no-cache', action='store_true',
+                        help='实验3/4: 强制不使用缓存，完整重新运行所有算法（默认行为，可省略）')
     parser.add_argument('--mappo-repeats', type=int, default=None,
                         help='MAPPO评估的重复次数 (默认: 与传统/增强算法相同，即repeats参数值)。'
                              '设置为较小值(如3-5)可大幅缩短实验4时间，同时保持统计公平性。'
@@ -456,11 +458,14 @@ if __name__ == "__main__":
     else:
         run_experiments = [int(e) if isinstance(e, str) and e.isdigit() else e for e in args.exp]
 
+    # 处理缓存参数：--no-cache 优先级高于 --use-cache
+    use_cache = args.use_cache and not args.no_cache
+
     set_global_seed(GLOBAL_SEED)
     main(force_retrain=args.retrain, run_experiments=run_experiments,
          rl_load=args.rl_load, rl_phase=args.rl_phase, small_scale=args.small,
          include_mappo=args.include_mappo, mappo_model_path=args.mappo_model,
-         use_cache=args.use_cache, mappo_repeats=args.mappo_repeats)  # [NEW] 传入MAPPO重复次数参数
+         use_cache=use_cache, mappo_repeats=args.mappo_repeats)  # [NEW] 传入MAPPO重复次数参数
 
 
 # ==================== 快速参考 ====================

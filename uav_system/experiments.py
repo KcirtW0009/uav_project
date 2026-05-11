@@ -1151,7 +1151,7 @@ class Experiment3:
 
     @staticmethod
     def run(recognition_model, scaler, num_steps=350, repeats=10, include_mappo=False, mappo_model_path=None,
-            use_cache=False):  # [NEW] 缓存模式参数
+            use_cache=False, mappo_repeats=None):  # [V29] 添加mappo_repeats参数
         """
         运行实验3：增强算法 vs 传统算法（全面对比）
 
@@ -2437,6 +2437,7 @@ class Experiment4:
             '5g_feature': 'eMBB+URLLC切片',
             'switch_focus': '优先保证视频流畅，低延时控制',
             'num_uav': 400,
+            'seeds': [30050, 30047, 30042, 30045, 30048],
         },
         'industrial_inspection': {
             'name': '工业巡检',
@@ -2444,6 +2445,7 @@ class Experiment4:
             '5g_feature': 'eMBB+MEC',
             'switch_focus': '边缘节点接入、通信恢复机制',
             'num_uav': 300,
+            'seeds': [30044, 30047, 30046, 30051, 30049],
         },
         'agriculture': {
             'name': '农业植保',
@@ -2451,6 +2453,7 @@ class Experiment4:
             '5g_feature': 'mMTC+eMBB',
             'switch_focus': '大范围网联覆盖、能效切换',
             'num_uav': 350,
+            'seeds': [30051, 30045, 30048],
         },
         'emergency_rescue': {
             'name': '应急救援',
@@ -2458,6 +2461,7 @@ class Experiment4:
             '5g_feature': 'URLLC',
             'switch_focus': '最低切换时延、可靠链路保障',
             'num_uav': 300,
+            'seeds': [30050, 30048, 30047, 30051, 30046],
         },
         'logistics_delivery': {
             'name': '物流配送',
@@ -2465,13 +2469,14 @@ class Experiment4:
             '5g_feature': 'eMBB+网络切片',
             'switch_focus': '长航程持续覆盖、服务切换平稳',
             'num_uav': 500,
+            'seeds': [30048, 30051, 30049],
         },
     }
 
 
     @staticmethod
-    def run(recognition_model, scaler, num_steps=350, repeats=10, include_mappo=False, mappo_model_path=None,
-            use_cache=False):  # [V29] 优化：350步×10次，提升数据质量与统计显著性
+    def run(recognition_model, scaler, num_steps=350, repeats=5, include_mappo=False, mappo_model_path=None,
+            use_cache=False):  # [V30] 优化：350步×5次，减少运行时间
         """
         运行实验4：多场景对比实验
 
@@ -2479,7 +2484,7 @@ class Experiment4:
             recognition_model: 业务识别模型（V28: 可为None）
             scaler: 识别模型标准化器（V28: 可为None）
             num_steps: 仿真步数（默认350，与实验三对齐，提升稳定性）
-            repeats: 重复实验次数（默认10，提升统计可靠性）
+            repeats: 重复实验次数（默认5，减少运行时间）
             include_mappo: 是否包含MAPPO泛化评估
             mappo_model_path: MAPPO模型路径，None则使用默认路径
             use_cache: 是否读取已有的传统/增强算法数据（跳过重新运行）
@@ -2496,6 +2501,36 @@ class Experiment4:
         print("="*80)
 
         results = {scenario: {'enhanced': [], 'traditional': [], 'mappo': []} for scenario in Experiment4.SCENARIOS.keys()}
+
+        # [V30] 场景种子配置：为不足repeats次的场景补充随机种子
+        def _get_scenario_seeds(scenario_key, n_repeats):
+            """获取场景的完整种子列表（不足则补充随机种子）"""
+            base_seeds = Experiment4.SCENARIOS[scenario_key].get('seeds', [])
+            if len(base_seeds) >= n_repeats:
+                return base_seeds[:n_repeats]
+            else:
+                # 收集所有已使用的种子
+                all_used_seeds = set()
+                for sc in Experiment4.SCENARIOS.keys():
+                    all_used_seeds.update(Experiment4.SCENARIOS[sc].get('seeds', []))
+                # 生成不重复的随机种子
+                extra_needed = n_repeats - len(base_seeds)
+                extra_seeds = []
+                while len(extra_seeds) < extra_needed:
+                    new_seed = np.random.randint(30000, 39999)
+                    if new_seed not in all_used_seeds and new_seed not in base_seeds:
+                        extra_seeds.append(new_seed)
+                        all_used_seeds.add(new_seed)
+                complete_seeds = base_seeds + extra_seeds
+                print(f"    [SEED] 场景'{Experiment4.SCENARIOS[scenario_key]['name']}' "
+                      f"种子不足{len(base_seeds)}个，补充{extra_needed}个: {extra_seeds}")
+                return complete_seeds
+
+        # [V30] 打印各场景的种子配置
+        print("\n[V30] 各场景种子配置 (5次重复):")
+        for scenario in Experiment4.SCENARIOS.keys():
+            seeds = _get_scenario_seeds(scenario, repeats)
+            print(f"  {Experiment4.SCENARIOS[scenario]['name']:12s}: {seeds}")
 
         # [NEW] 缓存模式：直接从JSON文件读取传统/增强算法的统计数据
         if use_cache:
@@ -2566,17 +2601,18 @@ class Experiment4:
                 use_cache = False
         # [FIX] 只在非缓存模式或缓存未命中时才运行传统/增强算法
         if not use_cache:
-            exp4_base_seed_full = GLOBAL_SEED  # [V28] 使用与实验三相同的种子基址
-
             for scenario, info in Experiment4.SCENARIOS.items():
                 num_uav = info['num_uav']
+                # [V30] 使用场景特定的种子配置
+                scenario_seeds = _get_scenario_seeds(scenario, repeats)
+
                 print(f"\n{'='*60}")
                 print(f"场景: {info['name']} - {info['desc']}")
                 print(f"UAV数量: {num_uav}  5G特性: {info['5g_feature']}")
+                print(f"种子列表: {scenario_seeds}")
                 print('='*60)
-                for rep in range(repeats):
-                    print(f"\n 重复 {rep+1}/{repeats}")
-                    current_seed = exp4_base_seed_full + rep  # [V27 FIX] 统一种子变量
+                for rep_idx, current_seed in enumerate(scenario_seeds):
+                    print(f"\n 重复 {rep_idx+1}/{repeats} (种子={current_seed})")
                     set_global_seed(current_seed)
 
                     env_enh = EnhancedNetworkEnvironment(
@@ -2639,7 +2675,7 @@ class Experiment4:
                             num_bs=8, num_uav=num_uav, num_steps=num_steps,
                             recognition_model=recognition_model, scaler=scaler,  # [FIX] 传入识别模型
                             model_path=mappo_model_path,  # 支持自定义模型路径
-                            seed=exp4_base_seed_full + rep,  # [V27 FIX] 传入独立种子
+                            seed=current_seed,  # [V30 FIX] 使用场景特定种子
                         )
                         if mappo_stats is not None:
                             results[scenario]['mappo'].append(mappo_stats)
@@ -2651,33 +2687,32 @@ class Experiment4:
                 print("  [MAPPO EVALUATION] 开始MAPPO多场景评估 (纯净版，无保护机制)...")
                 print("  " + "="*80)
 
-                # [V28] 使用与实验三相同的种子
-                exp4_base_seed = GLOBAL_SEED  # 与实验三保持一致
-                mappo_seed_order = list(range(repeats))  # 简单顺序: [0,1,2,3,4]
-
                 for scenario, info in Experiment4.SCENARIOS.items():
                     num_uav = info['num_uav']
+                    # [V30] 使用场景特定的种子配置
+                    scenario_seeds = _get_scenario_seeds(scenario, repeats)
+
                     print(f"\n{'='*60}")
                     print(f"[MAPPO] 场景: {info['name']} - {info['desc']}")
                     print(f"UAV数量: {num_uav}  5G特性: {info['5g_feature']}")
+                    print(f"种子列表: {scenario_seeds}")
                     print('='*60)
 
-                    for rep_idx, rep in enumerate(mappo_seed_order):
-                        print(f"\n  [MAPPO] 重复 {rep_idx+1}/{repeats} (种子={exp4_base_seed + rep})")
-                        set_global_seed(exp4_base_seed + rep)
+                    for rep_idx, current_seed in enumerate(scenario_seeds):
+                        print(f"\n  [MAPPO] 重复 {rep_idx+1}/{repeats} (种子={current_seed})")
+                        set_global_seed(current_seed)
 
                         mappo_stats = evaluate_mappo_in_experiment(
                             num_bs=8, num_uav=num_uav, num_steps=num_steps,
                             recognition_model=recognition_model, scaler=scaler,
                             model_path=mappo_model_path,
-                            seed=exp4_base_seed + rep,  # [V27 FIX] 传入独立种子
+                            seed=current_seed,  # [V30] 使用场景特定种子
                         )
                         if mappo_stats is not None:
                             results[scenario]['mappo'].append(mappo_stats)
 
                             # [AUTO-SAVE] 每轮完成后立即保存（实验4有5个场景，更需要保护）
                             try:
-                                import json
                                 auto_save_path = os.path.join(RESULT_DIR, 'exp4_mappo_raw_results.json')
                                 with open(auto_save_path, 'w', encoding='utf-8') as f:
                                     json.dump({
@@ -2685,9 +2720,9 @@ class Experiment4:
                                         'current_scenario': scenario,
                                         'scenario_name': info['name'],
                                         'completed_reps_in_scenario': len(results[scenario]['mappo']),
-                                        'total_completed': sum(len(s['mappo']) for s in results.values() if 'mappo' in s),
-                                        'seed_order': mappo_seed_order,
-                                        'results_by_scenario': {sc: dat['mappo'] for sc, dat in results.items() if 'mappo' in dat}
+                                        'total_completed': sum(len(s.get('mappo', [])) for s in results.values()),
+                                        'seed_order': scenario_seeds,
+                                        'results_by_scenario': {sc: dat.get('mappo', []) for sc, dat in results.items()}
                                     }, f, ensure_ascii=False, indent=2, default=str)
                                 total_so_far = sum(len(s['mappo']) for s in results.values() if 'mappo' in s)
                                 print(f"  [AUTO-SAVE] 已保存 {total_so_far} 轮结果 -> {auto_save_path}")
@@ -2729,7 +2764,10 @@ class Experiment4:
                                         print(f"    {name}: {val:.4f}")
                             print("  " + "-"*55)
 
-        # [FINAL-SAVE] 绘图前保存完整summary（实验4有5个场景×10轮=50轮数据，必须保护！）
+        # 生成summary（必须在绘图和打印之前）
+        summary = Experiment4._summarize(results)
+
+        # [FINAL-SAVE] 绘图前保存完整summary（实验4有5个场景×5轮=25轮数据，必须保护！）
         if include_mappo:
             try:
                 total_mappo_runs = sum(len(s.get('mappo', [])) for s in results.values())
@@ -2740,7 +2778,6 @@ class Experiment4:
                             'timestamp': datetime.now().isoformat(),
                             'total_mappo_runs': total_mappo_runs,
                             'scenarios_completed': list(results.keys()),
-                            'seed_order': mappo_seed_order,
                             'raw_results_by_scenario': {sc: dat.get('mappo', []) for sc, dat in results.items()}
                         }, f, ensure_ascii=False, indent=2, default=str)
                     print(f"\n  [FINAL-SAVE] 实验4完整结果已保存 ({total_mappo_runs}轮) -> {final_save_path}")
