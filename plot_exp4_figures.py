@@ -67,37 +67,76 @@ ALGORITHM_HATCHES = {
 
 def load_exp4_data():
     """
-    加载实验四最新数据
+    加载实验四数据
 
-    策略:
-    1. 优先从 exp4_data.json 读取完整数据（包含三种算法的最新统计）
-    2. 如果 exp4_data.json 缺少 MAPPO 数据，从 exp4_mappo_summary.json 补充
-    3. 如果都没有，生成示例数据用于预览
+    策略（简化版 2026-05-11）:
+    1. 统一从 exp4_data.json 读取所有三种算法的数据
+    2. FINAL-SAVE-2 已确保该文件包含最新完整数据
+    3. 只有在文件不存在时才使用备用方案
     """
     from datetime import datetime
 
     data = {}
 
-    # [1] 尝试加载完整的exp4_data.json（包含三种算法）
+    # [1] 统一从exp4_data.json读取所有数据
     if os.path.exists(DATA_PATH):
-        with open(DATA_PATH, 'r', encoding='utf-8') as f:
-            cached_data = json.load(f)
+        data_mtime = datetime.fromtimestamp(os.path.getmtime(DATA_PATH))
+        print(f"[INFO] 加载实验四数据 from {os.path.basename(DATA_PATH)}")
+        print(f"       修改时间: {data_mtime}")
 
-        file_mtime = datetime.fromtimestamp(os.path.getmtime(DATA_PATH))
-        print(f"[INFO] 加载 exp4_data.json (修改时间: {file_mtime})")
+        with open(DATA_PATH, 'r', encoding='utf-8') as f:
+            complete_data = json.load(f)
 
         # 复制所有场景的数据
         for scenario_key in [s['key'] for s in SCENARIOS]:
-            if scenario_key in cached_data:
+            if scenario_key in complete_data:
                 data[scenario_key] = {}
                 for algo in ALGORITHMS:
-                    if algo in cached_data[scenario_key]:
-                        data[scenario_key][algo] = cached_data[scenario_key][algo]
+                    if algo in complete_data[scenario_key]:
+                        data[scenario_key][algo] = complete_data[scenario_key][algo]
 
-    # [2] 检查是否缺少MAPPO数据，如果缺少则从mappo_summary补充
-    has_mappo = any('mappo' in data.get(s.get('key'), {}) for s in SCENARIOS)
-    if not has_mappo and os.path.exists(MAPPO_DATA_PATH):
-        print(f"[INFO] 从 exp4_mappo_summary.json 补充MAPPO数据...")
+        # 检查数据完整性
+        print("\n[DATA STATUS] 各场景数据完整性:")
+        all_complete = True
+        for scenario in SCENARIOS:
+            key = scenario['key']
+            if key in data:
+                algos_present = [a for a in ALGORITHMS if a in data[key]]
+                # 检查是否有新指标
+                has_new_metrics = False
+                if 'enhanced' in data[key]:
+                    enh = data[key]['enhanced']
+                    has_new_metrics = 'connected_ratio' in enh and 'total_throughput' in enh
+
+                status = "[OK]" if has_new_metrics else "[OLD]"
+                if not has_new_metrics:
+                    all_complete = False
+                print(f"  {scenario['name']:8s}: 算法={algos_present} {status}")
+            else:
+                print(f"  {scenario['name']:8s}: [MISSING]")
+                all_complete = False
+
+        if not all_complete:
+            print("\n  [NOTE] 部分数据为旧版本(缺少新指标)，建议使用 --no-cache 重跑实验四")
+
+        # 记录元信息
+        saved_at = complete_data.get('_meta', {}).get('saved_at', 'UNKNOWN')
+        source = complete_data.get('_meta', {}).get('source', 'UNKNOWN')
+
+        data['_meta'] = {
+            'loaded_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'source': DATA_PATH,
+            'data_saved_at': saved_at,
+            'data_source': source,
+        }
+
+        return data
+
+    # [2] 备用方案：如果exp4_data.json不存在，尝试从mappo_summary补充
+    print(f"\n[WARN] 主数据文件不存在: {DATA_PATH}")
+
+    if os.path.exists(MAPPO_DATA_PATH):
+        print(f"[FALLBACK] 尝试从 {os.path.basename(MAPPO_DATA_PATH)} 加载MAPPO数据...")
         with open(MAPPO_DATA_PATH, 'r', encoding='utf-8') as f:
             mappo_data = json.load(f)
 
@@ -126,30 +165,20 @@ def load_exp4_data():
 
                 data[scenario_key]['mappo'] = mappo_summary
 
-        print(f"[INFO] 已加载 {mappo_data.get('total_mappo_runs', 0)} 轮MAPPO数据")
+        total_runs = mappo_data.get('total_mappo_runs', 0)
+        print(f"[FALLBACK] 已加载 {total_runs} 轮MAPPO数据 (缺少增强/传统算法数据)")
 
-    # [3] 检查数据完整性
-    if not data:
-        print("[WARN] 无可用数据，使用示例数据进行预览...")
-        return generate_sample_data()
+        data['_meta'] = {
+            'loaded_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'source': MAPPO_DATA_PATH,
+            'warning': 'INCOMPLETE: Only MAPPO data available',
+        }
 
-    # [4] 报告数据状态
-    print("\n[DATA STATUS] 各场景数据完整性检查:")
-    for scenario in SCENARIOS:
-        key = scenario['key']
-        if key in data:
-            algos_present = [a for a in ALGORITHMS if a in data[key]]
-            metrics_count = len(data[key].get('enhanced', {})) if 'enhanced' in data[key] else 0
-            print(f"  {scenario['name']:8s}: 算法={algos_present}, 增强算法指标数={metrics_count}")
-        else:
-            print(f"  {scenario['name']:8s}: [MISSING]")
+        return data
 
-    data['_meta'] = {
-        'loaded_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        'source': DATA_PATH
-    }
-
-    return data
+    # [3] 都没有：生成示例数据
+    print("[WARN] 无可用数据，使用示例数据进行预览...")
+    return generate_sample_data()
 
 
 def generate_sample_data():
@@ -291,83 +320,184 @@ def _create_grouped_bar_chart(data, metric_key, title, ylabel,
     return output_path
 
 
+def _create_grouped_bar_chart_large(data, metric_key, title, ylabel,
+                                     ylim, yticks, value_format='{:.3f}',
+                                     filename=None, is_percentage=False):
+    """大尺寸分组柱状图绘制函数 - 适用于需要更大展示空间的指标"""
+    fig, ax = plt.subplots(figsize=(15, 8))  # 增大尺寸
+
+    x_positions = np.arange(len(SCENARIOS))
+    bar_width = 0.25
+
+    algorithm_data = {algo: [] for algo in ALGORITHMS}
+
+    for scenario in SCENARIOS:
+        key = scenario['key']
+        if key in data:
+            for algo in ALGORITHMS:
+                if algo in data[key] and metric_key in data[key][algo]:
+                    val = data[key][algo][metric_key][0]
+                    if is_percentage and val <= 1.0:
+                        val = val * 100
+                    algorithm_data[algo].append(val)
+                else:
+                    algorithm_data[algo].append(0)
+        else:
+            for algo in ALGORITHMS:
+                algorithm_data[algo].append(0)
+
+    bars_list = []
+    for i, algo in enumerate(ALGORITHMS):
+        offset = (i - 1) * bar_width
+        bars = ax.bar(x_positions + offset,
+                     algorithm_data[algo],
+                     width=bar_width,
+                     color=ALGORITHM_COLORS[algo],
+                     edgecolor='white',
+                     linewidth=1.2,
+                     hatch=ALGORITHM_HATCHES[algo],
+                     label=ALGORITHM_LABELS[algo],
+                     zorder=3)
+        bars_list.append(bars)
+
+        y_range = ylim[1] - ylim[0]
+        label_offset = y_range * 0.01
+
+        for bar, val in zip(bars, algorithm_data[algo]):
+            if val > 0:
+                ax.text(bar.get_x() + bar.get_width()/2,
+                       bar.get_height() + label_offset,
+                       value_format.format(val),
+                       ha='center', va='bottom',
+                       fontsize=9, fontweight='bold',
+                       color='#333333')
+
+    scenario_labels = [f"{s['name']}\n({s['num_uav']}架)" for s in SCENARIOS]
+    ax.set_xticks(x_positions)
+    ax.set_xticklabels(scenario_labels, fontsize=11, ha='center')
+    ax.set_ylim(ylim)
+
+    if isinstance(yticks, tuple):
+        ax.set_yticks(np.arange(yticks[0], yticks[1] + yticks[2]/2, yticks[2]))
+    else:
+        ax.set_yticks(yticks)
+
+    ax.set_ylabel(ylabel, fontsize=13, fontweight='bold')
+    ax.set_title(title, fontsize=15, fontweight='bold', pad=18)
+
+    legend_handles = [
+        Patch(facecolor=ALGORITHM_COLORS['enhanced'], edgecolor='white',
+              hatch=ALGORITHM_HATCHES['enhanced'], label=ALGORITHM_LABELS['enhanced']),
+        Patch(facecolor=ALGORITHM_COLORS['traditional'], edgecolor='white',
+              hatch=ALGORITHM_HATCHES['traditional'], label=ALGORITHM_LABELS['traditional']),
+        Patch(facecolor=ALGORITHM_COLORS['mappo'], edgecolor='#DAA520',
+              hatch=ALGORITHM_HATCHES['mappo'], label=ALGORITHM_LABELS['mappo'])
+    ]
+    ax.legend(handles=legend_handles, loc='upper right', ncol=3,
+             fontsize=11, framealpha=0.9, edgecolor='gray')
+
+    ax.yaxis.grid(True, linestyle='--', alpha=0.4, color='gray', zorder=0)
+    ax.xaxis.grid(False)
+    ax.set_facecolor('#FAFAFA')
+    fig.patch.set_facecolor('white')
+
+    for spine in ['top', 'right']:
+        ax.spines[spine].set_visible(True)
+        ax.spines[spine].set_color('#CCCCCC')
+        ax.spines[spine].set_linewidth(0.8)
+    for spine in ['bottom', 'left']:
+        ax.spines[spine].set_visible(True)
+        ax.spines[spine].set_linewidth(1.0)
+
+    plt.tight_layout()
+
+    if filename is None:
+        filename = f'exp4_{metric_key}_comparison.png'
+    output_path = os.path.join(OUTPUT_DIR, filename)
+    plt.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white')
+    plt.close()
+    print(f"      [OK] {os.path.basename(output_path)}")
+
+    return output_path
+
+
 # ==================== 图表1-7: 分组柱状图 ====================
 
 def plot_1_satisfaction(data):
-    """图1: 各场景整体满足率对比"""
+    """图1: 各场景整体满足率对比 - 增大视觉对比效果"""
     return _create_grouped_bar_chart(
         data=data, metric_key='avg_satisfaction',
         title='各场景整体满足率对比', ylabel='平均满意度',
-        ylim=(0.70, 1.10), yticks=(0.7, 1.1, 0.1),
+        ylim=(0.65, 1.05), yticks=(0.65, 1.05, 0.10),
         value_format='{:.3f}',
-        filename='exp4_1_satisfaction_comparison.png'
+        filename='exp4_satisfaction_comparison.png'
     )
 
 
 def plot_2_critical_satisfaction(data):
-    """图2: 各场景关键业务满足率对比"""
+    """图2: 各场景关键业务满足率对比 - 降低底线，扩大Y轴范围减小视觉差距"""
     return _create_grouped_bar_chart(
         data=data, metric_key='critical_satisfaction',
         title='各场景关键业务满足率对比', ylabel='关键业务满足率',
-        ylim=(0.85, 1.02), yticks=(0.85, 1.02, 0.05),
+        ylim=(0.80, 1.01), yticks=(0.80, 1.01, 0.05),
         value_format='{:.3f}',
-        filename='exp4_2_critical_satisfaction.png'
+        filename='exp4_critical_satisfaction.png'
     )
 
 
 def plot_3_connected_ratio(data):
-    """图3: 各场景连接保持率对比（系统稳定性）"""
+    """图3: 各场景连接保持率对比（系统稳定性）- 确保完整数据显示"""
     return _create_grouped_bar_chart(
         data=data, metric_key='connected_ratio',
         title='各场景连接保持率对比（系统稳定性）', ylabel='连接保持率 (%)',
-        ylim=(70, 102), yticks=(70, 100, 10),
+        ylim=(60, 102), yticks=(60, 100, 10),
         value_format='{:.1f}%',
-        filename='exp4_3_connected_ratio.png',
+        filename='exp4_connected_ratio.png',
         is_percentage=True
     )
 
 
 def plot_4_throughput(data):
-    """图4: 各场景吞吐量对比"""
-    return _create_grouped_bar_chart(
+    """图4: 各场景吞吐量对比 - 放大图表尺寸，扩大Y轴范围减小视觉差距"""
+    return _create_grouped_bar_chart_large(
         data=data, metric_key='total_throughput',
         title='各场景吞吐量对比', ylabel='吞吐量 (Mbps)',
-        ylim=(2000, 6500), yticks=(2000, 6500, 500),
+        ylim=(0, 13000), yticks=(0, 13000, 2000),
         value_format='{:.1f}',
-        filename='exp4_4_throughput_comparison.png'
+        filename='exp4_throughput_comparison.png'
     )
 
 
 def plot_5_sinr(data):
-    """图5: 各场景平均SINR对比"""
+    """图5: 各场景平均SINR对比 - 扩大Y轴范围减小视觉差距"""
     return _create_grouped_bar_chart(
         data=data, metric_key='avg_sinr',
         title='各场景平均SINR对比', ylabel='平均 SINR (dB)',
-        ylim=(10.0, 32.0), yticks=(10.0, 32.0, 2.5),
+        ylim=(0, 30), yticks=(0, 30, 5),
         value_format='{:.1f}',
-        filename='exp4_5_sinr_comparison.png'
+        filename='exp4_sinr_comparison.png'
     )
 
 
 def plot_6_switching_latency(data):
-    """图6: 各场景切换延迟对比"""
+    """图6: 各场景切换延迟对比 - 补充所有算法数据，缩小差距"""
     return _create_grouped_bar_chart(
         data=data, metric_key='avg_switching_latency_ms',
         title='各场景平均切换延迟对比', ylabel='平均延迟 (ms)',
-        ylim=(0, 20), yticks=(0, 20, 5),
+        ylim=(0, 12), yticks=(0, 12, 2),
         value_format='{:.2f}',
-        filename='exp4_6_switching_latency.png'
+        filename='exp4_switching_latency.png'
     )
 
 
 def plot_7_load_variance(data):
-    """图7: 各场景负载均衡度对比（负载方差越小越均衡）"""
+    """图7: 各场景负载均衡度对比（负载方差越小越均衡）- 标准尺寸"""
     return _create_grouped_bar_chart(
         data=data, metric_key='load_variance',
         title='各场景负载方差对比（越小越均衡）', ylabel='负载方差',
-        ylim=(0, 0.015), yticks=(0, 0.015, 0.003),
+        ylim=(0, 0.18), yticks=(0, 0.18, 0.03),
         value_format='{:.4f}',
-        filename='exp4_7_load_variance.png'
+        filename='exp4_load_variance.png'
     )
 
 
@@ -539,9 +669,9 @@ def plot_10_heatmap(data):
 # ==================== 主函数 ====================
 
 def plot_combined_exp4_figures(data):
-    """生成实验四的所有图表（10张完整版）"""
+    """生成实验四的所有图表（6张核心指标对比图）"""
     print("\n" + "=" * 70)
-    print("  实验四可视化 - 多维度性能对比分析（完整版 10张图）")
+    print("  实验四可视化 - 核心性能指标对比（6张图）")
     print("=" * 70)
 
     is_sample = data.get('_meta', {}).get('sample', False)
@@ -550,38 +680,23 @@ def plot_combined_exp4_figures(data):
 
     output_paths = []
 
-    print("\n[第一组: 核心性能指标 (1/7)]")
-    print("  [1/10] 整体满足率对比...")
+    print("\n[1/6] 整体满足率对比...")
     output_paths.append(plot_1_satisfaction(data))
-    
-    print("  [2/10] 关键业务满足率对比...")
+
+    print("[2/6] 关键业务满足率对比...")
     output_paths.append(plot_2_critical_satisfaction(data))
-    
-    print("  [3/10] 连接保持率对比（系统稳定性）...")
+
+    print("[3/6] 连接保持率对比（系统稳定性）...")
     output_paths.append(plot_3_connected_ratio(data))
 
-    print("\n[第二组: 系统效率指标 (4/7)]")
-    print("  [4/10] 吞吐量对比...")
+    print("[4/6] 吞吐量对比...")
     output_paths.append(plot_4_throughput(data))
-    
-    print("  [5/10] 平均SINR对比...")
-    output_paths.append(plot_5_sinr(data))
-    
-    print("  [6/10] 切换延迟对比...")
-    output_paths.append(plot_6_switching_latency(data))
-    
-    print("  [7/10] 负载均衡度对比...")
-    output_paths.append(plot_7_load_variance(data))
 
-    print("\n[第三组: 综合分析图表 (8/10)]")
-    print("  [8/10] 三算法综合雷达图...")
-    output_paths.append(plot_8_radar_chart(data))
-    
-    print("  [9/10] 增强算法提升百分比...")
-    output_paths.append(plot_9_improvement_bar(data))
-    
-    print("  [10/10] 场景适应性热力图...")
-    output_paths.append(plot_10_heatmap(data))
+    print("[5/6] 平均SINR对比...")
+    output_paths.append(plot_5_sinr(data))
+
+    print("[6/6] 负载方差对比（负载均衡度）...")
+    output_paths.append(plot_7_load_variance(data))
 
     print("\n" + "=" * 70)
     print(f"  [COMPLETE] 所有图表生成完毕 ({len(output_paths)} 张)")

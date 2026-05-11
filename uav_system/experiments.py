@@ -1295,12 +1295,20 @@ class Experiment3:
                 enh_stats = env_enh.get_state_statistics()
                 enh_stats.update(algo_enh.get_detailed_stats())
                 enh_stats['connected_ratio'] = enh_stats['connected_count'] / env_enh.num_uav
+                enh_stats['migration_success_rate'] = enh_stats.get('handover_success_rate', 1.0)
+                enh_stats['total_throughput'] = sum(uav.current_allocated_rate for uav in env_enh.uavs.values()
+                                                    if uav.connected_bs_id is not None)
+                enh_stats['business_stats'] = env_enh.get_business_type_stats()
                 enh_stats.pop('recognition_accuracy', None)  # [V27] 移除识别准确率指标
                 enhanced_results.append(enh_stats)
 
                 trad_stats = env_trad.get_state_statistics()
                 trad_stats.update(algo_trad.get_detailed_stats())
                 trad_stats['connected_ratio'] = trad_stats['connected_count'] / env_trad.num_uav
+                trad_stats['migration_success_rate'] = trad_stats.get('handover_success_rate', 1.0)
+                trad_stats['total_throughput'] = sum(uav.current_allocated_rate for uav in env_trad.uavs.values()
+                                                     if uav.connected_bs_id is not None)
+                trad_stats['business_stats'] = env_trad.get_business_type_stats()
                 trad_stats.pop('recognition_accuracy', None)  # [V27] 移除识别准确率指标
                 traditional_results.append(trad_stats)
 
@@ -1482,6 +1490,25 @@ class Experiment3:
             else:
                 summary['traditional'][key] = (0,0)
                 summary['improvement'][key] = 0
+
+        # [NEW] 分业务满足率统计
+        if 'business_stats' in enhanced_results[0]:
+            business_types = set()
+            for r in enhanced_results:
+                if 'business_stats' in r:
+                    business_types.update(r['business_stats'].keys())
+            
+            for bt in business_types:
+                bt_key = f'business_satisfaction_{bt.name}' if hasattr(bt, 'name') else str(bt)
+                enh_bt_vals = [r['business_stats'].get(bt, {}).get('avg_satisfaction', 0) 
+                              for r in enhanced_results if 'business_stats' in r and bt in r['business_stats']]
+                trad_bt_vals = [r['business_stats'].get(bt, {}).get('avg_satisfaction', 0) 
+                                for r in traditional_results if 'business_stats' in r and bt in r['business_stats']]
+                
+                if enh_bt_vals:
+                    summary['enhanced'][bt_key] = (np.mean(enh_bt_vals), np.std(enh_bt_vals))
+                if trad_bt_vals:
+                    summary['traditional'][bt_key] = (np.mean(trad_bt_vals), np.std(trad_bt_vals))
 
         # [Step4] MAPPO结果汇总
         if mappo_results and len(mappo_results) > 0:
@@ -2810,7 +2837,7 @@ class Experiment4:
         # 生成summary（必须在绘图和打印之前）
         summary = Experiment4._summarize(results)
 
-        # [FINAL-SAVE] 绘图前保存完整summary（实验4有5个场景×5轮=25轮数据，必须保护！）
+        # [FINAL-SAVE 1] 保存MAPPO原始数据到 exp4_mappo_summary.json
         if include_mappo:
             try:
                 total_mappo_runs = sum(len(s.get('mappo', [])) for s in results.values())
@@ -2823,9 +2850,34 @@ class Experiment4:
                             'scenarios_completed': list(results.keys()),
                             'raw_results_by_scenario': {sc: dat.get('mappo', []) for sc, dat in results.items()}
                         }, f, ensure_ascii=False, indent=2, default=str)
-                    print(f"\n  [FINAL-SAVE] 实验4完整结果已保存 ({total_mappo_runs}轮) -> {final_save_path}")
+                    print(f"\n  [FINAL-SAVE-1] MAPPO数据已保存 ({total_mappo_runs}轮) -> {final_save_path}")
             except Exception as e:
-                print(f"\n  [WARN] 实验4最终保存失败: {e}")
+                print(f"\n  [WARN] MAPPO数据保存失败: {e}")
+
+        # [FINAL-SAVE 2] 保存完整的summary到 exp4_data.json (包含三种算法的最新数据)
+        try:
+            exp4_data_path = os.path.join(RESULT_DIR, 'exp4_data.json')
+            complete_data = {
+                '_meta': {
+                    'saved_at': datetime.now().isoformat(),
+                    'source': 'Experiment4.run()',
+                    'scenarios': list(Experiment4.SCENARIOS.keys()),
+                    'algorithms': ['enhanced', 'traditional', 'mappo'],
+                }
+            }
+            for scenario in Experiment4.SCENARIOS.keys():
+                complete_data[scenario] = {}
+                for algo in ['enhanced', 'traditional', 'mappo']:
+                    if algo in summary.get(scenario, {}):
+                        complete_data[scenario][algo] = summary[scenario][algo]
+
+            with open(exp4_data_path, 'w', encoding='utf-8') as f:
+                json.dump(complete_data, f, ensure_ascii=False, indent=2)
+
+            print(f"  [FINAL-SAVE-2] 完整数据已保存 -> {exp4_data_path}")
+            print(f"    包含: 增强算法 + 传统算法 + MAPPO (5个场景)")
+        except Exception as e:
+            print(f"\n  [WARN] 完整数据保存失败: {e}")
 
         Experiment4._print_results_table(summary)
 
