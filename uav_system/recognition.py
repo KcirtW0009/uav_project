@@ -169,6 +169,10 @@ import numpy as np
 import json
 import pickle
 import os
+import warnings
+
+warnings.filterwarnings('ignore', message='.*sklearn.utils.parallel.delayed.*')  # [V28] 抑制cross_val_score并行警告
+
 from typing import Dict, List, Tuple, Any
 from collections import defaultdict, deque
 from datetime import datetime

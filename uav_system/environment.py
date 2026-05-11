@@ -388,8 +388,13 @@ class NetworkEnvironmentWithRecognition:
         self.scenario = scenario
         self.bs_capacity_range = bs_capacity_range
         self.current_step = 0
-        self.recognition_updater = AdaptiveRecognitionUpdater(min_update_interval=5, drift_threshold=0.25)
-        self.feedback_buffer = deque(maxlen=100)
+        # [V28] 仅在有识别模型时才创建updater（性能优化：完全切断识别模块时跳过）
+        if recognition_model is not None:
+            self.recognition_updater = AdaptiveRecognitionUpdater(min_update_interval=5, drift_threshold=0.25)
+            self.feedback_buffer = deque(maxlen=100)
+        else:
+            self.recognition_updater = None
+            self.feedback_buffer = None
 
         self.base_stations: Dict[int, BaseStation] = {}
         self._init_base_stations(scenario)
@@ -749,7 +754,8 @@ class NetworkEnvironmentWithRecognition:
             uav.handover_count = 0
         self.connection_matrix = np.zeros((self.num_uav, self.num_bs), dtype=int)
         self.stats_history = {k: [] for k in self.stats_history.keys()}
-        self.feedback_buffer.clear()
+        if self.feedback_buffer is not None:
+            self.feedback_buffer.clear()
         self.uav_interruption_counters = {uav_id: 0 for uav_id in range(self.num_uav)}
         self.interruption_events.clear()
         self.active_interruptions.clear()

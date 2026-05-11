@@ -279,26 +279,35 @@ def main(force_retrain=False, run_experiments=None,
     scaler = None
     all_model_results = None
 
-    # V17: 始终加载业务识别模型（评估阶段需要接入预测噪声）
-    if not only_mappo:
-        print("\n步骤1: 初始化业务识别模型...")
+    # [V28] 判断是否需要加载业务识别模型（实验3/4已切断识别模块）
+    needs_recognition = any(exp in run_experiments_str for exp in ['1', '2', '2b', '2c', 'mappo'])
+
+    if needs_recognition:
+        # V17: 始终加载业务识别模型（评估阶段需要接入预测噪声）
+        if not only_mappo:
+            print("\n步骤1: 初始化业务识别模型...")
+        else:
+            print("\n步骤1: 初始化业务识别模型（MAPPO评估阶段使用）...")
+
+        recognition_model, all_model_results = train_or_load_recognition_model(
+            force_retrain=force_retrain, compare_models=True, verbose=True,
+            force_compare=args.force_compare
+        )
+        scaler = recognition_model.scaler
+
+        if all_model_results is None and not force_retrain:
+            import pickle
+            all_results_file = "all_model_results.pkl"
+            if os.path.exists(all_results_file):
+                with open(all_results_file, 'rb') as f:
+                    all_model_results = pickle.load(f)
+
+        recognition_model.print_model_info()
     else:
-        print("\n步骤1: 初始化业务识别模型（MAPPO评估阶段使用）...")
-
-    recognition_model, all_model_results = train_or_load_recognition_model(
-        force_retrain=force_retrain, compare_models=True, verbose=True,
-        force_compare=args.force_compare
-    )
-    scaler = recognition_model.scaler
-
-    if all_model_results is None and not force_retrain:
-        import pickle
-        all_results_file = "all_model_results.pkl"
-        if os.path.exists(all_results_file):
-            with open(all_results_file, 'rb') as f:
-                all_model_results = pickle.load(f)
-
-    recognition_model.print_model_info()
+        # [V28] 实验3/4不需要识别模块，跳过加载以加速启动
+        print("\n[INFO] 跳过业务识别模型加载 (实验3/4使用真实业务类型)")
+        print("  → 使用 ground truth 业务类型，零识别误差")
+        print("  → 启动速度更快，无sklearn警告")
 
     results = {}
     exp_map = {
@@ -306,12 +315,12 @@ def main(force_retrain=False, run_experiments=None,
         '2': lambda: Experiment2.run(recognition_model, scaler, num_steps=150, repeats=10),
         '2b': lambda: Experiment2b.run(recognition_model, scaler, num_steps=150, repeats=8),
         '2c': lambda: Experiment2c.run(recognition_model, scaler, num_steps=200, repeats=6),
-        '3': lambda: Experiment3.run(recognition_model, scaler,
+        '3': lambda: Experiment3.run(None, None,  # [V28] 切断识别模块入口
                                        include_mappo=include_mappo,
                                        mappo_model_path=mappo_model_path,
                                        use_cache=use_cache,
                                        mappo_repeats=mappo_repeats),  # [NEW] MAPPO差异化重复
-        '4': lambda: Experiment4.run(recognition_model, scaler, num_steps=150, repeats=5,
+        '4': lambda: Experiment4.run(None, None, num_steps=150, repeats=5,  # [V28] 切断识别模块入口
                                       include_mappo=include_mappo,
                                       mappo_model_path=mappo_model_path,
                                       use_cache=use_cache),  # [V27] 统一repeats=5

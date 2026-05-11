@@ -1426,12 +1426,20 @@ class Experiment3:
             except Exception as e:
                 print(f"\n  [WARN] 最终保存失败: {e}")
 
+        # [V28] 使用专用绘图脚本替代内置_plot方法
         try:
-            Experiment3._plot(summary)
-        except Exception as plot_err:
-            print(f"\n  [WARN] 绘图出错 (数据已保存，不影响结果): {plot_err}")
-            import traceback
-            traceback.print_exc()
+            from plot_exp3_figures import plot_combined_exp3_figures, load_exp3_data
+            print("\n[Visualization] 生成实验三专业图表...")
+            exp3_data = load_exp3_data()
+            fig_paths = plot_combined_exp3_figures(exp3_data)
+            print(f"  ✅ 已生成 {len(fig_paths)} 张图表")
+        except Exception as vis_err:
+            print(f"  ⚠️ 专业图表生成失败: {vis_err}")
+            print(f"  回退到内置绘图...")
+            try:
+                Experiment3._plot(summary)
+            except Exception as fallback_err:
+                print(f"  ❌ 内置绘图也失败: {fallback_err}")
 
         return summary
 
@@ -1798,7 +1806,19 @@ class Experiment2:
 
         summary = Experiment2._summarize(results)
         Experiment2._print_results_table(summary)
-        Experiment2._plot(summary)
+
+        # [V28] 使用专用绘图脚本替代内置_plot方法
+        try:
+            from plot_exp2_figures import plot_combined_exp2_figures, load_exp2_data
+            print("\n[Visualization] 生成实验二专业图表...")
+            exp2_data = load_exp2_data()
+            fig_paths = plot_combined_exp2_figures(exp2_data)
+            print(f"  ✅ 已生成 {len(fig_paths)} 张图表")
+        except Exception as vis_err:
+            print(f"  ⚠️ 专业图表生成失败: {vis_err}")
+            print(f"  回退到内置绘图...")
+            Experiment2._plot(summary)
+
         return summary
 
     @staticmethod
@@ -2450,16 +2470,16 @@ class Experiment4:
 
 
     @staticmethod
-    def run(recognition_model, scaler, num_steps=150, repeats=5, include_mappo=False, mappo_model_path=None,
-            use_cache=False):  # [V27] 统一repeats=5，与实验三对齐
+    def run(recognition_model, scaler, num_steps=350, repeats=10, include_mappo=False, mappo_model_path=None,
+            use_cache=False):  # [V29] 优化：350步×10次，提升数据质量与统计显著性
         """
         运行实验4：多场景对比实验
 
         Args:
-            recognition_model: 业务识别模型
-            scaler: 识别模型标准化器
-            num_steps: 仿真步数（默认150）
-            repeats: 重复实验次数（默认10）
+            recognition_model: 业务识别模型（V28: 可为None）
+            scaler: 识别模型标准化器（V28: 可为None）
+            num_steps: 仿真步数（默认350，与实验三对齐，提升稳定性）
+            repeats: 重复实验次数（默认10，提升统计可靠性）
             include_mappo: 是否包含MAPPO泛化评估
             mappo_model_path: MAPPO模型路径，None则使用默认路径
             use_cache: 是否读取已有的传统/增强算法数据（跳过重新运行）
@@ -2546,7 +2566,7 @@ class Experiment4:
                 use_cache = False
         # [FIX] 只在非缓存模式或缓存未命中时才运行传统/增强算法
         if not use_cache:
-            exp4_base_seed_full = GLOBAL_SEED + 1000  # [V27] 实验四独立种子基址
+            exp4_base_seed_full = GLOBAL_SEED  # [V28] 使用与实验三相同的种子基址
 
             for scenario, info in Experiment4.SCENARIOS.items():
                 num_uav = info['num_uav']
@@ -2631,8 +2651,8 @@ class Experiment4:
                 print("  [MAPPO EVALUATION] 开始MAPPO多场景评估 (纯净版，无保护机制)...")
                 print("  " + "="*80)
 
-                # [V27] 实验四独立种子（不与实验三保持一致）
-                exp4_base_seed = GLOBAL_SEED + 1000  # 偏移避免与实验三冲突
+                # [V28] 使用与实验三相同的种子
+                exp4_base_seed = GLOBAL_SEED  # 与实验三保持一致
                 mappo_seed_order = list(range(repeats))  # 简单顺序: [0,1,2,3,4]
 
                 for scenario, info in Experiment4.SCENARIOS.items():
@@ -2728,12 +2748,21 @@ class Experiment4:
                 print(f"\n  [WARN] 实验4最终保存失败: {e}")
 
         Experiment4._print_results_table(summary)
+
+        # [V28] 使用专用绘图脚本替代内置_plot方法
         try:
-            Experiment4._plot(summary)
-        except Exception as plot_err:
-            print(f"\n  [WARN] 实验4绘图出错 (数据已保存，不影响结果): {plot_err}")
-            import traceback
-            traceback.print_exc()
+            from plot_exp4_figures import plot_combined_exp4_figures, load_exp4_data
+            print("\n[Visualization] 生成实验四专业图表...")
+            exp4_data = load_exp4_data()
+            fig_paths = plot_combined_exp4_figures(exp4_data)
+            print(f"  ✅ 已生成 {len(fig_paths)} 张图表")
+        except Exception as vis_err:
+            print(f"  ⚠️ 专业图表生成失败: {vis_err}")
+            print(f"  回退到内置绘图...")
+            try:
+                Experiment4._plot(summary)
+            except Exception as fallback_err:
+                print(f"  ❌ 内置绘图也失败: {fallback_err}")
 
         return summary
 
