@@ -476,6 +476,6 @@ if __name__ == "__main__":
 # .\venv\Scripts\python.exe main.py --exp mappo                    训练MAPPO(8BSx300UAV)
 #     --mappo-model results/mappo_models/custom_model.pt           指定自定义模型
 #
-# [NEW] 缓存模式 (快速!):
+# 缓存模式 (快速!):
 # .\venv\Scripts\python.exe main.py --exp 3 4 --include-mappo --use-cache  完整三算法对比 (~几小时)
 #     从已有数据加载传统/增强算法，仅运行MAPPO评估（纯净版）
