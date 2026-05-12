@@ -132,7 +132,9 @@ CATEGORY2_METRICS = [
         'is_percentage': True,
         'is_reverse': False,
         'normalization_range': (0, 100),
-        'value_format': '{:.1f}%'
+        'value_format': '{:.1f}%',
+        # 增强算法独有指标：传统/MAPPO无此机制，显示为N/A
+        'enhanced_only': True
     }
 ]
 
@@ -312,6 +314,7 @@ def create_category_chart(data, category_metrics, title, filename):
     
     for metric in category_metrics:
         key = metric['key']
+        is_enhanced_only = metric.get('enhanced_only', False)
         
         # First pass: collect all raw values for this metric across algorithms
         raw_values_for_metric = []
@@ -322,6 +325,10 @@ def create_category_chart(data, category_metrics, title, filename):
                 # Convert percentage if needed
                 if metric['is_percentage'] and raw_value <= 1.0:
                     raw_value = raw_value * 100
+                
+                # Enhanced-only指标：非增强算法设为0（无此机制）
+                if is_enhanced_only and algo != 'enhanced':
+                    raw_value = 0.0
                 
                 raw_values_for_metric.append(raw_value)
             else:
@@ -355,18 +362,24 @@ def create_category_chart(data, category_metrics, title, filename):
         for bar_idx, (bar, raw_val, metric) in enumerate(zip(bars, 
                                                               algorithm_raw_data[algo], 
                                                               category_metrics)):
+            is_enhanced_only = metric.get('enhanced_only', False)
             if raw_val > 0:
                 label_text = format_real_value(raw_val, metric)
-                
-                # Position label above bar
-                bar_height = bar.get_height()
-                ax.text(bar.get_x() + bar.get_width()/2,
-                       bar_height + 0.02,
-                       label_text,
-                       ha='center', va='bottom',
-                       fontsize=7.5, fontweight='bold',
-                       color='#333333',
-                       rotation=0)
+            elif is_enhanced_only and algo != 'enhanced':
+                # Enhanced-only指标：非增强算法显示N/A
+                label_text = 'N/A*'
+            else:
+                continue  # 跳过零值标签
+            
+            # Position label above bar
+            bar_height = bar.get_height()
+            ax.text(bar.get_x() + bar.get_width()/2,
+                   bar_height + 0.02,
+                   label_text,
+                   ha='center', va='bottom',
+                   fontsize=7.5, fontweight='bold',
+                   color='#333333',
+                   rotation=0)
     
     # Mark reverse indicators with special annotation
     reverse_indices = [i for i, m in enumerate(category_metrics) if m['is_reverse']]
@@ -429,6 +442,16 @@ def create_category_chart(data, category_metrics, title, filename):
                fontsize=9, style='italic', color='gray',
                bbox=dict(boxstyle='round,pad=0.3', facecolor='lightyellow',
                         edgecolor='orange', alpha=0.8))
+    
+    # Enhanced-only指标脚注
+    has_enhanced_only = any(m.get('enhanced_only', False) for m in category_metrics)
+    if has_enhanced_only:
+        ax.text(0.98, -0.12,
+               '*N/A: 该指标为增强算法独有（负载均衡迁移机制），传统/MAPPO无此功能',
+               transform=ax.transAxes, ha='right', va='top',
+               fontsize=7.5, style='italic', color='#666666',
+               bbox=dict(boxstyle='round,pad=0.3', facecolor='#FFFDE7',
+                        edgecolor='#FFB300', alpha=0.9))
     
     plt.tight_layout()
     output_path = os.path.join(OUTPUT_DIR, filename)
