@@ -19,8 +19,8 @@ build/
 # ---- Jupyter Notebook ----
 .ipynb_checkpoints/
 
-# ---- 虚拟环境 (保留 venv/) ----
-# venv/  已在仓库中，不忽略
+# ---- 虚拟环境 (已忽略) ----
+# 注意: venv/ 不应提交到仓库，请使用 requirements.txt 重新安装依赖
 pyvenv.cfg
 
 # ---- 模型文件 (大体积) ----
