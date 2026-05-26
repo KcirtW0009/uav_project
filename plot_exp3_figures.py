@@ -14,9 +14,10 @@ Contains charts:
    - Special: Reverse indicators marked with ↓ annotation
 
 3. Performance Efficiency Metrics Comparison (Grouped Bar Chart)
-   - X-axis: 4 metrics (avg_sinr, avg_switching_latency_ms, avg_decision_time_ms, total_throughput)
+   - X-axis: 3 metrics (avg_sinr, avg_switching_latency_ms, avg_decision_time_ms)
    - Y-axis: Normalized (0-1) + data labels with real values and units
    - Special: Reverse indicators marked with ↓ annotation
+   - Note: total_throughput removed — enhanced/traditional algorithms lack valid data
 
 Data source: experiment_results/exp3_data.json
 """
@@ -168,17 +169,8 @@ CATEGORY3_METRICS = [
         'is_reverse': True,
         'normalization_range': (0, 0.08),
         'value_format': '{:.4f}'
-    },
-    {
-        'key': 'total_throughput',
-        'name': 'Total\nThroughput (Mbps)',
-        'display_name': 'Throughput',
-        'unit': 'Mbps',
-        'is_percentage': False,
-        'is_reverse': False,
-        'normalization_range': (0, 5000),
-        'value_format': '{:.0f}'
     }
+    # [移除] total_throughput: 增强/传统算法无有效数据(增强未收集, 传统=0)
 ]
 
 
@@ -210,7 +202,7 @@ def generate_sample_data():
             'avg_sinr': [np.random.uniform(17, 24), np.random.uniform(0.5, 2.0)],
             'avg_switching_latency_ms': [np.random.uniform(0.5, 8.0), np.random.uniform(0.1, 2.0)],
             'avg_decision_time_ms': [np.random.uniform(0.001, 0.07), np.random.uniform(0.0001, 0.015)],
-            'total_throughput': [np.random.uniform(3000, 5000), np.random.uniform(200, 600)]
+            # [移除] total_throughput: 增强算法未收集此数据
         }
     
     sample['_meta'] = {'sample': True, 'note': 'Sample data for preview'}

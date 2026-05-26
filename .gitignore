@@ -28,6 +28,21 @@ pyvenv.cfg
 *.pt
 *.pth
 *.onnx
+*.h5
+*.pb
+checkpoints/
+models/
+
+# ---- 数据集 (大体积/敏感) ----
+*.csv
+*.xlsx
+*.xls
+data/
+datasets/
+raw_data/
+
+# ---- PyTorch特定 ----
+*.ckpt
 
 # ---- 实验结果/输出 (可重新生成) ----
 experiment_results/

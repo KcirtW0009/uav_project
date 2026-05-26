@@ -90,7 +90,7 @@ def plot_incremental_satisfaction_comparison(data):
     - 双X轴结构：上方(负载方差 0-50)，下方(满意度/满足率 0-1)
     - 三组数据系列：平均满意度(A)、关键业务满足率(B)、负载方差(C)
     - 不同颜色和填充图案区分
-    - 数据标签位置区分
+    - 所有柱子均有清晰数据标签
     """
     mapping = get_mechanism_mapping()
     
@@ -102,7 +102,7 @@ def plot_incremental_satisfaction_comparison(data):
     critical_satisfaction = [data[k]['critical_satisfaction'][0] for k in data_keys]
     load_variance = [data[k]['load_variance'][0] * 1000 for k in data_keys]
     
-    fig, ax = plt.subplots(figsize=(12, 8))
+    fig, ax = plt.subplots(figsize=(13, 8.5))
     
     y_positions = np.arange(len(config_labels))
     bar_height = 0.25
@@ -119,44 +119,64 @@ def plot_incremental_satisfaction_comparison(data):
                      height=bar_height, color=colors_b, edgecolor='white',
                      linewidth=0.8, label='关键业务满足率', hatch='..')
     
-    ax.set_xlim(0, 1.15)
+    ax.set_xlim(0, 1.18)
     ax.set_xticks(np.arange(0, 1.1, 0.1))
     ax.set_xlabel('数值 (满意度 / 满足率)', fontsize=11, color='black')
     ax.set_yticks(y_positions)
     ax.set_yticklabels(config_labels, fontsize=10)
     
+    # 右侧X轴: 负载方差
     ax2 = ax.twiny()
     bars_c = ax2.barh(y_positions + bar_height, load_variance,
                       height=bar_height, color=colors_c, edgecolor='#DAA520',
                       linewidth=0.8, label='负载方差', hatch='xx')
-    ax2.set_xlim(0, 50)
-    ax2.set_xticks(np.arange(0, 51, 10))
-    ax2.set_xlabel('负载方差 (单位: 1e-3)', fontsize=11, color='black')
+    ax2.set_xlim(0, 55)
+    ax2.set_xticks(np.arange(0, 56, 10))
+    ax2.set_xlabel(r'负载方差 ($\times 10^{-3}$)', fontsize=11, color='black')
     
+    # ===== 数据标签：确保每个柱子都有 =====
+    
+    # A: 平均满意度 — 根据柱长决定内外位置
     for bar, val in zip(bars_a, avg_satisfaction):
-        if val > 0.15:
-            ax.text(val - 0.05, bar.get_y() + bar.get_height()/2,
-                   f'{val:.3f}', ha='right', va='center',
-                   fontsize=9, fontweight='bold', color='white')
+        y_center = bar.get_y() + bar.get_height() / 2
+        if val >= 0.55:
+            # 柱子够长 → 标签放内部右侧
+            ax.text(val - 0.02, y_center, f'{val:.3f}',
+                   ha='right', va='center', fontsize=8.5,
+                   fontweight='bold', color='#1a1a1a')
+        else:
+            # 柱子太短 → 标签放外部右侧
+            ax.text(val + 0.02, y_center, f'{val:.3f}',
+                   ha='left', va='center', fontsize=8.5,
+                   fontweight='bold', color='#1565C0')
     
+    # B: 关键业务满足率 — 同理
     for bar, val in zip(bars_b, critical_satisfaction):
-        if val > 0.15:
-            ax.text(val - 0.05, bar.get_y() + bar.get_height()/2,
-                   f'{val:.3f}', ha='right', va='center',
-                   fontsize=9, fontweight='bold', color='white')
+        y_center = bar.get_y() + bar.get_height() / 2
+        if val >= 0.55:
+            ax.text(val - 0.02, y_center, f'{val:.3f}',
+                   ha='right', va='center', fontsize=8.5,
+                   fontweight='bold', color='#1a1a1a')
+        else:
+            ax.text(val + 0.02, y_center, f'{val:.3f}',
+                   ha='left', va='center', fontsize=8.5,
+                   fontweight='bold', color='#C62828')
     
+    # C: 负载方差 — 全部放外侧（右轴）
     for bar, val in zip(bars_c, load_variance):
-        ax2.text(val + 1, bar.get_y() + bar.get_height()/2,
-                f'{val:.1f}', ha='left', va='center',
-                fontsize=9, fontweight='bold', color='black')
+        y_center = bar.get_y() + bar.get_height() / 2
+        ax2.text(val + 1.0, y_center, f'{val:.1f}',
+                ha='left', va='center', fontsize=8.5,
+                fontweight='bold', color='#B8860B')
     
+    # 图例
     legend_handles = [
         mpatches.Patch(facecolor=colors_a, edgecolor='white', hatch='//', label='平均满意度'),
         mpatches.Patch(facecolor=colors_b, edgecolor='white', hatch='..', label='关键业务满足率'),
-        mpatches.Patch(facecolor=colors_c, edgecolor='#DAA520', hatch='xx', label='负载方差')
+        mpatches.Patch(facecolor=colors_c, edgecolor='#DAA520', hatch='xx', label='负载方差 (1e-3)')
     ]
     fig.legend(handles=legend_handles, loc='lower center', ncol=3,
-               fontsize=10, frameon=False, bbox_to_anchor=(0.5, -0.02))
+               fontsize=10, frameon=False, bbox_to_anchor=(0.5, -0.03))
     
     ax.set_title('逐步增加机制的各项性能指标对比', fontsize=14, fontweight='bold', pad=20)
     
